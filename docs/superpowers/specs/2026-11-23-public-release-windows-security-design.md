@@ -129,15 +129,23 @@ Today, four gaps block a high-trust public release:
 - **`plugin.json`:**
   - Keep strictly valid Antigravity manifest keys (`name`: `"flight-recorder"`, `displayName`: `"Flight Recorder"`, `version`: `"0.2.0"`, `author`: `"Frederic Medery"`, `description`: updated to highlight parent-first plugin/skill spend & active-time optimization + cache/compaction waterfalls, `logo`: `"assets/logo.svg"`, `suggestedPrompts`: 3 actionable starter prompts). *(Builder call: omit `repository`/`homepage` until the final GitHub URL is chosen so no placeholder/dead URL ships in `plugin.json`.)*
 - **`README.md`:**
-  - Clear, structured documentation covering:
-    1. Overview & key capabilities (Parent-first Plugin & Skill Spend/Time Attribution, Drill-down & Waste Prescriptions, `200k`/`256k` Compaction Cliff Overlays, Timing Waterfall, Model Mix & Custom Pricing).
-    2. **Requirements:** Antigravity 2.x (Hub), IDE, or CLI; Node.js `>= 22.15` (no `npm` or Python required to use).
-    3. **Installation in Antigravity 2.x (Hub):**
-       - Windows (PowerShell): `git clone <repo-url> "$HOME\.gemini\config\plugins\flight-recorder"`
-       - macOS / Linux: `git clone <repo-url> ~/.gemini/config/plugins/flight-recorder`
-       - Asking the Hub agent / Marketplace / `agy plugin install`
-    4. **Using Flight Recorder:** Opening from Hub's Left Sidebar (`global`), Chat `+` Side Pane (`aux_pane`), or Chat prompts (`flight-recorder` skill + `get_skill_optimization`), plus using **Optimize With Agent**.
-    5. **Data Storage & Privacy Summary** (linking to `SECURITY.md`), **Updating / Uninstalling**, **Troubleshooting** (Windows & macOS/Linux), and **Contributor Development**.
+  - Clear, structured documentation with **Installation near the very top**, covering:
+    1. **Overview & Key Capabilities:** Parent-first Plugin & Skill Spend/Time Attribution, Sub-skill/MCP/CLI Drill-down & Waste Prescriptions, `200k`/`256k` Compaction Cliff Overlays, Step Timing Waterfall, Model Mix & Custom Pricing.
+    2. **Prerequisites (1-line check):** Antigravity 2.x (Hub), IDE, or CLI + **Node.js `>= 22.15`** (`node -v`). Explicitly note: **no `npm install`, build step, or Python required** because prebuilt single-file bundles are included.
+    3. **Step-by-Step Installation (All Surfaces & OSes):**
+       - **Option 1 — Antigravity 2.x (Hub) & IDE via Git (Recommended):**
+         - **macOS / Linux (Terminal):** `git clone <repo-url> ~/.gemini/config/plugins/flight-recorder`
+         - **Windows (PowerShell):** `git clone <repo-url> "$HOME\.gemini\config\plugins\flight-recorder"`
+         - **Windows (`cmd.exe`):** `git clone <repo-url> "%USERPROFILE%\.gemini\config\plugins\flight-recorder"`
+       - **Option 2 — Install without Git (Download ZIP on Windows / macOS / Linux):**
+         - Download ZIP from GitHub, extract, and place the folder so `plugin.json` is directly at `%USERPROFILE%\.gemini\config\plugins\flight-recorder\plugin.json` (Windows) or `~/.gemini/config/plugins/flight-recorder/plugin.json` (macOS/Linux)—explicitly warning against nested `...-main\...-main\plugin.json` folders.
+       - **Option 3 — Ask Antigravity 2.x (Hub) in Chat:** Copy-paste prompt to have the agent clone it into the global plugins folder.
+       - **Option 4 — Antigravity CLI (`agy`):** `agy plugin install <repo-url>` (installs into the same shared folder so Hub and CLI both pick it up).
+    4. **Verify & Open in Antigravity 2.x (Hub):**
+       - Auto-discovered live (no app restart): check **Left Sidebar → Skills & Customizations → Installed → Flight Recorder** (`On`).
+       - Open full-screen from **Left Sidebar → Flight Recorder**, per-chat from **`+` Side Pane → Flight Recorder**, or ask in chat (*"Which plugins and skills drove spend and time in this project?"*).
+    5. **Updating (`git pull`) & Uninstalling:** Copy-paste commands for macOS/Linux and Windows PowerShell, plus Hub UI uninstall.
+    6. **Data Storage & Privacy Summary** (linking to `SECURITY.md`), **Troubleshooting** (Node `< 22.15`, refreshing the MCP server in Hub settings, Windows path checks), and **Contributor / Local Development** (`npm install`, `npm run build`, `npm test`, `npm run install-plugin`).
 - **`SECURITY.md`:**
   - Documents zero network / zero telemetry guarantees, exact processes run (`node` MCP server + passive `node ./hooks/record-event.mjs`), exact files read (read-only transcripts & plugin metadata) and written (`${PLUGIN_DATA}/tracker.sqlite` & `events.jsonl`, `0700`/`0600` permissions on POSIX, private `%USERPROFILE%` on Windows), secret/escape-sequence redaction rules, MCP App iframe CSP (`default-src 'none'`), and vulnerability reporting.
 - **`LICENSE`:** MIT License (`Copyright (c) 2026 Frederic Medery`).
