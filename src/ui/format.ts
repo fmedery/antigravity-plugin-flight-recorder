@@ -73,58 +73,58 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
   projects: {
     title: "Tracked Projects & Sessions",
     meaning:
-      "Workspaces inferred from Antigravity Hub, IDE, and CLI transcripts, plus total root chats and spawned subagents.",
+      "Distinct workspaces inferred from Antigravity Hub, IDE, and CLI transcripts, broken down into root chats you started and child subagents they spawned.",
     impact:
-      "Splitting broad exploration into subagents keeps individual parent chats leaner and prevents context compaction."
+      "Offloading heavy codebase searches or browser checks to subagents isolates their tokens in separate context windows, keeping your main chat smaller, faster, and less likely to hit context compaction."
   },
   chatsSubagents: {
     title: "Chats & Spawned Subagents",
     meaning:
-      "Top-level user conversations in this project alongside background research, browser, or coding subagents they launched.",
+      "Top-level conversations you started in this project alongside background research, browser, or coding subagents they launched.",
     impact:
-      "Subagents run in isolated context windows so heavy codebase searches do not bloat your main chat's prompt cache."
+      "Subagents run in isolated context windows so heavy searches do not bloat your main chat's prompt cache or push it toward context compaction."
   },
   totalTokens: {
     title: "Total Tokens Processed",
     meaning:
-      "Sum of uncached new input tokens, cached context reads, and model output tokens across every planner step.",
+      "Sum of three separate, non-overlapping buckets across every model step: cached reads + uncached new input + generated output. Neither new input nor output tokens are inside the cache count (generated outputs only become cacheable as input history on later steps).",
     impact:
-      "Large SKILL.md files or verbose tool outputs read early get re-read on every subsequent step—keep peak context below the 200k cliff."
+      "Large files, SKILL.md docs, or verbose tool outputs added early get re-read on every following step, multiplying total volume. Keep chats focused and peak context below ~200k to avoid slowdowns, recall loss, and compaction resets."
   },
   cacheHitRatio: {
     title: "Prompt Cache Hit Ratio",
     meaning:
-      "Share of input context served from the prompt cache instead of billed and processed as fresh uncached input.",
+      "Share of total input context served from the prompt cache: cached reads ÷ (cached reads + new input). Output tokens are excluded because generated tokens are never cached on the step they are produced—only prior input context is.",
     impact:
-      "Cached tokens typically cost 75–90% less and prefill faster; >4 min idle gaps, model switches, or context compaction trigger expensive cache misses."
+      "Cached reads typically cost 75–90% less than fresh input and prefill faster (Saved ~$ shows the estimated discount vs. paying full input rates). Idle pauses over ~4–5 min (TTL expiry), model switches, or context compaction break the cache and trigger full-rate re-reads."
   },
   tokensAndCache: {
     title: "Tokens, Peak Context & Cache",
     meaning:
-      "Total tokens processed in this chat (with prompt cache hit %) alongside peak single-step context size and fresh uncached input.",
+      "Total tokens processed in this chat (cached reads + uncached new input + generated output), the share of input served from cache (output excluded), and peak single-step context size. Neither new input nor output is counted inside cached reads.",
     impact:
-      "Crossing 200k–256k peak context degrades recall and triggers prefix compaction, forcing skills and files to be re-read at full uncached cost."
+      "High cache hits cut input cost 75–90% and speed up responses, while crossing ~200k–256k peak context degrades recall and triggers prefix compaction—forcing files and skills to be re-read at full uncached cost."
   },
   activeAgentTime: {
     title: "Active Agent Time",
     meaning:
-      "Wall-clock time the agent spent thinking and running tools (merging parallel tool calls and excluding user idle/approval waits).",
+      "Wall-clock time the agent spent thinking and running tools, excluding your idle and approval pauses. Overlapping parallel tools and concurrent subagents are merged into real wall time, so model + tools can sum higher than the merged total.",
     impact:
-      "Highlights whether latency comes from heavy model reasoning, sequential tool calls that could run in parallel, or slow workflow plugins."
+      "Shows whether slowness comes from model reasoning or tool/command execution—helping you spot sequential tool bottlenecks, slow scripts or MCP servers, or heavier-than-needed models."
   },
   userWaitIdle: {
     title: "User Wait & Idle Time",
     meaning:
-      "Elapsed time between turns or during permission/review pauses when no model step or tool was actively executing.",
+      "Elapsed time between turns or during permission/review pauses when no model step or tool was actively running.",
     impact:
-      "Excluded from Active Agent Time so pauses never skew plugin speed, though idle gaps over ~4–5 minutes can expire the prompt cache TTL."
+      "Kept separate from Active Agent Time so your pauses never skew agent speed metrics, though idle gaps longer than ~4–5 minutes can expire the prompt cache and cause a cache miss on your next message."
   },
   estCost: {
-    title: "Estimated API Equivalent Spend",
+    title: "Estimated API Equivalent Cost",
     meaning:
-      "Estimated USD value of uncached input, cache reads, and output tokens using your configured per-1M model pricing rules.",
+      "Estimated USD across priced models, billed separately for uncached new input (full rate), cached reads (discounted rate), and output tokens (highest rate). Models without a rule in Pricing are excluded from the total and flagged as unpriced.",
     impact:
-      "Reveals which plugins, skills, and model choices consume the most quota/budget; configure custom rates in Pricing for any unpriced models."
+      "Shows which projects, models, plugins, and skills drive budget or subscription rate-limit usage. Open Pricing (or click the unpriced badge) to add custom per-1M rates so totals cover every model."
   }
 };
 

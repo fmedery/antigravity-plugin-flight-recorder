@@ -100,7 +100,8 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
           </div>
           <div className="kpi-value">{fmtK(grandTokens)}</div>
           <div className="kpi-sub">
-            {fmtK(tot.tokens.inputTokens)} new · {fmtK(tot.tokens.outputTokens)} out
+            {fmtK(tot.tokens.cacheReadTokens)} cached · {fmtK(tot.tokens.inputTokens)} new ·{" "}
+            {fmtK(tot.tokens.outputTokens)} out
           </div>
         </div>
         <div className="kpi-card">

@@ -123,6 +123,12 @@ test("Windows AGY project inference, transcript path extraction, .exe/.cmd plugi
     assert.ok(KPI_HELP_COPY[key].meaning.length > 20, `Missing meaning for ${key}`);
     assert.ok(KPI_HELP_COPY[key].impact.length > 20, `Missing impact for ${key}`);
   }
+  assert.match(KPI_HELP_COPY.totalTokens.meaning, /non-overlapping/i);
+  assert.match(KPI_HELP_COPY.totalTokens.meaning, /cache/i);
+  assert.match(KPI_HELP_COPY.totalTokens.meaning, /output/i);
+  assert.match(KPI_HELP_COPY.cacheHitRatio.meaning, /output.*excluded/i);
+  assert.match(KPI_HELP_COPY.cacheHitRatio.impact, /75[–-]90%/);
+  assert.match(KPI_HELP_COPY.cacheHitRatio.impact, /TTL|compaction/i);
 
   // Windows plugin CLI (.exe / .cmd) + multi-dir builtin discovery + Windows transcript paths
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fr-win-test-"));
@@ -491,10 +497,13 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
       );
     }
 
-    // 5. KpiHelpTip explicit CSS anchor + aria-describedby check in UI bundle
+    // 5. KpiHelpTip explicit CSS anchor + toggletip ARIA/popover check in UI bundle
     const uiHtml = fs.readFileSync(uiBundlePath, "utf8");
     assert.match(uiHtml, /positionAnchor/);
-    assert.match(uiHtml, /aria-describedby/);
+    assert.match(uiHtml, /aria-expanded/);
+    assert.match(uiHtml, /popovertargetaction/);
+    assert.match(uiHtml, /Impact for you:/);
+    assert.equal(uiHtml.includes("aria-describedby"), false);
   } finally {
     await client.close().catch(() => {});
     fs.rmSync(isolatedRoot, { recursive: true, force: true });

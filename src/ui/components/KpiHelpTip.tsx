@@ -7,12 +7,34 @@ interface Props {
 
 let hintFallbackRegistered = false;
 
+function hasNativePopover(): boolean {
+  return (
+    typeof HTMLElement !== "undefined" &&
+    Object.hasOwn(HTMLElement.prototype, "popover")
+  );
+}
+
+function escapeAttrSelectorValue(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return value.replace(/([^\w-])/g, "\\$1");
+}
+
 function ensurePopoverHintFallback(): void {
-  if (hintFallbackRegistered || typeof document === "undefined") return;
+  if (
+    hintFallbackRegistered ||
+    typeof document === "undefined" ||
+    !hasNativePopover()
+  ) {
+    return;
+  }
   hintFallbackRegistered = true;
   try {
-    const probe = document.createElement("div") as HTMLDivElement & { popover?: string };
-    probe.setAttribute("popover", "hint");
+    const probe = document.createElement("div") as HTMLDivElement & {
+      popover?: string;
+    };
+    probe.popover = "hint";
     if (probe.popover !== "hint") {
       document.addEventListener(
         "beforetoggle",
@@ -20,9 +42,13 @@ function ensurePopoverHintFallback(): void {
           const e = ev as Event & { newState?: string };
           const target = e.target as (HTMLElement & { popover?: string }) | null;
           if (
+            e.newState === "open" &&
             target &&
             target.getAttribute?.("popover") === "hint" &&
-            e.newState === "open"
+            target.id &&
+            document.querySelector(
+              `[popovertarget="${escapeAttrSelectorValue(target.id)}"]`
+            )
           ) {
             target.popover = "auto";
           }
@@ -40,13 +66,26 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
   const tipId = `kpi-tip-${helpKey}-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const anchorName = `--${tipId}`;
   const info = KPI_HELP_COPY[helpKey];
+
   const [open, setOpen] = useState(false);
-  const [fallbackPos, setFallbackPos] = useState<{ top: number; left: number } | null>(null);
+  const [fallbackPos, setFallbackPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+
   const closeTimerRef = useRef<number | null>(null);
+  const pinnedByClickRef = useRef(false);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<
-    (HTMLDivElement & { showPopover?: (opts?: { source?: HTMLElement | null }) => void; hidePopover?: () => void }) | null
+    | (HTMLDivElement & {
+        showPopover?: (opts?: { source?: HTMLElement | null }) => void;
+        hidePopover?: () => void;
+      })
+    | null
   >(null);
+
+  const supportsPopover = hasNativePopover();
 
   const supportsNativeInterest =
     typeof HTMLButtonElement !== "undefined" &&
@@ -57,19 +96,33 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
     typeof CSS.supports === "function" &&
     CSS.supports("position-area: block-end");
 
-  useEffect(() => {
-    ensurePopoverHintFallback();
+  const cancelScheduledClose = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
   }, []);
 
+  useEffect(() => {
+    ensurePopoverHintFallback();
+    return () => cancelScheduledClose();
+  }, [cancelScheduledClose]);
+
   const updateFallbackPosition = useCallback(() => {
-    if (supportsCssAnchor || !btnRef.current || typeof window === "undefined") return;
+    if (supportsCssAnchor || !btnRef.current || typeof window === "undefined") {
+      return;
+    }
     const rect = btnRef.current.getBoundingClientRect();
-    const tooltipWidth = 272;
+    const tooltipWidth = Math.min(304, window.innerWidth - 16);
     const left = Math.max(
       8,
       Math.min(rect.left - 8, window.innerWidth - tooltipWidth - 8)
     );
-    const top = rect.bottom + 6;
+    const popHeight = popRef.current?.offsetHeight || 168;
+    const fitsBelow = rect.bottom + 6 + popHeight <= window.innerHeight - 8;
+    const fitsAbove = rect.top - 6 - popHeight >= 8;
+    const top =
+      !fitsBelow && fitsAbove ? rect.top - popHeight - 6 : rect.bottom + 6;
     setFallbackPos({ top, left });
   }, [supportsCssAnchor]);
 
@@ -81,7 +134,11 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
       if (typeof e.newState === "string") {
         const isOpen = e.newState === "open";
         setOpen(isOpen);
-        if (isOpen) updateFallbackPosition();
+        if (isOpen) {
+          updateFallbackPosition();
+        } else {
+          pinnedByClickRef.current = false;
+        }
       }
     };
     el.addEventListener("toggle", onToggle);
@@ -89,74 +146,127 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
   }, [updateFallbackPosition]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || supportsCssAnchor || typeof window === "undefined") return;
+    const onReposition = () => updateFallbackPosition();
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
+    return () => {
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
+    };
+  }, [open, supportsCssAnchor, updateFallbackPosition]);
+
+  useEffect(() => {
+    if (!open || supportsPopover || typeof document === "undefined") return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        pinnedByClickRef.current = false;
         setOpen(false);
-        try {
-          popRef.current?.hidePopover?.();
-        } catch {
-          // Ignore if already closed
-        }
+      }
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        pinnedByClickRef.current = false;
+        setOpen(false);
       }
     };
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [open, supportsPopover]);
 
-  const cancelScheduledClose = () => {
-    if (closeTimerRef.current !== null) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  };
-
-  const scheduleClose = () => {
-    cancelScheduledClose();
-    closeTimerRef.current = window.setTimeout(() => {
-      setOpen(false);
-      if (!supportsNativeInterest) {
-        try {
-          popRef.current?.hidePopover?.();
-        } catch {
-          // Ignore
-        }
-      }
-    }, 130);
-  };
-
-  const handleOpen = () => {
+  const openPopoverFallback = useCallback(() => {
     cancelScheduledClose();
     updateFallbackPosition();
-    if (!supportsNativeInterest) {
-      setOpen(true);
+    if (supportsPopover) {
+      let alreadyOpen = false;
       try {
-        popRef.current?.showPopover?.({ source: btnRef.current });
+        alreadyOpen = Boolean(popRef.current?.matches?.(":popover-open"));
       } catch {
+        alreadyOpen = false;
+      }
+      if (!alreadyOpen) {
         try {
-          popRef.current?.showPopover?.();
+          popRef.current?.showPopover?.({ source: btnRef.current });
         } catch {
-          // Ignore if already open or Popover API absent
+          try {
+            popRef.current?.showPopover?.();
+          } catch {
+            // Ignore if already open or Popover API unavailable
+          }
         }
       }
+    } else {
+      setOpen(true);
+    }
+  }, [cancelScheduledClose, supportsPopover, updateFallbackPosition]);
+
+  const closePopoverFallback = useCallback(() => {
+    cancelScheduledClose();
+    pinnedByClickRef.current = false;
+    if (supportsPopover) {
+      try {
+        popRef.current?.hidePopover?.();
+      } catch {
+        // Ignore if already closed
+      }
+    } else {
+      setOpen(false);
+    }
+  }, [cancelScheduledClose, supportsPopover]);
+
+  const handlePointerEnter = () => {
+    if (supportsNativeInterest) return;
+    openPopoverFallback();
+  };
+
+  const handleFocus = () => {
+    if (supportsNativeInterest) return;
+    openPopoverFallback();
+  };
+
+  const handlePointerLeave = () => {
+    if (supportsNativeInterest || pinnedByClickRef.current) return;
+    cancelScheduledClose();
+    closeTimerRef.current = window.setTimeout(() => {
+      closePopoverFallback();
+    }, 160);
+  };
+
+  const handleBlur = (e: React.FocusEvent<HTMLSpanElement>) => {
+    if (supportsNativeInterest) return;
+    const nextTarget = e.relatedTarget as Node | null;
+    if (nextTarget && e.currentTarget.contains(nextTarget)) return;
+    if (nextTarget !== null) {
+      closePopoverFallback();
+      return;
+    }
+    if (!pinnedByClickRef.current) {
+      cancelScheduledClose();
+      closeTimerRef.current = window.setTimeout(() => {
+        closePopoverFallback();
+      }, 160);
     }
   };
 
   return (
     <span
+      ref={wrapRef}
       className="kpi-help-wrap"
-      onMouseEnter={handleOpen}
-      onMouseLeave={scheduleClose}
-      onFocus={handleOpen}
-      onBlur={scheduleClose}
+      onMouseEnter={handlePointerEnter}
+      onMouseLeave={handlePointerLeave}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
     >
       <button
         ref={btnRef}
         type="button"
         className="kpi-help-btn"
-        aria-label={`About ${info.title}`}
+        aria-label={`More about ${info.title}`}
         aria-expanded={open}
-        aria-describedby={tipId}
         style={
           supportsCssAnchor
             ? ({ anchorName } as React.CSSProperties)
@@ -164,7 +274,10 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
         }
         onClick={(e) => {
           e.stopPropagation();
-          handleOpen();
+          if (!supportsNativeInterest) {
+            pinnedByClickRef.current = true;
+            openPopoverFallback();
+          }
         }}
         {...({
           interestfor: tipId,
@@ -180,7 +293,9 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
         ref={popRef}
         id={tipId}
         role="tooltip"
-        className={`kpi-help-popover ${open ? "is-fallback-open" : ""}`}
+        className={`kpi-help-popover ${
+          !supportsPopover && open ? "is-fallback-open" : ""
+        }`}
         style={
           supportsCssAnchor
             ? ({ positionAnchor: anchorName } as React.CSSProperties)
@@ -188,8 +303,8 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
               ? { top: `${fallbackPos.top}px`, left: `${fallbackPos.left}px` }
               : undefined
         }
-        onMouseEnter={handleOpen}
-        onMouseLeave={scheduleClose}
+        onMouseEnter={handlePointerEnter}
+        onMouseLeave={handlePointerLeave}
         {...({ popover: "hint" } as Record<string, string>)}
       >
         <div className="kpi-help-title">{info.title}</div>
@@ -197,7 +312,7 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
           <strong>What it means:</strong> {info.meaning}
         </div>
         <div className="kpi-help-row kpi-help-impact">
-          <strong>Impact:</strong> {info.impact}
+          <strong>Impact for you:</strong> {info.impact}
         </div>
       </div>
     </span>
