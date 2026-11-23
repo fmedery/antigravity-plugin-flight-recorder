@@ -1,18 +1,47 @@
 import React, { useMemo, useState } from "react";
 import type { SkillToolMetric } from "../../shared/types";
-import { fmtDuration, fmtK, fmtUsd } from "../format";
+import {
+  buildErrorTroubleshootingPrompt,
+  describeErrorBadge,
+  fmtDuration,
+  fmtK,
+  fmtUsd
+} from "../format";
+import { ErrorGuidanceBlock } from "./ErrorGuidanceBlock";
 
 interface Props {
   metrics: SkillToolMetric[];
+  scopeLabel?: string;
+  currentConversationId?: string;
+  canSendMessage?: boolean;
+  onSelectChat?: (conversationId: string, stepIndex?: number) => void;
+  onJumpToStep?: (stepIndex: number) => void;
+  onTroubleshootPrompt?: (prompt: string) => void;
 }
 
 type CategoryFilter = "All" | "Skill" | "Tool" | "MCP" | "Subagent";
 type SortField = "compoundedCacheTokens" | "directTokens" | "totalDurationMs" | "calls";
 
-export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
+export const SkillToolMatrix: React.FC<Props> = ({
+  metrics,
+  scopeLabel = "current scope",
+  currentConversationId,
+  canSendMessage = false,
+  onSelectChat,
+  onJumpToStep,
+  onTroubleshootPrompt
+}) => {
   const [filter, setFilter] = useState<CategoryFilter>("All");
   const [sortBy, setSortBy] = useState<SortField>("compoundedCacheTokens");
   const [sortDesc, setSortDesc] = useState(true);
+  const [expandedErrorKeys, setExpandedErrorKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+
+  const hasAnyErrors = useMemo(
+    () => metrics.some((m) => m.errors > 0),
+    [metrics]
+  );
 
   const filtered = useMemo(() => {
     const base =
@@ -41,6 +70,15 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
       setSortBy(field);
       setSortDesc(true);
     }
+  };
+
+  const toggleErrorRow = (key: string) => {
+    setExpandedErrorKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   const categoryColor = (cat: SkillToolMetric["category"]): string => {
@@ -96,7 +134,9 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
           )}
         </div>
         <span style={{ fontSize: 12, color: "var(--txt-tertiary)" }}>
-          Click column headers to sort
+          {hasAnyErrors
+            ? "Click column headers to sort · click red err badges for details"
+            : "Click column headers to sort"}
         </span>
       </div>
 
@@ -105,9 +145,10 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Type</th>
+                <th scope="col">Name</th>
+                <th scope="col">Type</th>
                 <th
+                  scope="col"
                   className="text-right"
                   style={{ cursor: "pointer" }}
                   onClick={() => toggleSort("calls")}
@@ -115,6 +156,7 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
                   Calls {sortBy === "calls" ? (sortDesc ? "↓" : "↑") : ""}
                 </th>
                 <th
+                  scope="col"
                   className="text-right"
                   style={{ cursor: "pointer" }}
                   title="Merged wall-clock time (includes tool argument streaming and execution)"
@@ -123,6 +165,7 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
                   Wall Time {sortBy === "totalDurationMs" ? (sortDesc ? "↓" : "↑") : ""}
                 </th>
                 <th
+                  scope="col"
                   className="text-right"
                   style={{ cursor: "pointer" }}
                   onClick={() => toggleSort("directTokens")}
@@ -130,6 +173,7 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
                   Direct {sortBy === "directTokens" ? (sortDesc ? "↓" : "↑") : ""}
                 </th>
                 <th
+                  scope="col"
                   className="text-right"
                   style={{ cursor: "pointer" }}
                   onClick={() => toggleSort("compoundedCacheTokens")}
@@ -137,7 +181,7 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
                   Compounded Carry{" "}
                   {sortBy === "compoundedCacheTokens" ? (sortDesc ? "↓" : "↑") : ""}
                 </th>
-                <th className="text-right">Est. Cost</th>
+                <th scope="col" className="text-right">Est. Cost</th>
               </tr>
             </thead>
             <tbody>
@@ -155,75 +199,127 @@ export const SkillToolMatrix: React.FC<Props> = ({ metrics }) => {
                       ((m.compoundedCacheTokens + m.directTokens) / maxImpact) * 100
                     )
                   );
+                  const isErrOpen = expandedErrorKeys.has(m.key);
                   return (
-                    <tr key={m.key}>
-                      <td>
-                        <strong>{m.name}</strong>
-                        {m.pluginOrServer && (
-                          <span
-                            style={{
-                              marginLeft: 6,
-                              color: "var(--txt-tertiary)",
-                              fontSize: 12
-                            }}
-                          >
-                            ({m.pluginOrServer})
-                          </span>
-                        )}
-                        {m.errors > 0 && (
-                          <span
-                            className="badge badge-danger"
-                            style={{ marginLeft: 6 }}
-                          >
-                            {m.errors} err
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        <span className={badgeClass(m.category)}>{m.category}</span>
-                      </td>
-                      <td className="text-right tabular">{m.calls}</td>
-                      <td className="text-right tabular">
-                        {fmtDuration(m.totalDurationMs)}
-                      </td>
-                      <td className="text-right tabular">
-                        +{fmtK(m.directTokens)}
-                      </td>
-                      <td className="text-right">
-                        <div
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 8,
-                            justifyContent: "flex-end"
-                          }}
-                        >
+                    <React.Fragment key={m.key}>
+                      <tr>
+                        <td>
+                          <strong>{m.name}</strong>
+                          {m.pluginOrServer && (
+                            <span
+                              style={{
+                                marginLeft: 6,
+                                color: "var(--txt-tertiary)",
+                                fontSize: 12
+                              }}
+                            >
+                              ({m.pluginOrServer})
+                            </span>
+                          )}
+                          {m.errors > 0 && (() => {
+                            const errGuidance = describeErrorBadge(
+                              m.category,
+                              m.errors,
+                              m.name,
+                              m.errorSamples
+                            );
+                            return (
+                              <button
+                                type="button"
+                                className="badge badge-danger badge-btn"
+                                style={{ marginLeft: 6 }}
+                                aria-expanded={isErrOpen}
+                                aria-label={`${m.errors} err on ${m.name} — inspect errors and remediation`}
+                                title={errGuidance.summary}
+                                onClick={() => toggleErrorRow(m.key)}
+                              >
+                                {m.errors} err{" "}
+                                <span aria-hidden="true">
+                                  {isErrOpen ? "▾" : "▸"}
+                                </span>
+                              </button>
+                            );
+                          })()}
+                        </td>
+                        <td>
+                          <span className={badgeClass(m.category)}>{m.category}</span>
+                        </td>
+                        <td className="text-right tabular">{m.calls}</td>
+                        <td className="text-right tabular">
+                          {fmtDuration(m.totalDurationMs)}
+                        </td>
+                        <td className="text-right tabular">
+                          +{fmtK(m.directTokens)}
+                        </td>
+                        <td className="text-right">
                           <div
                             style={{
-                              width: 72,
-                              height: 7,
-                              borderRadius: 99,
-                              background: "var(--bg-tertiary)",
-                              overflow: "hidden"
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 8,
+                              justifyContent: "flex-end"
                             }}
                           >
                             <div
                               style={{
-                                width: `${pct}%`,
-                                height: "100%",
-                                background: categoryColor(m.category)
+                                width: 72,
+                                height: 7,
+                                borderRadius: 99,
+                                background: "var(--bg-tertiary)",
+                                overflow: "hidden"
                               }}
-                            />
+                            >
+                              <div
+                                style={{
+                                  width: `${pct}%`,
+                                  height: "100%",
+                                  background: categoryColor(m.category)
+                                }}
+                              />
+                            </div>
+                            <span className="tabular" style={{ minWidth: 46, fontWeight: 600 }}>
+                              +{fmtK(m.compoundedCacheTokens)}
+                            </span>
                           </div>
-                          <span className="tabular" style={{ minWidth: 46, fontWeight: 600 }}>
-                            +{fmtK(m.compoundedCacheTokens)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="text-right tabular">
-                        {fmtUsd(m.estimatedCostUsd)}
-                      </td>
-                    </tr>
+                        </td>
+                        <td className="text-right tabular">
+                          {fmtUsd(m.estimatedCostUsd)}
+                        </td>
+                      </tr>
+                      {isErrOpen && m.errors > 0 && (
+                        <tr className="err-detail-row">
+                          <td colSpan={7}>
+                            <ErrorGuidanceBlock
+                              title={`${m.category}: ${m.name}`}
+                              kind={m.category}
+                              itemName={m.name}
+                              errorCount={m.errors}
+                              samples={m.errorSamples}
+                              collapsibleSamples={false}
+                              currentConversationId={currentConversationId}
+                              canSendMessage={canSendMessage}
+                              onSelectChat={onSelectChat}
+                              onJumpToStep={onJumpToStep}
+                              onTroubleshoot={
+                                onTroubleshootPrompt
+                                  ? () =>
+                                      onTroubleshootPrompt(
+                                        buildErrorTroubleshootingPrompt({
+                                          name: m.name,
+                                          kind: m.category,
+                                          parentName: m.pluginOrServer ?? undefined,
+                                          errorCount: m.errors,
+                                          scopeLabel,
+                                          samples: m.errorSamples
+                                        })
+                                      )
+                                  : undefined
+                              }
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })
               )}

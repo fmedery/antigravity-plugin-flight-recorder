@@ -1456,3 +1456,182 @@ test("multi-hop subagents (root -> sub1 -> sub2) include grandchild in buildConv
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("computeScopeSkillEfficiency and mergePluginSkillMetrics capture, deduplicate, and cap errorSamples on children and parents", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fr-eff-err-"));
+  try {
+    const pluginsRoot = path.join(tmp, ".gemini", "config", "plugins");
+    const spSkill = path.join(pluginsRoot, "superpowers", "skills", "test-driven-development");
+    const spExecScripts = path.join(pluginsRoot, "superpowers", "skills", "executing-plans", "scripts");
+    fs.mkdirSync(spSkill, { recursive: true });
+    fs.mkdirSync(spExecScripts, { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginsRoot, "superpowers", "plugin.json"),
+      JSON.stringify({ name: "superpowers", displayName: "Superpowers" })
+    );
+    fs.writeFileSync(
+      path.join(spSkill, "SKILL.md"),
+      "---\nname: test-driven-development\n---\nTDD."
+    );
+    fs.writeFileSync(path.join(spExecScripts, "task-start"), "#!/bin/sh\n");
+
+    clearInstalledPluginsCache();
+    const reg = discoverInstalledPlugins(pluginsRoot);
+    const t0 = Date.parse("2026-11-23T14:00:00Z");
+
+    const makeErrTool = (
+      id: number,
+      stepIndex: number,
+      overrides: Partial<ConversationEfficiencyInput["toolCalls"][number]>
+    ): ConversationEfficiencyInput["toolCalls"][number] => ({
+      id,
+      stepIndex,
+      plannerStepIndex: 1,
+      turnIndex: 0,
+      toolCallId: `tc-${id}`,
+      toolName: "run_command",
+      category: "command",
+      mcpServer: null,
+      skillName: null,
+      skillPlugin: null,
+      targetPath: null,
+      childConversationId: null,
+      startedAtMs: t0 + id * 1000,
+      completedAtMs: t0 + id * 1000 + 500,
+      durationMs: 500,
+      argsPreview: "",
+      resultBytes: 100,
+      estResultTokens: 25,
+      attributedInputTokens: 100,
+      compoundedCacheTokens: 200,
+      isError: true,
+      errorPreview: "Command exited with code 1.",
+      ...overrides
+    });
+
+    const scriptPath = path.join(spExecScripts, "task-start");
+    const convs: ConversationEfficiencyInput[] = [
+      {
+        conversationId: "conv-err-1",
+        title: "Build music sequencer",
+        parentConversationId: null,
+        activeMs: 10_000,
+        hasTokenTelemetry: true,
+        filesTouched: [],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: "gemini-2.5-pro",
+            createdAtMs: t0,
+            completedAtMs: t0 + 2000,
+            modelDurationMs: 2000,
+            inputTokens: 1000,
+            cacheReadTokens: 0,
+            outputTokens: 200,
+            totalContextTokens: 1000,
+            cacheHitRatio: 0,
+            isCacheMiss: false,
+            cacheMissCause: null,
+            thinkingChars: 100,
+            contentChars: 50,
+            toolCallCount: 8,
+            status: "DONE",
+            attributedSummary: ""
+          }
+        ],
+        toolCalls: [
+          // 5 errors across 4 distinct messages on task-start (one repeated twice)
+          makeErrTool(1, 2, {
+            argsPreview: `bash ${scriptPath} plan.md 1`,
+            errorPreview: "Command exited with code 1.\nPlan file locked"
+          }),
+          makeErrTool(2, 3, {
+            argsPreview: `bash ${scriptPath} plan.md 2`,
+            errorPreview: "Command exited with code 1.   Plan file locked"
+          }),
+          makeErrTool(3, 4, {
+            argsPreview: `bash ${scriptPath} plan.md 3`,
+            errorPreview: "Command exited with code 2.\nInvalid task id"
+          }),
+          makeErrTool(4, 5, {
+            argsPreview: `bash ${scriptPath} plan.md 4`,
+            errorPreview: "Command exited with code 3.\nMissing dependency"
+          }),
+          makeErrTool(5, 6, {
+            argsPreview: `bash ${scriptPath} plan.md 5`,
+            errorPreview: "Command exited with code 4.\nBranch dirty"
+          }),
+          // 3 distinct errors on test-driven-development SubSkill
+          makeErrTool(6, 7, {
+            toolName: "read_file",
+            category: "skill",
+            skillName: "test-driven-development",
+            skillPlugin: "superpowers",
+            targetPath: path.join(spSkill, "writing-good-tests.md"),
+            errorPreview: "ENOENT: no such file writing-good-tests.md"
+          }),
+          makeErrTool(7, 8, {
+            toolName: "read_file",
+            category: "skill",
+            skillName: "test-driven-development",
+            skillPlugin: "superpowers",
+            targetPath: path.join(spSkill, "extra-1.md"),
+            errorPreview: "ENOENT: no such file extra-1.md"
+          }),
+          makeErrTool(8, 9, {
+            toolName: "read_file",
+            category: "skill",
+            skillName: "test-driven-development",
+            skillPlugin: "superpowers",
+            targetPath: path.join(spSkill, "extra-2.md"),
+            errorPreview: "Permission denied extra-2.md"
+          })
+        ]
+      }
+    ];
+
+    const eff = computeScopeSkillEfficiency(convs, DEFAULT_PRICING_RULES, {
+      registry: reg
+    });
+    assert.equal(eff.pluginSkillMetrics.length, 1);
+    const sp = eff.pluginSkillMetrics[0];
+    assert.equal(sp.errors, 8);
+    assert.ok(sp.errorSamples);
+    assert.equal(sp.errorSamples.length, 5, "Parent errorSamples must cap at 5");
+    assert.equal(sp.errorSamples[0].count, 2, "Highest-count deduplicated sample must sort first");
+    assert.equal(sp.errorSamples[0].message, "Command exited with code 1. Plan file locked");
+    assert.equal(sp.errorSamples[0].conversationId, "conv-err-1");
+    assert.equal(sp.errorSamples[0].conversationTitle, "Build music sequencer");
+    assert.equal(sp.errorSamples[0].stepIndex, 2);
+
+    const cliChild = sp.children.find((c) => c.name === "task-start");
+    assert.ok(cliChild);
+    assert.equal(cliChild.errors, 5);
+    assert.ok(cliChild.errorSamples);
+    assert.equal(cliChild.errorSamples.length, 3, "Child errorSamples must cap at 3");
+    assert.equal(cliChild.errorSamples[0].count, 2);
+
+    const skillChild = sp.children.find((c) => c.name === "test-driven-development");
+    assert.ok(skillChild);
+    assert.equal(skillChild.errors, 3);
+    assert.equal(
+      skillChild.errorSamples?.[0]?.target,
+      "test-driven-development/writing-good-tests.md"
+    );
+
+    // Merge across two project payloads and verify sample counts aggregate
+    const merged = mergePluginSkillMetrics([
+      { projectPath: "/proj/a", metrics: eff.pluginSkillMetrics },
+      { projectPath: "/proj/b", metrics: eff.pluginSkillMetrics }
+    ]);
+    assert.equal(merged[0].errors, 16);
+    assert.equal(merged[0].errorSamples?.[0]?.count, 4);
+    const mergedCli = merged[0].children.find((c) => c.name === "task-start");
+    assert.equal(mergedCli?.errorSamples?.[0]?.count, 4);
+    assert.equal(mergedCli?.errorSamples?.length, 3);
+  } finally {
+    clearInstalledPluginsCache();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

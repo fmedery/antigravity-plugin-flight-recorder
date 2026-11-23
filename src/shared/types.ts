@@ -158,6 +158,20 @@ export interface TurnRecord {
   cacheHitRatio: number;
 }
 
+export type PluginSkillChildKind = "SubSkill" | "MCP" | "CLI" | "Reference";
+
+export interface ToolErrorSample {
+  message: string;
+  toolName: string;
+  target: string | null;
+  count: number;
+  conversationId?: string;
+  conversationTitle?: string;
+  stepIndex?: number;
+  childName?: string;
+  childKind?: PluginSkillChildKind;
+}
+
 export interface SkillToolMetric {
   key: string;
   name: string;
@@ -165,6 +179,7 @@ export interface SkillToolMetric {
   pluginOrServer: string | null;
   calls: number;
   errors: number;
+  errorSamples?: ToolErrorSample[];
   totalDurationMs: number;
   resultBytes: number;
   directTokens: number;
@@ -172,14 +187,13 @@ export interface SkillToolMetric {
   estimatedCostUsd: number | null;
 }
 
-export type PluginSkillChildKind = "SubSkill" | "MCP" | "CLI" | "Reference";
-
 export interface PluginSkillChildMetric {
   key: string;
   name: string;
   kind: PluginSkillChildKind;
   calls: number;
   errors: number;
+  errorSamples?: ToolErrorSample[];
   drivenActiveMs: number;
   drivenCostUsd: number | null;
   instructionTokens: number;
@@ -196,6 +210,7 @@ export interface PluginSkillMetric {
   kind: "Plugin" | "Skill";
   calls: number;
   errors: number;
+  errorSamples?: ToolErrorSample[];
   totalDurationMs: number;
   drivenActiveMs: number;
   timeShare: number;

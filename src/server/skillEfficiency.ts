@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isWindowsPath, pathBaseName, pathDirName } from "../shared/paths.js";
+import {
+  isWindowsPath,
+  pathBaseName,
+  pathDirName,
+  pathTailSegments
+} from "../shared/paths.js";
 import type {
   PluginSkillChildKind,
   ToolCallRecord
@@ -518,17 +523,62 @@ import type {
   ModelPricingRule,
   PlannerStepRecord,
   PluginSkillChildMetric,
-  PluginSkillMetric
+  PluginSkillMetric,
+  ToolErrorSample
 } from "../shared/types.js";
 
 export interface ConversationEfficiencyInput {
   conversationId: string;
+  title?: string;
   parentConversationId: string | null;
   activeMs: number;
   hasTokenTelemetry: boolean;
   plannerSteps: Array<Omit<PlannerStepRecord, "estimatedCostUsd">>;
   toolCalls: ToolCallRecord[];
   filesTouched: FileTouchRecord[];
+}
+
+export function formatErrorSampleTarget(
+  tc: Pick<ToolCallRecord, "targetPath" | "argsPreview">
+): string | null {
+  if (tc.targetPath) {
+    return pathTailSegments(tc.targetPath, 2) || pathBaseName(tc.targetPath);
+  }
+  const preview = (tc.argsPreview || "").trim().replace(/\s+/g, " ");
+  return preview ? preview.slice(0, 90) : null;
+}
+
+export function normalizeErrorSampleMessage(
+  raw: string | null | undefined
+): string {
+  const clean = (raw || "").trim().replace(/\s+/g, " ").slice(0, 180);
+  return clean || "Tool reported an execution error.";
+}
+
+export function addErrorSample(
+  map: Map<string, ToolErrorSample>,
+  sample: ToolErrorSample,
+  includeChildInKey = true
+): void {
+  const key = includeChildInKey
+    ? `${sample.childName ?? ""}|${sample.toolName}|${sample.message.toLowerCase()}`
+    : `${sample.toolName}|${sample.message.toLowerCase()}`;
+  const existing = map.get(key);
+  if (existing) {
+    existing.count += sample.count;
+  } else {
+    map.set(key, { ...sample });
+  }
+}
+
+export function finalizeErrorSamples(
+  map: Map<string, ToolErrorSample>,
+  max: number
+): ToolErrorSample[] {
+  if (map.size === 0) return [];
+  return Array.from(map.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, max);
 }
 
 export interface ScopeEfficiencyResult {
@@ -643,6 +693,7 @@ interface ChildAccumulator {
   kind: PluginSkillChildMetric["kind"];
   calls: number;
   errors: number;
+  errorSamples: Map<string, ToolErrorSample>;
   intervals: TimeInterval[];
   unplacedDrivenMs: number;
   drivenCostKnown: boolean;
@@ -660,6 +711,7 @@ interface ParentAccumulator {
   kind: "Plugin" | "Skill";
   calls: number;
   errors: number;
+  errorSamples: Map<string, ToolErrorSample>;
   toolIntervals: TimeInterval[];
   unplacedToolMs: number;
   drivenIntervals: TimeInterval[];
@@ -812,6 +864,7 @@ export function computeScopeSkillEfficiency(
         kind: hit.parentKind,
         calls: 0,
         errors: 0,
+        errorSamples: new Map<string, ToolErrorSample>(),
         toolIntervals: [],
         unplacedToolMs: 0,
         drivenIntervals: [],
@@ -846,6 +899,7 @@ export function computeScopeSkillEfficiency(
         kind: hit.childKind,
         calls: 0,
         errors: 0,
+        errorSamples: new Map<string, ToolErrorSample>(),
         intervals: [],
         unplacedDrivenMs: 0,
         drivenCostKnown: false,
@@ -912,6 +966,19 @@ export function computeScopeSkillEfficiency(
       if (tc.isError) {
         p.errors += 1;
         ch.errors += 1;
+        const sample: ToolErrorSample = {
+          message: normalizeErrorSampleMessage(tc.errorPreview),
+          toolName: tc.toolName,
+          target: formatErrorSampleTarget(tc),
+          count: 1,
+          ...(c.conversationId ? { conversationId: c.conversationId } : {}),
+          ...(c.title ? { conversationTitle: c.title } : {}),
+          stepIndex: tc.stepIndex,
+          childName: hit.childName,
+          childKind: hit.childKind
+        };
+        addErrorSample(ch.errorSamples, sample);
+        addErrorSample(p.errorSamples, sample);
       }
       if (tc.targetPath) {
         p.targetPaths.add(tc.targetPath);
@@ -1228,12 +1295,14 @@ export function computeScopeSkillEfficiency(
             (mergeIntervalsMs(ch.intervals) + ch.unplacedDrivenMs) * timeScale
           );
           const chTotalTok = ch.instructionTokens + ch.executionTokens;
+          const childSamples = finalizeErrorSamples(ch.errorSamples, 3);
           return {
             key: ch.key,
             name: ch.name,
             kind: ch.kind,
             calls: ch.calls,
             errors: ch.errors,
+            ...(childSamples.length > 0 ? { errorSamples: childSamples } : {}),
             drivenActiveMs: chDrivenMs,
             drivenCostUsd: ch.drivenCostKnown ? ch.drivenCostAcc : null,
             instructionTokens: ch.instructionTokens,
@@ -1266,6 +1335,7 @@ export function computeScopeSkillEfficiency(
       );
 
       const warnings = Array.from(p.warnings);
+      const parentSamples = finalizeErrorSamples(p.errorSamples, 5);
       const timeShare =
         effectiveScopeActiveMs > 0
           ? Math.min(1, drivenActiveMs / effectiveScopeActiveMs)
@@ -1285,6 +1355,7 @@ export function computeScopeSkillEfficiency(
         kind: p.kind,
         calls: p.calls,
         errors: p.errors,
+        ...(parentSamples.length > 0 ? { errorSamples: parentSamples } : {}),
         totalDurationMs: rawToolMs,
         drivenActiveMs,
         timeShare,
@@ -1828,6 +1899,7 @@ export function mergePluginSkillMetrics(
       kind: "Plugin" | "Skill";
       calls: number;
       errors: number;
+      errorSamplesMap: Map<string, ToolErrorSample>;
       totalDurationMs: number;
       drivenActiveMs: number;
       anyDrivenCost: boolean;
@@ -1841,7 +1913,14 @@ export function mergePluginSkillMetrics(
       totalTokens: number;
       warnings: Set<string>;
       targetPaths: Set<string>;
-      childrenMap: Map<string, PluginSkillChildMetric & { anyCost: boolean; costSum: number }>;
+      childrenMap: Map<
+        string,
+        PluginSkillChildMetric & {
+          anyCost: boolean;
+          costSum: number;
+          errorSamplesMap: Map<string, ToolErrorSample>;
+        }
+      >;
       chatCount: number;
       projects: Set<string>;
     }
@@ -1858,6 +1937,7 @@ export function mergePluginSkillMetrics(
         kind: m.kind,
         calls: 0,
         errors: 0,
+        errorSamplesMap: new Map<string, ToolErrorSample>(),
         totalDurationMs: 0,
         drivenActiveMs: 0,
         anyDrivenCost: false,
@@ -1878,6 +1958,9 @@ export function mergePluginSkillMetrics(
 
       cur.calls += m.calls;
       cur.errors += m.errors;
+      for (const s of m.errorSamples ?? []) {
+        addErrorSample(cur.errorSamplesMap, s);
+      }
       cur.totalDurationMs += m.totalDurationMs;
       cur.drivenActiveMs += m.drivenActiveMs;
       if (m.drivenCostUsd !== null) {
@@ -1901,7 +1984,9 @@ export function mergePluginSkillMetrics(
 
       for (const ch of m.children) {
         const existingCh = cur.childrenMap.get(ch.key) ?? {
-          ...ch,
+          key: ch.key,
+          name: ch.name,
+          kind: ch.kind,
           calls: 0,
           errors: 0,
           drivenActiveMs: 0,
@@ -1913,10 +1998,14 @@ export function mergePluginSkillMetrics(
           isUnusedLoad: false,
           targetPaths: [],
           anyCost: false,
-          costSum: 0
+          costSum: 0,
+          errorSamplesMap: new Map<string, ToolErrorSample>()
         };
         existingCh.calls += ch.calls;
         existingCh.errors += ch.errors;
+        for (const s of ch.errorSamples ?? []) {
+          addErrorSample(existingCh.errorSamplesMap, s);
+        }
         existingCh.drivenActiveMs += ch.drivenActiveMs;
         existingCh.instructionTokens += ch.instructionTokens;
         existingCh.executionTokens += ch.executionTokens;
@@ -1961,11 +2050,15 @@ export function mergePluginSkillMetrics(
       const estimatedCostUsd = e.anyEstCost ? e.estCostSum : drivenCostUsd;
 
       const children: PluginSkillChildMetric[] = Array.from(e.childrenMap.values())
-        .map(({ anyCost, costSum, ...rest }) => ({
-          ...rest,
-          drivenActiveMs: Math.round(rest.drivenActiveMs * timeScale),
-          drivenCostUsd: anyCost ? costSum : null
-        }))
+        .map(({ anyCost, costSum, errorSamplesMap, ...rest }) => {
+          const chSamples = finalizeErrorSamples(errorSamplesMap, 3);
+          return {
+            ...rest,
+            drivenActiveMs: Math.round(rest.drivenActiveMs * timeScale),
+            drivenCostUsd: anyCost ? costSum : null,
+            ...(chSamples.length > 0 ? { errorSamples: chSamples } : {})
+          };
+        })
         .sort(
           (a, b) =>
             (b.drivenCostUsd ?? -1) - (a.drivenCostUsd ?? -1) ||
@@ -1988,12 +2081,14 @@ export function mergePluginSkillMetrics(
       );
 
       const warnings = Array.from(e.warnings);
+      const mergedSamples = finalizeErrorSamples(e.errorSamplesMap, 5);
       return {
         id: e.id,
         name: e.name,
         kind: e.kind,
         calls: e.calls,
         errors: e.errors,
+        ...(mergedSamples.length > 0 ? { errorSamples: mergedSamples } : {}),
         totalDurationMs: e.totalDurationMs,
         drivenActiveMs,
         timeShare: denomActiveMs > 0 ? Math.min(1, drivenActiveMs / denomActiveMs) : 0,

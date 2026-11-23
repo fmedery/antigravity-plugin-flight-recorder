@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { pathTailSegments } from "../../shared/paths";
 import type {
   PlannerStepRecord,
@@ -255,6 +255,12 @@ export const TimelineWaterfall: React.FC<Props> = ({
   }, [turns, plannerSteps, toolCalls]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (highlightStepIndex !== undefined && highlightStepIndex !== null) {
+      setSelectedId(null);
+    }
+  }, [highlightStepIndex]);
 
   const selectedItem = useMemo(() => {
     if (highlightStepIndex !== undefined && highlightStepIndex !== null) {

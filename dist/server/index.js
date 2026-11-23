@@ -16826,6 +16826,10 @@ function pathJoin(dir, child) {
   let sep = isWindowsPath(dir) && dir.includes("\\") ? "\\" : "/", base = dir.replace(/[\\/]+$/, ""), next = child.replace(/^[\\/]+/, "");
   return base ? `${base}${sep}${next}` : `${sep}${next}`;
 }
+function pathTailSegments(p2, count = 2) {
+  let clean = stripTrailingSeparators((p2 || "").trim());
+  return clean ? clean.split(/[\\/]+/).filter(Boolean).slice(-count).join("/") : "";
+}
 
 // src/server/analytics.ts
 import fs3 from "node:fs";
@@ -17126,6 +17130,22 @@ function resolveToolPluginOrSkill(tc, registry2) {
     kind: hit.parentKind
   } : null;
 }
+function formatErrorSampleTarget(tc) {
+  if (tc.targetPath)
+    return pathTailSegments(tc.targetPath, 2) || pathBaseName(tc.targetPath);
+  let preview = (tc.argsPreview || "").trim().replace(/\s+/g, " ");
+  return preview ? preview.slice(0, 90) : null;
+}
+function normalizeErrorSampleMessage(raw) {
+  return (raw || "").trim().replace(/\s+/g, " ").slice(0, 180) || "Tool reported an execution error.";
+}
+function addErrorSample(map2, sample, includeChildInKey = !0) {
+  let key = includeChildInKey ? `${sample.childName ?? ""}|${sample.toolName}|${sample.message.toLowerCase()}` : `${sample.toolName}|${sample.message.toLowerCase()}`, existing = map2.get(key);
+  existing ? existing.count += sample.count : map2.set(key, { ...sample });
+}
+function finalizeErrorSamples(map2, max) {
+  return map2.size === 0 ? [] : Array.from(map2.values()).sort((a, b) => b.count - a.count).slice(0, max);
+}
 function mergeIntervalsMs(intervals) {
   if (intervals.length === 0) return 0;
   let sorted = intervals.filter((iv) => iv.end >= iv.start && iv.start > 0).sort((a, b) => a.start - b.start);
@@ -17240,6 +17260,7 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
       kind: hit.parentKind,
       calls: 0,
       errors: 0,
+      errorSamples: /* @__PURE__ */ new Map(),
       toolIntervals: [],
       unplacedToolMs: 0,
       drivenIntervals: [],
@@ -17265,6 +17286,7 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
       kind: hit.childKind,
       calls: 0,
       errors: 0,
+      errorSamples: /* @__PURE__ */ new Map(),
       intervals: [],
       unplacedDrivenMs: 0,
       drivenCostKnown: !1,
@@ -17287,7 +17309,22 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
       let hit = hitMap.get(tc);
       if (!hit) continue;
       let p2 = getOrCreateParent(hit), ch = getOrCreateChild(p2, hit);
-      p2.calls += 1, ch.calls += 1, p2.chatIds.add(rootConvById.get(c.conversationId) ?? c.conversationId), tc.isError && (p2.errors += 1, ch.errors += 1), tc.targetPath && (p2.targetPaths.add(tc.targetPath), ch.targetPaths.add(tc.targetPath)), tc.startedAtMs !== null && tc.startedAtMs > 0 ? p2.toolIntervals.push({
+      if (p2.calls += 1, ch.calls += 1, p2.chatIds.add(rootConvById.get(c.conversationId) ?? c.conversationId), tc.isError) {
+        p2.errors += 1, ch.errors += 1;
+        let sample = {
+          message: normalizeErrorSampleMessage(tc.errorPreview),
+          toolName: tc.toolName,
+          target: formatErrorSampleTarget(tc),
+          count: 1,
+          ...c.conversationId ? { conversationId: c.conversationId } : {},
+          ...c.title ? { conversationTitle: c.title } : {},
+          stepIndex: tc.stepIndex,
+          childName: hit.childName,
+          childKind: hit.childKind
+        };
+        addErrorSample(ch.errorSamples, sample), addErrorSample(p2.errorSamples, sample);
+      }
+      tc.targetPath && (p2.targetPaths.add(tc.targetPath), ch.targetPaths.add(tc.targetPath)), tc.startedAtMs !== null && tc.startedAtMs > 0 ? p2.toolIntervals.push({
         start: tc.startedAtMs,
         end: Math.max(tc.startedAtMs, tc.completedAtMs ?? tc.startedAtMs + tc.durationMs)
       }) : p2.unplacedToolMs += tc.durationMs;
@@ -17404,13 +17441,14 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
       let drivenCostUsd = p2.drivenCostKnown ? p2.drivenCostAcc : p2.contextCostKnown ? p2.contextCostAcc : null, estimatedCostUsd = p2.contextCostKnown ? p2.contextCostAcc : drivenCostUsd, children = Array.from(p2.children.values()).map((ch) => {
         let chDrivenMs = Math.round(
           (mergeIntervalsMs(ch.intervals) + ch.unplacedDrivenMs) * timeScale
-        ), chTotalTok = ch.instructionTokens + ch.executionTokens;
+        ), chTotalTok = ch.instructionTokens + ch.executionTokens, childSamples = finalizeErrorSamples(ch.errorSamples, 3);
         return {
           key: ch.key,
           name: ch.name,
           kind: ch.kind,
           calls: ch.calls,
           errors: ch.errors,
+          ...childSamples.length > 0 ? { errorSamples: childSamples } : {},
           drivenActiveMs: chDrivenMs,
           drivenCostUsd: ch.drivenCostKnown ? ch.drivenCostAcc : null,
           instructionTokens: ch.instructionTokens,
@@ -17429,13 +17467,14 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
         totalTokens,
         unusedChildren,
         dupChildren
-      ), warnings = Array.from(p2.warnings), timeShare = effectiveScopeActiveMs > 0 ? Math.min(1, drivenActiveMs / effectiveScopeActiveMs) : 0, costShare = scopeCostUsd !== null && scopeCostUsd > 0 && drivenCostUsd !== null ? Math.min(1, drivenCostUsd / scopeCostUsd) : null, tokenShare = scopeContextTokens > 0 ? Math.min(1, totalTokens / scopeContextTokens) : 0;
+      ), warnings = Array.from(p2.warnings), parentSamples = finalizeErrorSamples(p2.errorSamples, 5), timeShare = effectiveScopeActiveMs > 0 ? Math.min(1, drivenActiveMs / effectiveScopeActiveMs) : 0, costShare = scopeCostUsd !== null && scopeCostUsd > 0 && drivenCostUsd !== null ? Math.min(1, drivenCostUsd / scopeCostUsd) : null, tokenShare = scopeContextTokens > 0 ? Math.min(1, totalTokens / scopeContextTokens) : 0;
       return {
         id: p2.id,
         name: p2.name,
         kind: p2.kind,
         calls: p2.calls,
         errors: p2.errors,
+        ...parentSamples.length > 0 ? { errorSamples: parentSamples } : {},
         totalDurationMs: rawToolMs,
         drivenActiveMs,
         timeShare,
@@ -17777,6 +17816,7 @@ function mergePluginSkillMetrics(projectLists, globalTotals) {
         kind: m2.kind,
         calls: 0,
         errors: 0,
+        errorSamplesMap: /* @__PURE__ */ new Map(),
         totalDurationMs: 0,
         drivenActiveMs: 0,
         anyDrivenCost: !1,
@@ -17794,12 +17834,17 @@ function mergePluginSkillMetrics(projectLists, globalTotals) {
         chatCount: 0,
         projects: /* @__PURE__ */ new Set()
       };
-      cur.calls += m2.calls, cur.errors += m2.errors, cur.totalDurationMs += m2.totalDurationMs, cur.drivenActiveMs += m2.drivenActiveMs, m2.drivenCostUsd !== null && (cur.anyDrivenCost = !0, cur.drivenCostSum += m2.drivenCostUsd), m2.estimatedCostUsd !== null && (cur.anyEstCost = !0, cur.estCostSum += m2.estimatedCostUsd), cur.instructionTokens += m2.instructionTokens, cur.executionTokens += m2.executionTokens, cur.directTokens += m2.directTokens, cur.compoundedCacheTokens += m2.compoundedCacheTokens, cur.totalTokens += m2.totalTokens, cur.chatCount += m2.chatCount, cur.projects.add(projectPath);
+      cur.calls += m2.calls, cur.errors += m2.errors;
+      for (let s of m2.errorSamples ?? [])
+        addErrorSample(cur.errorSamplesMap, s);
+      cur.totalDurationMs += m2.totalDurationMs, cur.drivenActiveMs += m2.drivenActiveMs, m2.drivenCostUsd !== null && (cur.anyDrivenCost = !0, cur.drivenCostSum += m2.drivenCostUsd), m2.estimatedCostUsd !== null && (cur.anyEstCost = !0, cur.estCostSum += m2.estimatedCostUsd), cur.instructionTokens += m2.instructionTokens, cur.executionTokens += m2.executionTokens, cur.directTokens += m2.directTokens, cur.compoundedCacheTokens += m2.compoundedCacheTokens, cur.totalTokens += m2.totalTokens, cur.chatCount += m2.chatCount, cur.projects.add(projectPath);
       for (let w2 of m2.warnings) cur.warnings.add(w2);
       for (let tp of m2.targetPaths) cur.targetPaths.add(tp);
       for (let ch of m2.children) {
         let existingCh = cur.childrenMap.get(ch.key) ?? {
-          ...ch,
+          key: ch.key,
+          name: ch.name,
+          kind: ch.kind,
           calls: 0,
           errors: 0,
           drivenActiveMs: 0,
@@ -17811,9 +17856,13 @@ function mergePluginSkillMetrics(projectLists, globalTotals) {
           isUnusedLoad: !1,
           targetPaths: [],
           anyCost: !1,
-          costSum: 0
+          costSum: 0,
+          errorSamplesMap: /* @__PURE__ */ new Map()
         };
-        existingCh.calls += ch.calls, existingCh.errors += ch.errors, existingCh.drivenActiveMs += ch.drivenActiveMs, existingCh.instructionTokens += ch.instructionTokens, existingCh.executionTokens += ch.executionTokens, existingCh.totalTokens += ch.totalTokens, existingCh.duplicateReads += ch.duplicateReads, existingCh.isUnusedLoad = existingCh.isUnusedLoad || ch.isUnusedLoad, existingCh.targetPaths = Array.from(
+        existingCh.calls += ch.calls, existingCh.errors += ch.errors;
+        for (let s of ch.errorSamples ?? [])
+          addErrorSample(existingCh.errorSamplesMap, s);
+        existingCh.drivenActiveMs += ch.drivenActiveMs, existingCh.instructionTokens += ch.instructionTokens, existingCh.executionTokens += ch.executionTokens, existingCh.totalTokens += ch.totalTokens, existingCh.duplicateReads += ch.duplicateReads, existingCh.isUnusedLoad = existingCh.isUnusedLoad || ch.isUnusedLoad, existingCh.targetPaths = Array.from(
           /* @__PURE__ */ new Set([...existingCh.targetPaths, ...ch.targetPaths])
         ).slice(0, 8), ch.drivenCostUsd !== null && (existingCh.anyCost = !0, existingCh.costSum += ch.drivenCostUsd), cur.childrenMap.set(ch.key, existingCh);
       }
@@ -17821,11 +17870,15 @@ function mergePluginSkillMetrics(projectLists, globalTotals) {
     }
   let denomActiveMs = globalTotals && globalTotals.activeMs > 0 ? globalTotals.activeMs : sumMergedDrivenMs, denomCostUsd = globalTotals?.estimatedCostUsd ?? null, denomContextTok = globalTotals && globalTotals.contextTokens > 0 ? globalTotals.contextTokens : sumMergedTokens, timeScale = denomActiveMs > 0 && sumMergedDrivenMs > denomActiveMs ? denomActiveMs / sumMergedDrivenMs : 1;
   return Array.from(map2.values()).map((e) => {
-    let drivenActiveMs = Math.round(e.drivenActiveMs * timeScale), drivenCostUsd = e.anyDrivenCost ? e.drivenCostSum : null, estimatedCostUsd = e.anyEstCost ? e.estCostSum : drivenCostUsd, children = Array.from(e.childrenMap.values()).map(({ anyCost, costSum, ...rest }) => ({
-      ...rest,
-      drivenActiveMs: Math.round(rest.drivenActiveMs * timeScale),
-      drivenCostUsd: anyCost ? costSum : null
-    })).sort(
+    let drivenActiveMs = Math.round(e.drivenActiveMs * timeScale), drivenCostUsd = e.anyDrivenCost ? e.drivenCostSum : null, estimatedCostUsd = e.anyEstCost ? e.estCostSum : drivenCostUsd, children = Array.from(e.childrenMap.values()).map(({ anyCost, costSum, errorSamplesMap, ...rest }) => {
+      let chSamples = finalizeErrorSamples(errorSamplesMap, 3);
+      return {
+        ...rest,
+        drivenActiveMs: Math.round(rest.drivenActiveMs * timeScale),
+        drivenCostUsd: anyCost ? costSum : null,
+        ...chSamples.length > 0 ? { errorSamples: chSamples } : {}
+      };
+    }).sort(
       (a, b) => (b.drivenCostUsd ?? -1) - (a.drivenCostUsd ?? -1) || b.drivenActiveMs - a.drivenActiveMs || b.totalTokens - a.totalTokens || a.name.localeCompare(b.name)
     ), unusedChildren = children.filter((c) => c.isUnusedLoad).map((c) => c.name), dupChildren = children.filter((c) => c.duplicateReads > 0).map((c) => ({ name: c.name, dup: c.duplicateReads })), prescription = buildPrescription(
       e.name,
@@ -17834,13 +17887,14 @@ function mergePluginSkillMetrics(projectLists, globalTotals) {
       e.totalTokens,
       unusedChildren,
       dupChildren
-    ), warnings = Array.from(e.warnings);
+    ), warnings = Array.from(e.warnings), mergedSamples = finalizeErrorSamples(e.errorSamplesMap, 5);
     return {
       id: e.id,
       name: e.name,
       kind: e.kind,
       calls: e.calls,
       errors: e.errors,
+      ...mergedSamples.length > 0 ? { errorSamples: mergedSamples } : {},
       totalDurationMs: e.totalDurationMs,
       drivenActiveMs,
       timeShare: denomActiveMs > 0 ? Math.min(1, drivenActiveMs / denomActiveMs) : 0,
@@ -18266,9 +18320,22 @@ function aggregateSkillToolMetrics(toolCalls, plannerSteps, pricingRules) {
       costKnown: !1,
       costAcc: 0,
       intervals: [],
-      unplacedDurationMs: 0
+      unplacedDurationMs: 0,
+      errorSamplesMap: /* @__PURE__ */ new Map()
     };
-    entry.calls += 1, tc.isError && (entry.errors += 1), tc.startedAtMs !== null && tc.startedAtMs > 0 ? entry.intervals.push({
+    entry.calls += 1, tc.isError && (entry.errors += 1, addErrorSample(
+      entry.errorSamplesMap,
+      {
+        message: normalizeErrorSampleMessage(tc.errorPreview),
+        toolName: tc.toolName,
+        target: formatErrorSampleTarget(tc),
+        count: 1,
+        ...tc.conversationId ? { conversationId: tc.conversationId } : {},
+        ...tc.conversationTitle ? { conversationTitle: tc.conversationTitle } : {},
+        stepIndex: tc.stepIndex
+      },
+      !1
+    )), tc.startedAtMs !== null && tc.startedAtMs > 0 ? entry.intervals.push({
       start: tc.startedAtMs,
       end: Math.max(
         tc.startedAtMs,
@@ -18286,11 +18353,24 @@ function aggregateSkillToolMetrics(toolCalls, plannerSteps, pricingRules) {
     );
     !stepEst.unpriced && stepEst.totalUsd !== null && (entry.costKnown = !0, entry.costAcc += stepEst.totalUsd), map2.set(key, entry);
   }
-  return Array.from(map2.values()).map(({ costKnown, costAcc, intervals, unplacedDurationMs, ...rest }) => ({
-    ...rest,
-    totalDurationMs: mergeIntervalsWallMs(intervals) + unplacedDurationMs,
-    estimatedCostUsd: costKnown ? costAcc : null
-  })).sort(
+  return Array.from(map2.values()).map(
+    ({
+      costKnown,
+      costAcc,
+      intervals,
+      unplacedDurationMs,
+      errorSamplesMap,
+      ...rest
+    }) => {
+      let samples = finalizeErrorSamples(errorSamplesMap, 3);
+      return {
+        ...rest,
+        ...samples.length > 0 ? { errorSamples: samples } : {},
+        totalDurationMs: mergeIntervalsWallMs(intervals) + unplacedDurationMs,
+        estimatedCostUsd: costKnown ? costAcc : null
+      };
+    }
+  ).sort(
     (a, b) => b.compoundedCacheTokens + b.directTokens - (a.compoundedCacheTokens + a.directTokens) || b.totalDurationMs - a.totalDurationMs
   );
 }
@@ -18621,6 +18701,7 @@ function buildConversationDetail(db, conversationId) {
     let cSteps = db.getPlannerStepsForConversation(child.conversationId), cTools = db.getToolCallsForConversation(child.conversationId), cTurns = db.getTurnsForConversation(child.conversationId);
     return subagentEffInputs.push({
       conversationId: child.conversationId,
+      title: child.title,
       parentConversationId: child.parentConversationId,
       activeMs: child.activeMs,
       hasTokenTelemetry: child.hasTokenTelemetry,
@@ -18642,13 +18723,18 @@ function buildConversationDetail(db, conversationId) {
     pricingRules,
     subagentRows
   ), skillToolMetrics = aggregateSkillToolMetrics(
-    toolCalls,
+    toolCalls.map((tc) => ({
+      ...tc,
+      conversationId: row.conversationId,
+      conversationTitle: row.title
+    })),
     rawSteps,
     pricingRules
   ), chatEff = computeScopeSkillEfficiency(
     [
       {
         conversationId: row.conversationId,
+        title: row.title,
         parentConversationId: row.parentConversationId,
         activeMs: row.activeMs,
         hasTokenTelemetry: row.hasTokenTelemetry,
@@ -18732,6 +18818,7 @@ function buildProjectDetail(db, projectPath) {
       buildConversationSummary(r2, steps, tools, turns.length, pricingRules, children)
     ), effInputs.push({
       conversationId: r2.conversationId,
+      title: r2.title,
       parentConversationId: r2.parentConversationId,
       activeMs: r2.activeMs,
       hasTokenTelemetry: r2.hasTokenTelemetry,
@@ -18742,7 +18829,11 @@ function buildProjectDetail(db, projectPath) {
     for (let st of steps)
       allSteps.push({ ...st, conversationId: r2.conversationId });
     for (let tc of tools)
-      allTools.push({ ...tc, conversationId: r2.conversationId });
+      allTools.push({
+        ...tc,
+        conversationId: r2.conversationId,
+        conversationTitle: r2.title
+      });
   }
   let topLevel = summaries.filter(
     (s) => !s.parentConversationId || !rowIds.has(s.parentConversationId)
@@ -25851,8 +25942,8 @@ function fmtModelBreakdownLines(breakdown, includeChats) {
 }
 function fmtPluginSkillLines(metrics, includeProjects) {
   return metrics.slice(0, 12).map((m2) => {
-    let scopePart = includeProjects && m2.projectCount ? ` \xB7 ${m2.projectCount} projects` : ` \xB7 ${m2.chatCount} chats`, spendPart = m2.drivenCostUsd !== null ? `${m2.costShare !== null ? `${Math.round(m2.costShare * 100)}% spend ` : ""}($$${m2.drivenCostUsd.toFixed(m2.drivenCostUsd < 0.1 ? 4 : 2)} est.) \xB7 `.replace("$$", "$") : "", timePart = `${Math.round(m2.timeShare * 100)}% active time (${fmtDur(m2.drivenActiveMs)})`, childPart = m2.children.length > 1 ? ` \xB7 ${m2.children.length} sub-skills/tools` : ` \xB7 ${m2.calls} calls`, warnPart = m2.warnings.length > 0 ? ` [${m2.warnings.join(", ")}]` : "";
-    return `  - [${m2.kind}] **${m2.name}**: ${spendPart}${timePart} \xB7 +${fmtK(m2.totalTokens)} context (+${fmtK(m2.instructionTokens)} instr / +${fmtK(m2.executionTokens)} exec)${childPart}${scopePart}${warnPart}`;
+    let scopePart = includeProjects && m2.projectCount ? ` \xB7 ${m2.projectCount} projects` : ` \xB7 ${m2.chatCount} chats`, spendPart = m2.drivenCostUsd !== null ? `${m2.costShare !== null ? `${Math.round(m2.costShare * 100)}% spend ` : ""}($$${m2.drivenCostUsd.toFixed(m2.drivenCostUsd < 0.1 ? 4 : 2)} est.) \xB7 `.replace("$$", "$") : "", timePart = `${Math.round(m2.timeShare * 100)}% active time (${fmtDur(m2.drivenActiveMs)})`, childPart = m2.children.length > 1 ? ` \xB7 ${m2.children.length} sub-skills/tools` : ` \xB7 ${m2.calls} calls`, errPart = m2.errors > 0 ? ` \xB7 ${m2.errors} err` : "", warnPart = m2.warnings.length > 0 ? ` [${m2.warnings.join(", ")}]` : "";
+    return `  - [${m2.kind}] **${m2.name}**: ${spendPart}${timePart} \xB7 +${fmtK(m2.totalTokens)} context (+${fmtK(m2.instructionTokens)} instr / +${fmtK(m2.executionTokens)} exec)${childPart}${scopePart}${errPart}${warnPart}`;
   });
 }
 function resolveProjectMatch(db, projectPath, projectName) {
@@ -26242,17 +26333,21 @@ ${lines.join(`
       let blocks = matched.slice(0, 10).map((m2, idx) => {
         let spendStr = m2.drivenCostUsd !== null ? `${m2.costShare !== null ? `${Math.round(m2.costShare * 100)}% of spend ` : ""}($$${m2.drivenCostUsd.toFixed(m2.drivenCostUsd < 0.1 ? 4 : 2)} est.)`.replace("$$", "$") : "Unpriced", childLines = m2.children.slice(0, 12).map((ch) => {
           let chCost = ch.drivenCostUsd !== null ? ` \xB7 $$${ch.drivenCostUsd.toFixed(ch.drivenCostUsd < 0.1 ? 4 : 2)}`.replace("$$", "$") : "", flags = [
+            ch.errors > 0 ? `${ch.errors} err` : "",
             ch.isUnusedLoad ? "UNUSED LOAD" : "",
             ch.duplicateReads > 0 ? `${ch.duplicateReads}\xD7 dup read` : ""
           ].filter(Boolean).join(", ");
           return `    - [${ch.kind}] \`${ch.name}\`: ${fmtDur(ch.drivenActiveMs)}${chCost} \xB7 +${fmtK(ch.instructionTokens)} instr / +${fmtK(ch.executionTokens)} exec \xB7 ${ch.calls} calls${flags ? ` [${flags}]` : ""}`;
-        });
+        }), errSamplesNote = m2.errorSamples && m2.errorSamples.length > 0 ? m2.errorSamples.slice(0, 3).map(
+          (s) => `\`${s.toolName}\`${s.target ? ` (${s.target})` : ""}: ${s.message}${s.count > 1 ? ` (${s.count}\xD7)` : ""}`
+        ).join(" | ") : "Inspect child tools or chat waterfall for details.";
         return [
           `## ${idx + 1}. [${m2.kind}] ${m2.name}`,
           `- **Driven Spend**: ${spendStr}`,
           `- **Driven Active Time**: ${Math.round(m2.timeShare * 100)}% of scope (${fmtDur(m2.drivenActiveMs)}; raw tool calls: ${fmtDur(m2.totalDurationMs)})`,
           `- **Context Footprint**: +${fmtK(m2.totalTokens)} tokens (${Math.round(m2.tokenShare * 100)}% of context reads \u2014 +${fmtK(m2.instructionTokens)} instruction / +${fmtK(m2.executionTokens)} execution)`,
           ...m2.targetPaths.length > 0 ? [`- **Skill / Target Paths**: ${m2.targetPaths.map((p2) => `\`${p2}\``).join(", ")}`] : [],
+          ...m2.errors > 0 ? [`- **Errors (${m2.errors})**: ${errSamplesNote}`] : [],
           ...m2.prescription ? [`- **Prescription**: ${m2.prescription}`] : [],
           `- **Breakdown (${m2.children.length})**:`,
           ...childLines

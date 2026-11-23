@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type {
   ConversationDetail,
   DiagnosticFinding,
@@ -17,11 +17,13 @@ interface Props {
   detail: ConversationDetail;
   knownProjects: string[];
   canSendMessage: boolean;
+  initialHighlightStep?: number | null;
   onAssignProject: (conversationId: string, projectPath: string) => Promise<void>;
-  onSelectChat: (conversationId: string) => void;
+  onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenSettings: () => void;
   onAskAgent: (finding: DiagnosticFinding) => void;
   onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
+  onTroubleshootPrompt?: (prompt: string) => void;
 }
 
 type ChatTab = "waterfall" | "models" | "tokens" | "plugins" | "why" | "skills";
@@ -30,17 +32,28 @@ export const ChatDetailView: React.FC<Props> = ({
   detail,
   knownProjects,
   canSendMessage,
+  initialHighlightStep = null,
   onAssignProject,
   onSelectChat,
   onOpenSettings,
   onAskAgent,
-  onOptimizeSkill
+  onOptimizeSkill,
+  onTroubleshootPrompt
 }) => {
   const [tab, setTab] = useState<ChatTab>("waterfall");
-  const [highlightStep, setHighlightStep] = useState<number | null>(null);
+  const [highlightStep, setHighlightStep] = useState<number | null>(
+    initialHighlightStep
+  );
   const [editingProj, setEditingProj] = useState(false);
   const [projInput, setProjInput] = useState(detail.summary.projectPath);
   const [showSubagents, setShowSubagents] = useState(false);
+
+  useEffect(() => {
+    if (initialHighlightStep !== undefined && initialHighlightStep !== null) {
+      setHighlightStep(initialHighlightStep);
+      setTab("waterfall");
+    }
+  }, [initialHighlightStep]);
 
   const subagentTotals = useMemo(() => {
     const subs = detail.subagents;
@@ -481,7 +494,13 @@ export const ChatDetailView: React.FC<Props> = ({
           }
           metrics={detail.pluginSkillMetrics}
           scopeLabel={`conversation "${s.title}" (${s.conversationId.slice(0, 8)})`}
+          currentConversationId={s.conversationId}
           canSendMessage={canSendMessage}
+          onSelectChat={onSelectChat}
+          onJumpToStep={(stepIdx) => {
+            setHighlightStep(stepIdx);
+            setTab("waterfall");
+          }}
           onOptimizeSkill={onOptimizeSkill}
         />
       )}
@@ -498,7 +517,20 @@ export const ChatDetailView: React.FC<Props> = ({
         />
       )}
 
-      {tab === "skills" && <SkillToolMatrix metrics={detail.skillToolMetrics} />}
+      {tab === "skills" && (
+        <SkillToolMatrix
+          metrics={detail.skillToolMetrics}
+          scopeLabel={`conversation "${s.title}" (${s.conversationId.slice(0, 8)})`}
+          currentConversationId={s.conversationId}
+          canSendMessage={canSendMessage}
+          onSelectChat={onSelectChat}
+          onJumpToStep={(stepIdx) => {
+            setHighlightStep(stepIdx);
+            setTab("waterfall");
+          }}
+          onTroubleshootPrompt={onTroubleshootPrompt}
+        />
+      )}
     </div>
   );
 };

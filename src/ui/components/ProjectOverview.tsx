@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useId, useMemo, useRef, useState } from "react";
 import type {
   ConversationSummary,
   DashboardData,
@@ -13,7 +13,9 @@ import {
   fmtDuration,
   fmtK,
   fmtPct,
-  fmtUsd
+  fmtUsd,
+  groupProjectChats,
+  selectTopDiagnostics
 } from "../format";
 import {
   ModelBreakdownPanel,
@@ -29,7 +31,7 @@ interface AllProjectsProps {
   dashboard: DashboardData;
   canSendMessage?: boolean;
   onSelectProject: (projectPath: string) => void;
-  onSelectChat: (conversationId: string) => void;
+  onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenSettings: () => void;
   onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
 }
@@ -319,6 +321,7 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
           defaultLimit={8}
           scopeLabel="all tracked projects"
           canSendMessage={canSendMessage}
+          onSelectChat={onSelectChat}
           onOptimizeSkill={onOptimizeSkill}
         />
       )}
@@ -402,14 +405,149 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
 interface ProjectDetailProps {
   detail: ProjectDetail;
   canSendMessage?: boolean;
-  onSelectChat: (conversationId: string) => void;
+  onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenFile?: (filePath: string) => void;
   onOpenSettings: () => void;
   onAskAgent?: (finding: DiagnosticFinding) => void;
   onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
+  onTroubleshootPrompt?: (prompt: string) => void;
 }
 
-type ProjectTab = "overview" | "chats" | "models" | "plugins" | "skills" | "files";
+type ProjectTab =
+  | "overview"
+  | "plugins"
+  | "why"
+  | "chats"
+  | "models"
+  | "skills"
+  | "files";
+
+interface ProjectChatRowProps {
+  chat: ConversationSummary;
+  isSubagent?: boolean;
+  subagentCount?: number;
+  isExpanded?: boolean;
+  onToggleSubagents?: () => void;
+  onSelect: (conversationId: string) => void;
+}
+
+const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
+  chat,
+  isSubagent = false,
+  subagentCount = 0,
+  isExpanded = false,
+  onToggleSubagents,
+  onSelect
+}) => {
+  const cTok =
+    chat.tokens.inputTokens +
+    chat.tokens.cacheReadTokens +
+    chat.tokens.outputTokens;
+  const skillBadges = (
+    chat.topPluginsSkills.length > 0 ? chat.topPluginsSkills : chat.skillsUsed
+  ).slice(0, 2);
+
+  return (
+    <tr
+      className={isSubagent ? "clickable subagent-row" : "clickable"}
+      onClick={() => onSelect(chat.conversationId)}
+    >
+      <td style={isSubagent ? { paddingLeft: 22 } : undefined}>
+        <div
+          className="truncate"
+          style={{
+            maxWidth: 320,
+            fontWeight: isSubagent ? 400 : 600
+          }}
+          title={chat.title}
+        >
+          {isSubagent && (
+            <span className="badge badge-info" style={{ marginRight: 6 }}>
+              {chat.subagentRole || "Subagent"}
+            </span>
+          )}
+          {chat.title}
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--txt-tertiary)",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+            marginTop: 2
+          }}
+        >
+          <span>
+            {fmtDateShort(chat.endedAtMs)} · {chat.surface}
+            {chat.hasLiveHooks ? " · live hooks" : ""}
+          </span>
+          {subagentCount > 0 &&
+            (onToggleSubagents ? (
+              <button
+                type="button"
+                className="subagent-toggle-btn"
+                aria-expanded={isExpanded}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleSubagents();
+                }}
+              >
+                <span aria-hidden="true">{isExpanded ? "▾" : "▸"}</span>
+                +{subagentCount} sub
+              </button>
+            ) : (
+              <span className="badge badge-info">+{subagentCount} sub</span>
+            ))}
+        </div>
+      </td>
+      <td style={{ minWidth: 190, maxWidth: 260 }}>
+        {skillBadges.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 4,
+              marginBottom: 4
+            }}
+            title={
+              chat.skillsUsed.length > 0
+                ? `Skills loaded: ${chat.skillsUsed.join(", ")}`
+                : undefined
+            }
+          >
+            {skillBadges.map((sk) => (
+              <span key={sk} className="badge badge-warning">
+                {sk}
+              </span>
+            ))}
+          </div>
+        )}
+        {chat.modelBreakdown.length > 0 ? (
+          <ModelMixBar breakdown={chat.modelBreakdown} maxLabels={2} compact />
+        ) : (
+          chat.models.slice(0, 1).map((m) => (
+            <span key={m} className="badge badge-neutral">
+              {m}
+            </span>
+          ))
+        )}
+      </td>
+      <td className="text-right tabular">{chat.turnCount}</td>
+      <td className="text-right tabular">
+        {chat.tokens.hasTokenTelemetry ? fmtK(cTok) : "N/A (legacy)"}
+      </td>
+      <td className="text-right tabular">
+        {chat.tokens.hasTokenTelemetry ? fmtPct(chat.tokens.cacheHitRatio) : "—"}
+      </td>
+      <td className="text-right tabular">{fmtDuration(chat.time.activeMs)}</td>
+      <td className="text-right tabular">
+        {fmtUsd(chat.tokens.estimatedCostUsd)}
+      </td>
+    </tr>
+  );
+};
 
 export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
   detail,
@@ -418,12 +556,107 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
   onOpenFile,
   onOpenSettings,
   onAskAgent,
-  onOptimizeSkill
+  onOptimizeSkill,
+  onTroubleshootPrompt
 }) => {
-  const [tab, setTab] = useState<ProjectTab>("chats");
+  const [tab, setTab] = useState<ProjectTab>("overview");
+  const [expandedChatIds, setExpandedChatIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const rawTabId = useId();
+  const tabIdPrefix = `proj-tab-${rawTabId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const tabRefs = useRef<Partial<Record<ProjectTab, HTMLButtonElement | null>>>(
+    {}
+  );
+
+  const supportsFocusGroup =
+    typeof HTMLElement !== "undefined" &&
+    Object.hasOwn(HTMLElement.prototype, "focusGroup");
+
   const s = detail.summary;
   const totalTokens =
     s.tokens.inputTokens + s.tokens.cacheReadTokens + s.tokens.outputTokens;
+
+  const groupedChats = useMemo(
+    () => groupProjectChats(detail.chats),
+    [detail.chats]
+  );
+  const topFindings = useMemo(
+    () => selectTopDiagnostics(detail.diagnostics, 3),
+    [detail.diagnostics]
+  );
+  const diagnosticCounts = useMemo(() => {
+    let critical = 0;
+    let warning = 0;
+    let info = 0;
+    for (const d of detail.diagnostics) {
+      if (d.severity === "critical") critical += 1;
+      else if (d.severity === "warning") warning += 1;
+      else info += 1;
+    }
+    return { critical, warning, info };
+  }, [detail.diagnostics]);
+
+  const expandableIds = useMemo(
+    () =>
+      groupedChats
+        .filter((g) => g.subagents.length > 0)
+        .map((g) => g.root.conversationId),
+    [groupedChats]
+  );
+  const allSubagentsExpanded =
+    expandableIds.length > 0 &&
+    expandableIds.every((id) => expandedChatIds.has(id));
+
+  const toggleChatGroup = (rootId: string) => {
+    setExpandedChatIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rootId)) next.delete(rootId);
+      else next.add(rootId);
+      return next;
+    });
+  };
+
+  const toggleAllSubagents = () => {
+    if (allSubagentsExpanded) {
+      setExpandedChatIds(new Set());
+    } else {
+      setExpandedChatIds(new Set(expandableIds));
+    }
+  };
+
+  const projectTabs: Array<{ key: ProjectTab; label: string }> = [
+    { key: "overview", label: "Overview" },
+    {
+      key: "plugins",
+      label: `Plugins & Skills (${detail.pluginSkillMetrics.length})`
+    },
+    {
+      key: "why",
+      label: `Why & Bottlenecks (${detail.diagnostics.length})`
+    },
+    { key: "chats", label: `Chats & Tasks (${detail.chats.length})` },
+    { key: "models", label: `Models (${s.modelBreakdown.length})` },
+    { key: "skills", label: `All Tools (${detail.skillToolMetrics.length})` },
+    { key: "files", label: `Files Touched (${detail.filesTouched.length})` }
+  ];
+
+  const selectTab = (next: ProjectTab, focusButton = false) => {
+    setTab(next);
+    const el = tabRefs.current[next];
+    if (el) {
+      if (focusButton) el.focus();
+      try {
+        el.scrollIntoView({
+          block: "nearest",
+          inline: "nearest",
+          container: "nearest"
+        } as ScrollIntoViewOptions & { container?: string });
+      } catch {
+        el.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      }
+    }
+  };
 
   return (
     <div>
@@ -537,249 +770,396 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
         </div>
       </div>
 
-      <div className="tab-strip">
-        <button
-          type="button"
-          className={`tab-pill ${tab === "chats" ? "active" : ""}`}
-          onClick={() => setTab("chats")}
-        >
-          Chats &amp; Tasks ({detail.chats.length})
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "models" ? "active" : ""}`}
-          onClick={() => setTab("models")}
-        >
-          Models ({s.modelBreakdown.length})
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "plugins" ? "active" : ""}`}
-          onClick={() => setTab("plugins")}
-        >
-          Plugins &amp; Skills ({detail.pluginSkillMetrics.length})
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "skills" ? "active" : ""}`}
-          onClick={() => setTab("skills")}
-        >
-          All Tools ({detail.skillToolMetrics.length})
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "files" ? "active" : ""}`}
-          onClick={() => setTab("files")}
-        >
-          Files Touched ({detail.filesTouched.length})
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "overview" ? "active" : ""}`}
-          onClick={() => setTab("overview")}
-        >
-          Why &amp; Bottlenecks ({detail.diagnostics.length})
-        </button>
+      <div
+        className="tab-strip"
+        role="tablist"
+        aria-label="Project sections"
+        {...({ focusgroup: "tablist nomemory" } as Record<string, string>)}
+      >
+        {projectTabs.map((t, idx) => {
+          const isActive = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              ref={(el) => {
+                tabRefs.current[t.key] = el;
+              }}
+              type="button"
+              role="tab"
+              id={`${tabIdPrefix}-${t.key}`}
+              aria-selected={isActive}
+              className={`tab-pill ${isActive ? "active" : ""}`}
+              tabIndex={supportsFocusGroup ? undefined : isActive ? 0 : -1}
+              {...(isActive
+                ? ({ focusgroupstart: "" } as Record<string, string>)
+                : {})}
+              onClick={() => selectTab(t.key)}
+              onFocus={() => {
+                if (tab !== t.key) selectTab(t.key);
+              }}
+              onKeyDown={(e) => {
+                if (supportsFocusGroup) return;
+                let targetIdx: number | null = null;
+                if (e.key === "ArrowRight") {
+                  targetIdx = (idx + 1) % projectTabs.length;
+                } else if (e.key === "ArrowLeft") {
+                  targetIdx =
+                    (idx - 1 + projectTabs.length) % projectTabs.length;
+                } else if (e.key === "Home") {
+                  targetIdx = 0;
+                } else if (e.key === "End") {
+                  targetIdx = projectTabs.length - 1;
+                }
+                if (targetIdx !== null) {
+                  e.preventDefault();
+                  selectTab(projectTabs[targetIdx].key, true);
+                }
+              }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
       </div>
 
-      {tab === "chats" && (
-        <div className="panel">
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Chat / Subagent</th>
-                  <th>Skills &amp; Models</th>
-                  <th className="text-right">Turns</th>
-                  <th className="text-right">Tokens</th>
-                  <th className="text-right">Cache</th>
-                  <th className="text-right">Active</th>
-                  <th className="text-right">Est. Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detail.chats.map((c) => {
-                  const cTok =
-                    c.tokens.inputTokens +
-                    c.tokens.cacheReadTokens +
-                    c.tokens.outputTokens;
-                  return (
-                    <tr
-                      key={c.conversationId}
-                      className="clickable"
-                      onClick={() => onSelectChat(c.conversationId)}
+      <div role="tabpanel" aria-labelledby={`${tabIdPrefix}-${tab}`}>
+        {tab === "overview" && (
+          <div>
+            <div className="panel">
+              <div className="panel-header">
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 6
+                  }}
+                >
+                  <span className="panel-title">
+                    Top Bottlenecks &amp; Diagnostics
+                  </span>
+                  {diagnosticCounts.critical > 0 && (
+                    <span className="badge badge-danger">
+                      {diagnosticCounts.critical} critical
+                    </span>
+                  )}
+                  {diagnosticCounts.warning > 0 && (
+                    <span className="badge badge-warning">
+                      {diagnosticCounts.warning} warning
+                    </span>
+                  )}
+                  {diagnosticCounts.info > 0 && (
+                    <span className="badge badge-info">
+                      {diagnosticCounts.info} info
+                    </span>
+                  )}
+                  {detail.diagnostics.length > topFindings.length && (
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "var(--txt-tertiary)"
+                      }}
                     >
-                      <td>
-                        <div
-                          className="truncate"
-                          style={{
-                            maxWidth: 320,
-                            fontWeight: c.parentConversationId ? 400 : 600,
-                            paddingLeft: c.parentConversationId ? 14 : 0
-                          }}
-                          title={c.title}
+                      Showing top {topFindings.length} of{" "}
+                      {detail.diagnostics.length}
+                    </span>
+                  )}
+                </div>
+                {detail.diagnostics.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => selectTab("why")}
+                  >
+                    View all {detail.diagnostics.length} →
+                  </button>
+                )}
+              </div>
+              <WhyPanel
+                embedded
+                findings={topFindings}
+                canSendMessage={canSendMessage}
+                onAskAgent={onAskAgent}
+                emptyMessage="No notable token spikes, cache misses, or slow bottlenecks detected in this project."
+              />
+            </div>
+
+            {detail.pluginSkillMetrics.length > 0 && (
+              <PluginSkillLeaderboard
+                title="Top Plugins & Skills"
+                metrics={detail.pluginSkillMetrics}
+                defaultLimit={5}
+                scopeLabel={`project "${s.projectName}"`}
+                canSendMessage={canSendMessage}
+                onSelectChat={onSelectChat}
+                onOptimizeSkill={onOptimizeSkill}
+                onViewAll={() => selectTab("plugins")}
+                viewAllLabel={`View all (${detail.pluginSkillMetrics.length}) →`}
+              />
+            )}
+
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <span className="panel-title">Root Chats</span>
+                  <span
+                    style={{
+                      marginLeft: 8,
+                      fontSize: 12,
+                      color: "var(--txt-tertiary)"
+                    }}
+                  >
+                    {groupedChats.length} root chat
+                    {groupedChats.length === 1 ? "" : "s"}
+                    {s.subagentCount > 0
+                      ? ` · ${s.subagentCount} subagents nested`
+                      : ""}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => selectTab("chats")}
+                >
+                  View all {detail.chats.length} chats &amp; tasks →
+                </button>
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Chat</th>
+                      <th>Skills &amp; Models</th>
+                      <th className="text-right">Turns</th>
+                      <th className="text-right">Tokens</th>
+                      <th className="text-right">Cache</th>
+                      <th className="text-right">Active</th>
+                      <th className="text-right">Est. Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupedChats.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          style={{ color: "var(--txt-tertiary)", padding: 14 }}
                         >
-                          {c.parentConversationId && (
-                            <span
-                              className="badge badge-info"
-                              style={{ marginRight: 6 }}
-                            >
-                              {c.subagentRole || "Subagent"}
-                            </span>
-                          )}
-                          {c.title}
-                        </div>
-                        <div style={{ fontSize: 12, color: "var(--txt-tertiary)" }}>
-                          {fmtDateShort(c.endedAtMs)} · {c.surface}
-                          {c.hasLiveHooks ? " · live hooks" : ""}
-                        </div>
+                          No chats recorded for this project.
+                        </td>
+                      </tr>
+                    ) : (
+                      groupedChats
+                        .slice(0, 5)
+                        .map((g) => (
+                          <ProjectChatRow
+                            key={g.root.conversationId}
+                            chat={g.root}
+                            subagentCount={g.subagents.length}
+                            onSelect={onSelectChat}
+                          />
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "chats" && (
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <span className="panel-title">Chats &amp; Subagents</span>
+                <span
+                  style={{
+                    marginLeft: 8,
+                    fontSize: 12,
+                    color: "var(--txt-tertiary)"
+                  }}
+                >
+                  {groupedChats.length} root · {s.subagentCount} subagents
+                </span>
+              </div>
+              {s.subagentCount > 0 && expandableIds.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={toggleAllSubagents}
+                >
+                  {allSubagentsExpanded
+                    ? "Collapse all subagents"
+                    : `Expand all subagents (${s.subagentCount})`}
+                </button>
+              )}
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Chat / Subagent</th>
+                    <th>Skills &amp; Models</th>
+                    <th className="text-right">Turns</th>
+                    <th className="text-right">Tokens</th>
+                    <th className="text-right">Cache</th>
+                    <th className="text-right">Active</th>
+                    <th className="text-right">Est. Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedChats.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={7}
+                        style={{ color: "var(--txt-tertiary)", padding: 14 }}
+                      >
+                        No chats recorded for this project.
                       </td>
-                      <td style={{ minWidth: 190, maxWidth: 260 }}>
-                        {(c.topPluginsSkills.length > 0 || c.skillsUsed.length > 0) && (
-                          <div
-                            style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 }}
-                            title={
-                              c.skillsUsed.length > 0
-                                ? `Skills loaded: ${c.skillsUsed.join(", ")}`
+                    </tr>
+                  ) : (
+                    groupedChats.map((g) => {
+                      const isExpanded = expandedChatIds.has(
+                        g.root.conversationId
+                      );
+                      return (
+                        <React.Fragment key={g.root.conversationId}>
+                          <ProjectChatRow
+                            chat={g.root}
+                            subagentCount={g.subagents.length}
+                            isExpanded={isExpanded}
+                            onToggleSubagents={
+                              g.subagents.length > 0
+                                ? () => toggleChatGroup(g.root.conversationId)
                                 : undefined
                             }
-                          >
-                            {(c.topPluginsSkills.length > 0
-                              ? c.topPluginsSkills
-                              : c.skillsUsed
-                            )
-                              .slice(0, 2)
-                              .map((sk) => (
-                                <span key={sk} className="badge badge-warning">
-                                  {sk}
-                                </span>
-                              ))}
-                          </div>
-                        )}
-                        {c.modelBreakdown.length > 0 ? (
-                          <ModelMixBar breakdown={c.modelBreakdown} maxLabels={2} compact />
-                        ) : (
-                          c.models.slice(0, 1).map((m) => (
-                            <span key={m} className="badge badge-neutral">
-                              {m}
-                            </span>
-                          ))
-                        )}
-                      </td>
-                      <td className="text-right tabular">{c.turnCount}</td>
-                      <td className="text-right tabular">
-                        {c.tokens.hasTokenTelemetry ? fmtK(cTok) : "N/A (legacy)"}
-                      </td>
-                      <td className="text-right tabular">
-                        {c.tokens.hasTokenTelemetry ? fmtPct(c.tokens.cacheHitRatio) : "—"}
-                      </td>
-                      <td className="text-right tabular">
-                        {fmtDuration(c.time.activeMs)}
-                      </td>
-                      <td className="text-right tabular">
-                        {fmtUsd(c.tokens.estimatedCostUsd)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                            onSelect={onSelectChat}
+                          />
+                          {isExpanded &&
+                            g.subagents.map((sub) => (
+                              <ProjectChatRow
+                                key={sub.conversationId}
+                                chat={sub}
+                                isSubagent
+                                onSelect={onSelectChat}
+                              />
+                            ))}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {tab === "models" && (
-        <ModelBreakdownPanel
-          title="Project Model Breakdown"
-          breakdown={s.modelBreakdown}
-          unpricedModels={s.tokens.unpricedModels}
-          showChatsColumn
-          onOpenSettings={onOpenSettings}
-        />
-      )}
+        {tab === "models" && (
+          <ModelBreakdownPanel
+            title="Project Model Breakdown"
+            breakdown={s.modelBreakdown}
+            unpricedModels={s.tokens.unpricedModels}
+            showChatsColumn
+            onOpenSettings={onOpenSettings}
+          />
+        )}
 
-      {tab === "plugins" && (
-        <PluginSkillLeaderboard
-          title="Plugins & Skills Impact"
-          metrics={detail.pluginSkillMetrics}
-          scopeLabel={`project "${s.projectName}"`}
-          canSendMessage={canSendMessage}
-          onOptimizeSkill={onOptimizeSkill}
-        />
-      )}
+        {tab === "plugins" && (
+          <PluginSkillLeaderboard
+            title="Plugins & Skills Impact"
+            metrics={detail.pluginSkillMetrics}
+            scopeLabel={`project "${s.projectName}"`}
+            canSendMessage={canSendMessage}
+            onSelectChat={onSelectChat}
+            onOptimizeSkill={onOptimizeSkill}
+          />
+        )}
 
-      {tab === "skills" && <SkillToolMatrix metrics={detail.skillToolMetrics} />}
+        {tab === "skills" && (
+          <SkillToolMatrix
+            metrics={detail.skillToolMetrics}
+            scopeLabel={`project "${s.projectName}"`}
+            canSendMessage={canSendMessage}
+            onSelectChat={onSelectChat}
+            onTroubleshootPrompt={onTroubleshootPrompt}
+          />
+        )}
 
-      {tab === "files" && (
-        <div className="panel">
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>File Path</th>
-                  <th className="text-right">Reads</th>
-                  <th className="text-right">Edits</th>
-                  <th className="text-right">Creates</th>
-                  <th className="text-right">Bytes Read</th>
-                  <th className="text-right">Direct + Cache Carry</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detail.filesTouched.length === 0 ? (
+        {tab === "files" && (
+          <div className="panel">
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
                   <tr>
-                    <td colSpan={6} style={{ color: "var(--txt-tertiary)", padding: 14 }}>
-                      No file tool calls recorded for this project.
-                    </td>
+                    <th>File Path</th>
+                    <th className="text-right">Reads</th>
+                    <th className="text-right">Edits</th>
+                    <th className="text-right">Creates</th>
+                    <th className="text-right">Bytes Read</th>
+                    <th className="text-right">Direct + Cache Carry</th>
                   </tr>
-                ) : (
-                  detail.filesTouched.map((f) => (
-                    <tr key={f.path}>
-                      <td>
-                        {onOpenFile ? (
-                          <button
-                            type="button"
-                            onClick={() => onOpenFile(f.path)}
-                            style={{
-                              background: "transparent",
-                              border: "none",
-                              padding: 0,
-                              cursor: "pointer",
-                              color: "var(--txt-info)",
-                              textAlign: "left",
-                              fontFamily: "monospace"
-                            }}
-                          >
-                            {f.path}
-                          </button>
-                        ) : (
-                          <span style={{ fontFamily: "monospace" }}>{f.path}</span>
-                        )}
-                      </td>
-                      <td className="text-right tabular">{f.reads}</td>
-                      <td className="text-right tabular">{f.edits}</td>
-                      <td className="text-right tabular">{f.creates}</td>
-                      <td className="text-right tabular">
-                        {fmtBytes(f.totalBytesRead)}
-                      </td>
-                      <td className="text-right tabular">
-                        +{fmtK(f.directTokens + f.compoundedCacheTokens)}
+                </thead>
+                <tbody>
+                  {detail.filesTouched.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={6}
+                        style={{ color: "var(--txt-tertiary)", padding: 14 }}
+                      >
+                        No file tool calls recorded for this project.
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    detail.filesTouched.map((f) => (
+                      <tr key={f.path}>
+                        <td>
+                          {onOpenFile ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenFile(f.path)}
+                              style={{
+                                background: "transparent",
+                                border: "none",
+                                padding: 0,
+                                cursor: "pointer",
+                                color: "var(--txt-info)",
+                                textAlign: "left",
+                                fontFamily: "monospace"
+                              }}
+                            >
+                              {f.path}
+                            </button>
+                          ) : (
+                            <span style={{ fontFamily: "monospace" }}>
+                              {f.path}
+                            </span>
+                          )}
+                        </td>
+                        <td className="text-right tabular">{f.reads}</td>
+                        <td className="text-right tabular">{f.edits}</td>
+                        <td className="text-right tabular">{f.creates}</td>
+                        <td className="text-right tabular">
+                          {fmtBytes(f.totalBytesRead)}
+                        </td>
+                        <td className="text-right tabular">
+                          +{fmtK(f.directTokens + f.compoundedCacheTokens)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {tab === "overview" && (
-        <WhyPanel
-          findings={detail.diagnostics}
-          canSendMessage={canSendMessage}
-          onAskAgent={onAskAgent}
-        />
-      )}
+        {tab === "why" && (
+          <WhyPanel
+            findings={detail.diagnostics}
+            canSendMessage={canSendMessage}
+            onAskAgent={onAskAgent}
+          />
+        )}
+      </div>
     </div>
   );
 };

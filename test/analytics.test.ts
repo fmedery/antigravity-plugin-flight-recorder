@@ -1360,3 +1360,120 @@ test("aggregatePluginSkillMetrics rolls up plugin sub-skills, scripts, CLIs, and
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test("aggregateSkillToolMetrics captures deduplicated errorSamples with counts and chat/step context", () => {
+  const t0 = Date.parse("2026-11-23T15:00:00Z");
+  const baseCall = {
+    plannerStepIndex: 1,
+    turnIndex: 0,
+    toolCallId: null,
+    mcpServer: null,
+    skillName: null,
+    skillPlugin: null,
+    targetPath: null,
+    childConversationId: null,
+    startedAtMs: t0,
+    completedAtMs: t0 + 1000,
+    durationMs: 1000,
+    resultBytes: 120,
+    estResultTokens: 30,
+    attributedInputTokens: 100,
+    compoundedCacheTokens: 200
+  };
+
+  const metrics = aggregateSkillToolMetrics(
+    [
+      {
+        ...baseCall,
+        id: 1,
+        stepIndex: 2,
+        toolName: "run_command",
+        category: "command",
+        argsPreview: "npm test",
+        isError: true,
+        errorPreview: "Command exited with code 1.\nTest failed",
+        conversationId: "chat-1",
+        conversationTitle: "Fix parser"
+      },
+      {
+        ...baseCall,
+        id: 2,
+        stepIndex: 4,
+        toolName: "run_command",
+        category: "command",
+        argsPreview: "npm test",
+        isError: true,
+        errorPreview: "command exited with code 1.   Test failed",
+        conversationId: "chat-2",
+        conversationTitle: "Retry parser"
+      },
+      {
+        ...baseCall,
+        id: 3,
+        stepIndex: 5,
+        toolName: "run_command",
+        category: "command",
+        argsPreview: "npm run lint",
+        isError: true,
+        errorPreview: "Command exited with code 2. Lint error",
+        conversationId: "chat-2",
+        conversationTitle: "Retry parser"
+      },
+      {
+        ...baseCall,
+        id: 4,
+        stepIndex: 6,
+        toolName: "run_command",
+        category: "command",
+        argsPreview: "npm run typecheck",
+        isError: true,
+        errorPreview: "Command exited with code 2. Type error",
+        conversationId: "chat-2",
+        conversationTitle: "Retry parser"
+      },
+      {
+        ...baseCall,
+        id: 5,
+        stepIndex: 7,
+        toolName: "run_command",
+        category: "command",
+        argsPreview: "npm run build",
+        isError: true,
+        errorPreview: "Command exited with code 2. Build error",
+        conversationId: "chat-2",
+        conversationTitle: "Retry parser"
+      },
+      {
+        ...baseCall,
+        id: 6,
+        stepIndex: 8,
+        toolName: "read_file",
+        category: "file_read",
+        targetPath: "/repo/src/index.ts",
+        argsPreview: "/repo/src/index.ts",
+        isError: false,
+        errorPreview: null,
+        conversationId: "chat-1",
+        conversationTitle: "Fix parser"
+      }
+    ],
+    [{ stepIndex: 1, model: "gemini-2.5-pro", inputTokens: 100, cacheReadTokens: 0, outputTokens: 50 }],
+    DEFAULT_PRICING_RULES
+  );
+
+  const cmdMetric = metrics.find((m) => m.name === "run_command");
+  assert.ok(cmdMetric);
+  assert.equal(cmdMetric.errors, 5);
+  assert.ok(cmdMetric.errorSamples);
+  assert.equal(cmdMetric.errorSamples.length, 3, "Tool errorSamples must cap at 3");
+  assert.equal(cmdMetric.errorSamples[0].count, 2);
+  assert.equal(cmdMetric.errorSamples[0].target, "npm test");
+  assert.equal(cmdMetric.errorSamples[0].conversationId, "chat-1");
+  assert.equal(cmdMetric.errorSamples[0].conversationTitle, "Fix parser");
+  assert.equal(cmdMetric.errorSamples[0].stepIndex, 2);
+
+  const readMetric = metrics.find((m) => m.name === "read_file");
+  assert.ok(readMetric);
+  assert.equal(readMetric.errors, 0);
+  assert.equal(readMetric.errorSamples, undefined);
+});

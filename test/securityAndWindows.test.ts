@@ -29,7 +29,21 @@ import {
   resolveToolPluginAndChild
 } from "../src/server/skillEfficiency.js";
 import { parseTranscriptFile } from "../src/server/transcriptParser.js";
-import { KPI_HELP_COPY } from "../src/ui/format.js";
+import type {
+  ConversationSummary,
+  DiagnosticCategory,
+  DiagnosticFinding
+} from "../src/shared/types.js";
+import {
+  KPI_HELP_COPY,
+  buildErrorTroubleshootingPrompt,
+  describeDiagnostic,
+  describeErrorBadge,
+  describePluginWarning,
+  groupProjectChats,
+  selectTopDiagnostics,
+  type ErrorBadgeKind
+} from "../src/ui/format.js";
 
 test("paths.ts handles Windows drive/UNC paths, percent-encoded file:// URIs with spaces, UTF-8, %3A drive colons, and RFC 8089 toFileUri", () => {
   assert.equal(
@@ -497,13 +511,22 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
       );
     }
 
-    // 5. KpiHelpTip explicit CSS anchor + toggletip ARIA/popover check in UI bundle
+    // 5. KpiHelpTip explicit CSS anchor + toggletip ARIA/popover check + Overview tab markers in UI bundle
     const uiHtml = fs.readFileSync(uiBundlePath, "utf8");
     assert.match(uiHtml, /positionAnchor/);
     assert.match(uiHtml, /aria-expanded/);
     assert.match(uiHtml, /popovertargetaction/);
     assert.match(uiHtml, /Impact for you:/);
     assert.equal(uiHtml.includes("aria-describedby"), false);
+    assert.match(uiHtml, /Top Bottlenecks & Diagnostics/);
+    assert.match(uiHtml, /Root Chats/);
+    assert.match(uiHtml, /tablist/);
+    assert.match(uiHtml, /Possible remediation:/);
+    assert.match(uiHtml, /diag-guidance/);
+    assert.match(uiHtml, /badge-btn/);
+    assert.match(uiHtml, /err-sample-list/);
+    assert.match(uiHtml, /What to do:/);
+    assert.match(uiHtml, /Troubleshoot/);
   } finally {
     await client.close().catch(() => {});
     fs.rmSync(isolatedRoot, { recursive: true, force: true });
@@ -693,4 +716,406 @@ test("Windows backslash SKILL.md paths, JSON/custom *_TOKEN redaction, SQLite v6
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("groupProjectChats nests multi-hop subagents safely and selectTopDiagnostics prioritizes severity and impact", () => {
+  const makeChat = (
+    id: string,
+    endedAtMs: number,
+    parentConversationId: string | null = null
+  ): ConversationSummary => ({
+    conversationId: id,
+    title: `Chat ${id}`,
+    surface: "antigravity",
+    projectPath: "/repo/app",
+    projectName: "app",
+    projectSource: "hook",
+    parentConversationId,
+    subagentRole: parentConversationId ? "Worker" : null,
+    subagentType: parentConversationId ? "self" : null,
+    startedAtMs: Math.max(0, endedAtMs - 1000),
+    endedAtMs,
+    terminationReason: null,
+    models: ["gemini-2.5-pro"],
+    modelBreakdown: [],
+    slashCommands: [],
+    turnCount: 1,
+    stepCount: 1,
+    toolCallCount: 0,
+    errorCount: 0,
+    skillsUsed: [],
+    topPluginsSkills: [],
+    tokens: {
+      inputTokens: 100,
+      cacheReadTokens: 0,
+      outputTokens: 20,
+      peakContextTokens: 100,
+      cacheHitRatio: 0,
+      hasTokenTelemetry: true,
+      estimatedCostUsd: 0.01,
+      cacheSavingsUsd: 0,
+      unpricedModels: []
+    },
+    time: {
+      activeMs: 1000,
+      modelMs: 800,
+      toolWallMs: 200,
+      toolSumMs: 200,
+      parallelismFactor: 1,
+      subagentMs: 0,
+      userIdleMs: 0,
+      wallClockMs: 1000
+    },
+    hasLiveHooks: false
+  });
+
+  const chats: ConversationSummary[] = [
+    makeChat("root-a", 1000, null),
+    makeChat("sub-a1", 2000, "root-a"),
+    makeChat("sub-a2-grandchild", 5000, "sub-a1"),
+    makeChat("root-b", 3000, null),
+    makeChat("orphan-sub", 4000, "outside-project-parent"),
+    makeChat("cyc-1", 1500, "cyc-2"),
+    makeChat("cyc-2", 1200, "cyc-1")
+  ];
+
+  const grouped = groupProjectChats(chats);
+  assert.deepEqual(
+    grouped.map((g) => g.root.conversationId),
+    ["root-a", "orphan-sub", "root-b", "cyc-1", "cyc-2"]
+  );
+  assert.equal(grouped[0].lastActivityMs, 5000);
+  assert.deepEqual(
+    grouped[0].subagents.map((s) => s.conversationId),
+    ["sub-a2-grandchild", "sub-a1"]
+  );
+  assert.equal(grouped[1].subagents.length, 0);
+
+  const findings: DiagnosticFinding[] = [
+    {
+      id: "info-big",
+      severity: "info",
+      category: "token_driver",
+      title: "Info high tokens",
+      detail: "d",
+      stepIndex: 1,
+      turnIndex: 0,
+      impactTokens: 90000,
+      impactMs: 1000,
+      citation: "S1"
+    },
+    {
+      id: "warn-small",
+      severity: "warning",
+      category: "cache_miss",
+      title: "Warn small",
+      detail: "d",
+      stepIndex: 2,
+      turnIndex: 0,
+      impactTokens: 500,
+      impactMs: 500,
+      citation: "S2"
+    },
+    {
+      id: "crit-1",
+      severity: "critical",
+      category: "compaction_cliff",
+      title: "Critical cliff",
+      detail: "d",
+      stepIndex: 3,
+      turnIndex: 0,
+      impactTokens: 10000,
+      impactMs: 2000,
+      citation: "S3"
+    },
+    {
+      id: "warn-big",
+      severity: "warning",
+      category: "slow_step",
+      title: "Warn big",
+      detail: "d",
+      stepIndex: 4,
+      turnIndex: 0,
+      impactTokens: 500,
+      impactMs: 12000,
+      citation: "S4"
+    }
+  ];
+
+  const top3 = selectTopDiagnostics(findings, 3);
+  assert.deepEqual(
+    top3.map((f) => f.id),
+    ["crit-1", "warn-big", "warn-small"]
+  );
+  assert.deepEqual(
+    selectTopDiagnostics(findings, 1).map((f) => f.id),
+    ["crit-1"]
+  );
+  assert.deepEqual(selectTopDiagnostics(findings, 0), []);
+});
+
+test("describeDiagnostic and describePluginWarning cover all diagnostic categories, sub-cases, and plugin warnings", () => {
+  const categories: DiagnosticCategory[] = [
+    "token_driver",
+    "cache_miss",
+    "slow_step",
+    "repeated_read",
+    "error_retry",
+    "model_split",
+    "unused_skill",
+    "high_skill_overhead",
+    "tool_thrash",
+    "subagent_candidate",
+    "compaction_cliff"
+  ];
+
+  for (const cat of categories) {
+    const g = describeDiagnostic({
+      id: `id-${cat}`,
+      severity: "warning",
+      category: cat,
+      title: `Title ${cat}`,
+      detail: `Detail ${cat}`,
+      stepIndex: 1,
+      turnIndex: 0,
+      impactTokens: 1000,
+      impactMs: 1000,
+      citation: "Step 1"
+    });
+    assert.ok(g.categoryLabel.length > 3, `Missing categoryLabel for ${cat}`);
+    assert.ok(g.meaning.length > 20, `Missing meaning for ${cat}`);
+    assert.ok(g.remediation.length > 20, `Missing remediation for ${cat}`);
+    assert.equal(g.meaning.includes("`"), false);
+    assert.equal(g.remediation.includes("`"), false);
+  }
+
+  // Sub-cases
+  assert.equal(
+    describeDiagnostic({
+      id: "c256",
+      severity: "critical",
+      category: "compaction_cliff",
+      title: "Exceeded 256k soft compaction ceiling at Step 5",
+      detail: "Context reached 260k",
+      stepIndex: 5,
+      turnIndex: 1,
+      impactTokens: 260000,
+      impactMs: 1000,
+      citation: "Planner Step 5"
+    }).categoryLabel,
+    "Context Ceiling"
+  );
+  assert.equal(
+    describeDiagnostic({
+      id: "c200",
+      severity: "warning",
+      category: "compaction_cliff",
+      title: "Crossed 200k context cliff at Step 4",
+      detail: "Context crossed 200k",
+      stepIndex: 4,
+      turnIndex: 1,
+      impactTokens: 205000,
+      impactMs: 1000,
+      citation: "Planner Step 4"
+    }).categoryLabel,
+    "Context Cliff"
+  );
+
+  assert.equal(
+    describeDiagnostic({
+      id: "miss-idle",
+      severity: "warning",
+      category: "cache_miss",
+      title: "Cache miss at Step 3",
+      detail: "Idle gap expired prompt cache TTL",
+      stepIndex: 3,
+      turnIndex: 1,
+      impactTokens: 5000,
+      impactMs: 500,
+      citation: "Step 3"
+    }).categoryLabel,
+    "Cache Expired (Idle)"
+  );
+  assert.equal(
+    describeDiagnostic({
+      id: "miss-model",
+      severity: "warning",
+      category: "cache_miss",
+      title: "Cache miss at Step 4",
+      detail: "Model changed (a -> b)",
+      stepIndex: 4,
+      turnIndex: 1,
+      impactTokens: 5000,
+      impactMs: 500,
+      citation: "Step 4"
+    }).categoryLabel,
+    "Cache Miss (Model Switch)"
+  );
+  assert.equal(
+    describeDiagnostic({
+      id: "miss-reset",
+      severity: "warning",
+      category: "cache_miss",
+      title: "Cache miss at Step 5",
+      detail: "Context compaction or prefix reset",
+      stepIndex: 5,
+      turnIndex: 1,
+      impactTokens: 5000,
+      impactMs: 500,
+      citation: "Step 5"
+    }).categoryLabel,
+    "Cache Reset"
+  );
+
+  assert.equal(
+    describeDiagnostic({
+      id: "dup-skill",
+      severity: "warning",
+      category: "unused_skill",
+      title: "Duplicate skill read: brainstorming (2×)",
+      detail: "Read twice",
+      stepIndex: 2,
+      turnIndex: 0,
+      impactTokens: 2000,
+      impactMs: null,
+      citation: "Step 2"
+    }).categoryLabel,
+    "Duplicate Skill Read"
+  );
+  assert.equal(
+    describeDiagnostic({
+      id: "slow-model",
+      severity: "warning",
+      category: "slow_step",
+      title: "Long model step: gemini-2.5-pro (Step 2)",
+      detail: "Took 15s",
+      stepIndex: 2,
+      turnIndex: 0,
+      impactTokens: null,
+      impactMs: 15000,
+      citation: "Step 2"
+    }).categoryLabel,
+    "Slow Model Step"
+  );
+  assert.equal(
+    describeDiagnostic({
+      id: "split-ok",
+      severity: "info",
+      category: "model_split",
+      title: "Orchestrator switched models 1× across 2 models",
+      detail: "All switches preserved prompt cache.",
+      stepIndex: 3,
+      turnIndex: 0,
+      impactTokens: null,
+      impactMs: null,
+      citation: "Step 3"
+    }).categoryLabel,
+    "Model Switch"
+  );
+
+  for (const warn of [
+    "Unused load",
+    "Duplicate read",
+    "High markdown carry",
+    "Custom warning"
+  ]) {
+    const pw = describePluginWarning(warn);
+    assert.ok(pw.meaning.length > 20, `Missing plugin warning meaning for ${warn}`);
+    assert.ok(
+      pw.remediation.length > 20,
+      `Missing plugin warning remediation for ${warn}`
+    );
+    assert.equal(pw.meaning.includes("`"), false);
+    assert.equal(pw.remediation.includes("`"), false);
+  }
+});
+
+test("describeErrorBadge and buildErrorTroubleshootingPrompt cover all kinds, root-cause remediation hints, and prompt formatting", () => {
+  const kinds: ErrorBadgeKind[] = [
+    "Plugin",
+    "Skill",
+    "SubSkill",
+    "CLI",
+    "MCP",
+    "Reference",
+    "Tool",
+    "Subagent"
+  ];
+
+  for (const kind of kinds) {
+    const g = describeErrorBadge(kind, 2, `item-${kind}`);
+    assert.ok(g.summary.length > 10, `Missing summary for ${kind}`);
+    assert.ok(g.meaning.length > 20, `Missing meaning for ${kind}`);
+    assert.ok(g.remediation.length > 20, `Missing remediation for ${kind}`);
+    assert.equal(g.summary.includes("`"), false);
+    assert.equal(g.meaning.includes("`"), false);
+    assert.equal(g.remediation.includes("`"), false);
+  }
+
+  const missingSkillRef = describeErrorBadge("SubSkill", 1, "test-driven-development", [
+    {
+      message: "ENOENT: no such file or directory, open '.../writing-good-tests.md'",
+      toolName: "read_file",
+      target: "test-driven-development/writing-good-tests.md",
+      count: 1
+    }
+  ]);
+  assert.match(missingSkillRef.meaning, /SKILL\.md or reference files/i);
+  assert.match(missingSkillRef.remediation, /missing or renamed file path/i);
+
+  const authMcp = describeErrorBadge("MCP", 1, "gmail_search", [
+    {
+      message: "HTTP 401 Unauthorized: token expired",
+      toolName: "gmail_search",
+      target: "gmail/gmail_search",
+      count: 1
+    }
+  ]);
+  assert.match(authMcp.remediation, /Plugins Manager|credentials|Authentication/i);
+
+  const missingCmdCli = describeErrorBadge("CLI", 1, "task-start", [
+    {
+      message: "bash: task-start: command not found",
+      toolName: "run_command",
+      target: "task-start plan.md",
+      count: 1
+    }
+  ]);
+  assert.match(missingCmdCli.remediation, /missing from PATH|CLI binary/i);
+
+  const timeoutTool = describeErrorBadge("Tool", 1, "run_command", [
+    {
+      message: "Error: connect ECONNREFUSED 127.0.0.1:3000",
+      toolName: "run_command",
+      target: "curl http://localhost:3000",
+      count: 1
+    }
+  ]);
+  assert.match(timeoutTool.remediation, /timed out|refused the connection/i);
+
+  const prompt = buildErrorTroubleshootingPrompt({
+    name: "task-start",
+    kind: "CLI",
+    parentName: "Superpowers",
+    errorCount: 2,
+    scopeLabel: 'project "musiclab"',
+    targetPaths: ["/plugins/superpowers/skills/executing-plans/scripts/task-start"],
+    samples: [
+      {
+        message: "Command exited with code 1. Plan file locked",
+        toolName: "run_command",
+        target: "bash .../task-start plan.md 1",
+        count: 2,
+        conversationId: "c1",
+        conversationTitle: "Build synth",
+        stepIndex: 14
+      }
+    ]
+  });
+  assert.match(prompt, /CLI "task-start" under Superpowers/);
+  assert.match(prompt, /2 recorded errors/);
+  assert.match(prompt, /Command exited with code 1\. Plan file locked/);
+  assert.match(prompt, /Build synth/);
+  assert.match(prompt, /step 14/);
+  assert.match(prompt, /task-start/);
 });

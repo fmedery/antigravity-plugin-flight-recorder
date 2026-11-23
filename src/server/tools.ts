@@ -123,9 +123,10 @@ function fmtPluginSkillLines(
     const timePart = `${Math.round(m.timeShare * 100)}% active time (${fmtDur(m.drivenActiveMs)})`;
     const childPart =
       m.children.length > 1 ? ` · ${m.children.length} sub-skills/tools` : ` · ${m.calls} calls`;
+    const errPart = m.errors > 0 ? ` · ${m.errors} err` : "";
     const warnPart =
       m.warnings.length > 0 ? ` [${m.warnings.join(", ")}]` : "";
-    return `  - [${m.kind}] **${m.name}**: ${spendPart}${timePart} · +${fmtK(m.totalTokens)} context (+${fmtK(m.instructionTokens)} instr / +${fmtK(m.executionTokens)} exec)${childPart}${scopePart}${warnPart}`;
+    return `  - [${m.kind}] **${m.name}**: ${spendPart}${timePart} · +${fmtK(m.totalTokens)} context (+${fmtK(m.instructionTokens)} instr / +${fmtK(m.executionTokens)} exec)${childPart}${scopePart}${errPart}${warnPart}`;
   });
 }
 
@@ -728,6 +729,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
               ? ` · $$${ch.drivenCostUsd.toFixed(ch.drivenCostUsd < 0.1 ? 4 : 2)}`.replace("$$", "$")
               : "";
           const flags = [
+            ch.errors > 0 ? `${ch.errors} err` : "",
             ch.isUnusedLoad ? "UNUSED LOAD" : "",
             ch.duplicateReads > 0 ? `${ch.duplicateReads}× dup read` : ""
           ]
@@ -735,6 +737,17 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
             .join(", ");
           return `    - [${ch.kind}] \`${ch.name}\`: ${fmtDur(ch.drivenActiveMs)}${chCost} · +${fmtK(ch.instructionTokens)} instr / +${fmtK(ch.executionTokens)} exec · ${ch.calls} calls${flags ? ` [${flags}]` : ""}`;
         });
+
+        const errSamplesNote =
+          m.errorSamples && m.errorSamples.length > 0
+            ? m.errorSamples
+                .slice(0, 3)
+                .map(
+                  (s) =>
+                    `\`${s.toolName}\`${s.target ? ` (${s.target})` : ""}: ${s.message}${s.count > 1 ? ` (${s.count}×)` : ""}`
+                )
+                .join(" | ")
+            : "Inspect child tools or chat waterfall for details.";
 
         return [
           `## ${idx + 1}. [${m.kind}] ${m.name}`,
@@ -744,6 +757,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           ...(m.targetPaths.length > 0
             ? [`- **Skill / Target Paths**: ${m.targetPaths.map((p) => `\`${p}\``).join(", ")}`]
             : []),
+          ...(m.errors > 0 ? [`- **Errors (${m.errors})**: ${errSamplesNote}`] : []),
           ...(m.prescription ? [`- **Prescription**: ${m.prescription}`] : []),
           `- **Breakdown (${m.children.length})**:`,
           ...childLines

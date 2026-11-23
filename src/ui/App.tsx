@@ -56,6 +56,7 @@ export const AppRoot: React.FC = () => {
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
   >(null);
+  const [initialChatStep, setInitialChatStep] = useState<number | null>(null);
   const [chatDetail, setChatDetail] = useState<ConversationDetail | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -98,6 +99,7 @@ export const AppRoot: React.FC = () => {
         setErrorMsg(null);
         setSelectedProjectPath(projectPath);
         setSelectedConversationId(null);
+        setInitialChatStep(null);
         setChatDetail(null);
         setView("project");
         const detail = await callAppTool<ProjectDetail>(
@@ -113,10 +115,11 @@ export const AppRoot: React.FC = () => {
   );
 
   const openChat = useCallback(
-    async (conversationId: string) => {
+    async (conversationId: string, highlightStep?: number | null) => {
       try {
         setErrorMsg(null);
         setSelectedConversationId(conversationId);
+        setInitialChatStep(highlightStep ?? null);
         setView("chat");
         const detail = await callAppTool<ConversationDetail>(
           "app_get_chat_detail",
@@ -315,9 +318,10 @@ export const AppRoot: React.FC = () => {
     }
   };
 
-  const handleOptimizeSkill = async (
-    _metric: PluginSkillMetric,
-    prompt: string
+  const sendOrCopyPrompt = async (
+    prompt: string,
+    sentNotice = "Sent optimization request to agent.",
+    copiedNotice = "Copied optimization prompt to clipboard."
   ) => {
     const app = appRef.current;
     if (app && canMessage) {
@@ -326,7 +330,7 @@ export const AppRoot: React.FC = () => {
           role: "user",
           content: [{ type: "text", text: prompt }]
         });
-        setStatusNotice("Sent optimization request to agent.");
+        setStatusNotice(sentNotice);
         setTimeout(() => setStatusNotice(null), 3500);
         return;
       } catch (err) {
@@ -338,13 +342,24 @@ export const AppRoot: React.FC = () => {
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(prompt);
-        setStatusNotice("Copied optimization prompt to clipboard.");
+        setStatusNotice(copiedNotice);
         setTimeout(() => setStatusNotice(null), 3500);
       }
     } catch {
-      setStatusNotice("Unable to copy optimization prompt automatically.");
+      setStatusNotice("Unable to copy prompt automatically.");
       setTimeout(() => setStatusNotice(null), 3500);
     }
+  };
+
+  const handleOptimizeSkill = async (
+    _metric: PluginSkillMetric,
+    prompt: string
+  ) => {
+    await sendOrCopyPrompt(
+      prompt,
+      "Sent optimization request to agent.",
+      "Copied optimization prompt to clipboard."
+    );
   };
 
   const projectLabel =
@@ -461,7 +476,7 @@ export const AppRoot: React.FC = () => {
               dashboard={dashboard}
               canSendMessage={canMessage}
               onSelectProject={(p) => void openProject(p)}
-              onSelectChat={(id) => void openChat(id)}
+              onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenSettings={() => setShowSettings(true)}
               onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
             />
@@ -469,26 +484,43 @@ export const AppRoot: React.FC = () => {
 
           {view === "project" && projectDetail && (
             <ProjectDetailView
+              key={projectDetail.summary.projectPath}
               detail={projectDetail}
               canSendMessage={canMessage}
-              onSelectChat={(id) => void openChat(id)}
+              onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenFile={handleOpenFileInAuxPane}
               onOpenSettings={() => setShowSettings(true)}
               onAskAgent={handleAskAgent}
               onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
+              onTroubleshootPrompt={(p) =>
+                void sendOrCopyPrompt(
+                  p,
+                  "Sent troubleshooting request to agent.",
+                  "Copied troubleshooting prompt to clipboard."
+                )
+              }
             />
           )}
 
           {view === "chat" && chatDetail && (
             <ChatDetailView
+              key={chatDetail.summary.conversationId}
               detail={chatDetail}
               knownProjects={dashboard.projects.map((p) => p.projectPath)}
               canSendMessage={canMessage}
+              initialHighlightStep={initialChatStep}
               onAssignProject={handleAssignProject}
-              onSelectChat={(id) => void openChat(id)}
+              onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenSettings={() => setShowSettings(true)}
               onAskAgent={handleAskAgent}
               onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
+              onTroubleshootPrompt={(p) =>
+                void sendOrCopyPrompt(
+                  p,
+                  "Sent troubleshooting request to agent.",
+                  "Copied troubleshooting prompt to clipboard."
+                )
+              }
             />
           )}
         </>

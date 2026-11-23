@@ -1,12 +1,16 @@
 import React, { useMemo, useState } from "react";
 import type { PluginSkillMetric } from "../../shared/types";
 import {
+  buildErrorTroubleshootingPrompt,
   buildSkillOptimizationPrompt,
+  describeErrorBadge,
+  describePluginWarning,
   fmtDuration,
   fmtK,
   fmtPct,
   fmtUsd
 } from "../format";
+import { ErrorGuidanceBlock } from "./ErrorGuidanceBlock";
 
 interface Props {
   title?: string;
@@ -15,8 +19,13 @@ interface Props {
   showProjectsColumn?: boolean;
   defaultLimit?: number;
   scopeLabel?: string;
+  currentConversationId?: string;
   canSendMessage?: boolean;
   onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
+  onSelectChat?: (conversationId: string, stepIndex?: number) => void;
+  onJumpToStep?: (stepIndex: number) => void;
+  onViewAll?: () => void;
+  viewAllLabel?: string;
 }
 
 type KindFilter = "All" | "Plugin" | "Skill";
@@ -29,13 +38,21 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
   showProjectsColumn = false,
   defaultLimit,
   scopeLabel = "current scope",
+  currentConversationId,
   canSendMessage = false,
-  onOptimizeSkill
+  onOptimizeSkill,
+  onSelectChat,
+  onJumpToStep,
+  onViewAll,
+  viewAllLabel
 }) => {
   const [filter, setFilter] = useState<KindFilter>("All");
   const [basis, setBasis] = useState<ImpactBasis>("spend");
   const [showAll, setShowAll] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [expandedErrorChildKeys, setExpandedErrorChildKeys] = useState<
+    Set<string>
+  >(() => new Set());
 
   const counts = useMemo(() => {
     let plugins = 0;
@@ -84,6 +101,15 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleChildError = (errKey: string) => {
+    setExpandedErrorChildKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(errKey)) next.delete(errKey);
+      else next.add(errKey);
       return next;
     });
   };
@@ -163,16 +189,27 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
             </button>
           </div>
 
-          {hasMore && defaultLimit && (
+          {onViewAll && (hasMore || metrics.length > (defaultLimit ?? Infinity)) ? (
             <button
               type="button"
               className="btn btn-sm"
-              onClick={() => setShowAll((v) => !v)}
+              onClick={onViewAll}
             >
-              {showAll
-                ? `Show top ${defaultLimit}`
-                : `Show all (${sortedAndFiltered.length})`}
+              {viewAllLabel ?? `View all (${metrics.length}) →`}
             </button>
+          ) : (
+            hasMore &&
+            defaultLimit && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setShowAll((v) => !v)}
+              >
+                {showAll
+                  ? `Show top ${defaultLimit}`
+                  : `Show all (${sortedAndFiltered.length})`}
+              </button>
+            )
           )}
         </div>
       </div>
@@ -181,15 +218,15 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
         <table className="data-table">
           <thead>
             <tr>
-              <th>#</th>
-              <th>Plugin / Skill</th>
-              <th>
+              <th scope="col">#</th>
+              <th scope="col">Plugin / Skill</th>
+              <th scope="col">
                 {basis === "spend" ? "Share of Spend" : "Share of Context"}
               </th>
-              <th className="text-right">Active Time</th>
-              <th className="text-right">Context (Instr / Exec)</th>
-              <th className="text-right">Calls</th>
-              <th className="text-right">
+              <th scope="col" className="text-right">Active Time</th>
+              <th scope="col" className="text-right">Context (Instr / Exec)</th>
+              <th scope="col" className="text-right">Calls</th>
+              <th scope="col" className="text-right">
                 {showProjectsColumn ? "Projects" : "Chats"}
               </th>
             </tr>
@@ -276,7 +313,12 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                           {m.warningCount > 0 && (
                             <span
                               className="badge badge-warning"
-                              title={m.warnings.join(", ")}
+                              title={`${m.warnings
+                                .map((w) => {
+                                  const info = describePluginWarning(w);
+                                  return `${w}: ${info.meaning} (${info.remediation})`;
+                                })
+                                .join(" | ")} — Click row for breakdown and optimization steps`}
                             >
                               {m.warnings[0]}
                               {m.warningCount > 1
@@ -284,11 +326,32 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                 : ""}
                             </span>
                           )}
-                          {m.errors > 0 && (
-                            <span className="badge badge-danger">
-                              {m.errors} err
-                            </span>
-                          )}
+                          {m.errors > 0 && (() => {
+                            const parentErrGuidance = describeErrorBadge(
+                              m.kind,
+                              m.errors,
+                              m.name,
+                              m.errorSamples
+                            );
+                            return (
+                              <button
+                                type="button"
+                                className="badge badge-danger badge-btn"
+                                aria-expanded={isExpanded}
+                                aria-label={`${m.errors} err on ${m.name} — inspect errors and remediation`}
+                                title={parentErrGuidance.summary}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpand(m.id);
+                                }}
+                              >
+                                {m.errors} err{" "}
+                                <span aria-hidden="true">
+                                  {isExpanded ? "▾" : "▸"}
+                                </span>
+                              </button>
+                            );
+                          })()}
                         </div>
                       </td>
                       <td style={{ minWidth: 195 }}>
@@ -440,6 +503,45 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                               )}
                             </div>
 
+                            {m.errors > 0 && (
+                              <ErrorGuidanceBlock
+                                title={`Errors under ${m.name}`}
+                                kind={m.kind}
+                                itemName={m.name}
+                                errorCount={m.errors}
+                                samples={m.errorSamples}
+                                collapsibleSamples={m.children.length > 1}
+                                hint={
+                                  m.children.some((c) => c.errors > 0)
+                                    ? "Click any red err badge below for per-item details"
+                                    : undefined
+                                }
+                                currentConversationId={currentConversationId}
+                                canSendMessage={canSendMessage}
+                                style={{
+                                  marginBottom: m.children.length > 0 ? 8 : 0
+                                }}
+                                onSelectChat={onSelectChat}
+                                onJumpToStep={onJumpToStep}
+                                onTroubleshoot={
+                                  onOptimizeSkill
+                                    ? () =>
+                                        onOptimizeSkill(
+                                          m,
+                                          buildErrorTroubleshootingPrompt({
+                                            name: m.name,
+                                            kind: m.kind,
+                                            errorCount: m.errors,
+                                            scopeLabel,
+                                            targetPaths: m.targetPaths,
+                                            samples: m.errorSamples
+                                          })
+                                        )
+                                    : undefined
+                                }
+                              />
+                            )}
+
                             {m.children.length > 0 && (
                               <table
                                 className="data-table"
@@ -451,72 +553,168 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                               >
                                 <thead>
                                   <tr>
-                                    <th>Sub-Skill / Tool</th>
-                                    <th>Type</th>
-                                    <th className="text-right">Driven Spend</th>
-                                    <th className="text-right">Active Time</th>
-                                    <th className="text-right">Instr / Exec</th>
-                                    <th className="text-right">Calls</th>
+                                    <th scope="col">Sub-Skill / Tool</th>
+                                    <th scope="col">Type</th>
+                                    <th scope="col" className="text-right">Driven Spend</th>
+                                    <th scope="col" className="text-right">Active Time</th>
+                                    <th scope="col" className="text-right">Instr / Exec</th>
+                                    <th scope="col" className="text-right">Calls</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {m.children.map((ch) => (
-                                    <tr key={ch.key}>
-                                      <td>
-                                        <strong>{ch.name}</strong>
-                                        {ch.isUnusedLoad && (
-                                          <span
-                                            className="badge badge-warning"
-                                            style={{ marginLeft: 6 }}
-                                          >
-                                            Unused load
-                                          </span>
+                                  {m.children.map((ch) => {
+                                    const errKey = `${m.id}::${ch.key}`;
+                                    const isChildErrOpen =
+                                      expandedErrorChildKeys.has(errKey);
+                                    return (
+                                      <React.Fragment key={ch.key}>
+                                        <tr>
+                                          <td>
+                                            <strong>{ch.name}</strong>
+                                            {ch.isUnusedLoad && (() => {
+                                              const info = describePluginWarning("Unused load");
+                                              return (
+                                                <span
+                                                  className="badge badge-warning"
+                                                  style={{ marginLeft: 6 }}
+                                                  title={`${info.meaning} (${info.remediation})`}
+                                                >
+                                                  Unused load
+                                                </span>
+                                              );
+                                            })()}
+                                            {ch.duplicateReads > 0 && (() => {
+                                              const info = describePluginWarning("Duplicate read");
+                                              return (
+                                                <span
+                                                  className="badge badge-warning"
+                                                  style={{ marginLeft: 6 }}
+                                                  title={`${info.meaning} (${info.remediation})`}
+                                                >
+                                                  {ch.duplicateReads + 1}× read
+                                                </span>
+                                              );
+                                            })()}
+                                            {ch.errors > 0 && (() => {
+                                              const chErrGuidance = describeErrorBadge(
+                                                ch.kind,
+                                                ch.errors,
+                                                ch.name,
+                                                ch.errorSamples
+                                              );
+                                              return (
+                                                <button
+                                                  type="button"
+                                                  className="badge badge-danger badge-btn"
+                                                  style={{ marginLeft: 6 }}
+                                                  aria-expanded={isChildErrOpen}
+                                                  aria-label={`${ch.errors} err on ${ch.name} — inspect errors and remediation`}
+                                                  title={chErrGuidance.summary}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    toggleChildError(errKey);
+                                                  }}
+                                                >
+                                                  {ch.errors} err{" "}
+                                                  <span aria-hidden="true">
+                                                    {isChildErrOpen ? "▾" : "▸"}
+                                                  </span>
+                                                </button>
+                                              );
+                                            })()}
+                                          </td>
+                                          <td>
+                                            <span className="badge badge-neutral">
+                                              {ch.kind}
+                                            </span>
+                                          </td>
+                                          <td className="text-right tabular">
+                                            {fmtUsd(ch.drivenCostUsd)}
+                                          </td>
+                                          <td className="text-right tabular">
+                                            {fmtDuration(ch.drivenActiveMs)}
+                                          </td>
+                                          <td className="text-right tabular">
+                                            +{fmtK(ch.instructionTokens)} / +
+                                            {fmtK(ch.executionTokens)}
+                                          </td>
+                                          <td className="text-right tabular">
+                                            {ch.calls}
+                                          </td>
+                                        </tr>
+                                        {isChildErrOpen && ch.errors > 0 && (
+                                          <tr className="err-detail-row">
+                                            <td colSpan={6}>
+                                              <ErrorGuidanceBlock
+                                                title={`${ch.kind}: ${ch.name}`}
+                                                kind={ch.kind}
+                                                itemName={ch.name}
+                                                errorCount={ch.errors}
+                                                samples={ch.errorSamples}
+                                                collapsibleSamples={false}
+                                                currentConversationId={
+                                                  currentConversationId
+                                                }
+                                                canSendMessage={canSendMessage}
+                                                onSelectChat={onSelectChat}
+                                                onJumpToStep={onJumpToStep}
+                                                onTroubleshoot={
+                                                  onOptimizeSkill
+                                                    ? () =>
+                                                        onOptimizeSkill(
+                                                          m,
+                                                          buildErrorTroubleshootingPrompt({
+                                                            name: ch.name,
+                                                            kind: ch.kind,
+                                                            parentName: m.name,
+                                                            errorCount: ch.errors,
+                                                            scopeLabel,
+                                                            targetPaths:
+                                                              ch.targetPaths,
+                                                            samples:
+                                                              ch.errorSamples
+                                                          })
+                                                        )
+                                                    : undefined
+                                                }
+                                              />
+                                            </td>
+                                          </tr>
                                         )}
-                                        {ch.duplicateReads > 0 && (
-                                          <span
-                                            className="badge badge-warning"
-                                            style={{ marginLeft: 6 }}
-                                          >
-                                            {ch.duplicateReads + 1}× read
-                                          </span>
-                                        )}
-                                        {ch.errors > 0 && (
-                                          <span
-                                            className="badge badge-danger"
-                                            style={{ marginLeft: 6 }}
-                                          >
-                                            {ch.errors} err
-                                          </span>
-                                        )}
-                                      </td>
-                                      <td>
-                                        <span className="badge badge-neutral">
-                                          {ch.kind}
-                                        </span>
-                                      </td>
-                                      <td className="text-right tabular">
-                                        {fmtUsd(ch.drivenCostUsd)}
-                                      </td>
-                                      <td className="text-right tabular">
-                                        {fmtDuration(ch.drivenActiveMs)}
-                                      </td>
-                                      <td className="text-right tabular">
-                                        +{fmtK(ch.instructionTokens)} / +
-                                        {fmtK(ch.executionTokens)}
-                                      </td>
-                                      <td className="text-right tabular">
-                                        {ch.calls}
-                                      </td>
-                                    </tr>
-                                  ))}
+                                      </React.Fragment>
+                                    );
+                                  })}
                                 </tbody>
                               </table>
                             )}
 
-                            {m.prescription && (
-                              <div className="drilldown-rx">
-                                <strong>Optimization tip:</strong>{" "}
-                                {m.prescription}
+                            {(m.warnings.length > 0 || m.prescription) && (
+                              <div
+                                className="diag-guidance diag-guidance-warning"
+                                style={{ marginTop: 8 }}
+                              >
+                                {m.warnings.map((w) => {
+                                  const info = describePluginWarning(w);
+                                  return (
+                                    <div key={w} className="diag-guidance-row">
+                                      <strong>{w} — What it means:</strong>{" "}
+                                      {info.meaning}
+                                      {!m.prescription && (
+                                        <>
+                                          {" "}
+                                          <strong>Possible remediation:</strong>{" "}
+                                          {info.remediation}
+                                        </>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {m.prescription && (
+                                  <div className="diag-guidance-row">
+                                    <strong>Possible remediation:</strong>{" "}
+                                    {m.prescription}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>

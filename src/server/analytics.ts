@@ -25,6 +25,7 @@ import type {
   TimeSummary,
   TokenSummary,
   ToolCallRecord,
+  ToolErrorSample,
   TurnRecord
 } from "../shared/types.js";
 import type {
@@ -35,10 +36,14 @@ import type {
 } from "./db.js";
 import type { ParsedTranscript } from "./transcriptParser.js";
 import {
+  addErrorSample,
   clearInstalledPluginsCache,
   computeScopeSkillEfficiency,
   discoverInstalledPlugins,
+  finalizeErrorSamples,
+  formatErrorSampleTarget,
   mergePluginSkillMetrics,
+  normalizeErrorSampleMessage,
   resolveToolPluginAndChild,
   resolveToolPluginOrSkill,
   type ConversationEfficiencyInput,
@@ -765,7 +770,9 @@ function buildDiagnostics(
 }
 
 export function aggregateSkillToolMetrics(
-  toolCalls: ToolCallRecord[],
+  toolCalls: Array<
+    ToolCallRecord & { conversationId?: string; conversationTitle?: string }
+  >,
   plannerSteps: Array<Pick<PlannerStepRecord, "stepIndex" | "model" | "inputTokens" | "cacheReadTokens" | "outputTokens">>,
   pricingRules: ModelPricingRule[]
 ): SkillToolMetric[] {
@@ -781,6 +788,7 @@ export function aggregateSkillToolMetrics(
       costAcc: number;
       intervals: Interval[];
       unplacedDurationMs: number;
+      errorSamplesMap: Map<string, ToolErrorSample>;
     }
   >();
 
@@ -821,11 +829,29 @@ export function aggregateSkillToolMetrics(
       costKnown: false,
       costAcc: 0,
       intervals: [],
-      unplacedDurationMs: 0
+      unplacedDurationMs: 0,
+      errorSamplesMap: new Map<string, ToolErrorSample>()
     };
 
     entry.calls += 1;
-    if (tc.isError) entry.errors += 1;
+    if (tc.isError) {
+      entry.errors += 1;
+      addErrorSample(
+        entry.errorSamplesMap,
+        {
+          message: normalizeErrorSampleMessage(tc.errorPreview),
+          toolName: tc.toolName,
+          target: formatErrorSampleTarget(tc),
+          count: 1,
+          ...(tc.conversationId ? { conversationId: tc.conversationId } : {}),
+          ...(tc.conversationTitle
+            ? { conversationTitle: tc.conversationTitle }
+            : {}),
+          stepIndex: tc.stepIndex
+        },
+        false
+      );
+    }
     if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
       entry.intervals.push({
         start: tc.startedAtMs,
@@ -860,11 +886,24 @@ export function aggregateSkillToolMetrics(
   }
 
   return Array.from(map.values())
-    .map(({ costKnown, costAcc, intervals, unplacedDurationMs, ...rest }) => ({
-      ...rest,
-      totalDurationMs: mergeIntervalsWallMs(intervals) + unplacedDurationMs,
-      estimatedCostUsd: costKnown ? costAcc : null
-    }))
+    .map(
+      ({
+        costKnown,
+        costAcc,
+        intervals,
+        unplacedDurationMs,
+        errorSamplesMap,
+        ...rest
+      }) => {
+        const samples = finalizeErrorSamples(errorSamplesMap, 3);
+        return {
+          ...rest,
+          ...(samples.length > 0 ? { errorSamples: samples } : {}),
+          totalDurationMs: mergeIntervalsWallMs(intervals) + unplacedDurationMs,
+          estimatedCostUsd: costKnown ? costAcc : null
+        };
+      }
+    )
     .sort(
       (a, b) =>
         b.compoundedCacheTokens + b.directTokens - (a.compoundedCacheTokens + a.directTokens) ||
@@ -1486,6 +1525,7 @@ export function buildConversationDetail(
     const cTurns = db.getTurnsForConversation(child.conversationId);
     subagentEffInputs.push({
       conversationId: child.conversationId,
+      title: child.title,
       parentConversationId: child.parentConversationId,
       activeMs: child.activeMs,
       hasTokenTelemetry: child.hasTokenTelemetry,
@@ -1512,7 +1552,11 @@ export function buildConversationDetail(
   );
 
   const skillToolMetrics = aggregateSkillToolMetrics(
-    toolCalls,
+    toolCalls.map((tc) => ({
+      ...tc,
+      conversationId: row.conversationId,
+      conversationTitle: row.title
+    })),
     rawSteps,
     pricingRules
   );
@@ -1521,6 +1565,7 @@ export function buildConversationDetail(
     [
       {
         conversationId: row.conversationId,
+        title: row.title,
         parentConversationId: row.parentConversationId,
         activeMs: row.activeMs,
         hasTokenTelemetry: row.hasTokenTelemetry,
@@ -1656,7 +1701,9 @@ export function buildProjectDetail(
   const allSteps: Array<
     Omit<PlannerStepRecord, "estimatedCostUsd"> & { conversationId?: string }
   > = [];
-  const allTools: Array<ToolCallRecord & { conversationId?: string }> = [];
+  const allTools: Array<
+    ToolCallRecord & { conversationId?: string; conversationTitle?: string }
+  > = [];
 
   for (const r of projectRows) {
     const steps = db.getPlannerStepsForConversation(r.conversationId);
@@ -1670,6 +1717,7 @@ export function buildProjectDetail(
     );
     effInputs.push({
       conversationId: r.conversationId,
+      title: r.title,
       parentConversationId: r.parentConversationId,
       activeMs: r.activeMs,
       hasTokenTelemetry: r.hasTokenTelemetry,
@@ -1681,7 +1729,11 @@ export function buildProjectDetail(
       allSteps.push({ ...st, conversationId: r.conversationId });
     }
     for (const tc of tools) {
-      allTools.push({ ...tc, conversationId: r.conversationId });
+      allTools.push({
+        ...tc,
+        conversationId: r.conversationId,
+        conversationTitle: r.title
+      });
     }
   }
 
