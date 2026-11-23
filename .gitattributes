@@ -1,0 +1,15 @@
+# Normalize line endings across macOS, Linux, and Windows checkouts
+* text=auto eol=lf
+
+# Windows batch scripts require CRLF if ever added
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff2 binary

@@ -1,11 +1,20 @@
 {
   "name": "flight-recorder",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
-  "description": "Antigravity plugin to track tasks, tools, skills, token/cache attribution, estimated costs, and step-by-step timing across projects and chats.",
+  "description": "Antigravity plugin to track and optimize parent-first plugin & skill spend, active time, prompt cache carry, and step-by-step timing across projects and chats.",
+  "author": "Frederic Medery",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fmedery/antigravity-plugin-flight-recorder.git"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "scripts": {
-    "build:server": "tsc -p tsconfig.server.json",
+    "build:server": "tsc -p tsconfig.server.json --noEmit && node scripts/build-server.mjs",
     "build:ui": "vite build",
     "build": "npm run build:server && npm run build:ui",
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",

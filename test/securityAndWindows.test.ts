@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { TrackerDatabase } from "../src/server/db.js";
 import { ingestHookEvents } from "../src/server/hookIngestor.js";
 import {
@@ -320,5 +322,143 @@ test("sanitizePreviewText, hooks/record-event.mjs, POSIX 0600 permissions, ReDoS
     }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("zero-install dist/server/index.js runs outside repo with zero node_modules and passes public manifest/docs contracts", async () => {
+  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+  const serverBundlePath = path.join(repoRoot, "dist", "server", "index.js");
+  const uiBundlePath = path.join(repoRoot, "dist", "ui", "index.html");
+
+  assert.ok(fs.existsSync(serverBundlePath), "Expected dist/server/index.js");
+  assert.ok(fs.existsSync(uiBundlePath), "Expected dist/ui/index.html");
+
+  // 1. Verify dist/server/index.js has zero bare third-party ESM imports (only node:* built-ins)
+  const serverCode = fs.readFileSync(serverBundlePath, "utf8");
+  assert.equal(
+    /^\s*import\s+.*["']@modelcontextprotocol\//m.test(serverCode),
+    false,
+    "Expected @modelcontextprotocol/sdk to be bundled into dist/server/index.js"
+  );
+
+  // 2. Copy dist/ into an isolated temp folder with ZERO node_modules and talk over MCP stdio
+  const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fr-zero-deps-"));
+  const isolatedDistServer = path.join(isolatedRoot, "dist", "server");
+  const isolatedDistUi = path.join(isolatedRoot, "dist", "ui");
+  const isolatedData = path.join(isolatedRoot, "data");
+  fs.mkdirSync(isolatedDistServer, { recursive: true });
+  fs.mkdirSync(isolatedDistUi, { recursive: true });
+  fs.mkdirSync(isolatedData, { recursive: true });
+  fs.copyFileSync(serverBundlePath, path.join(isolatedDistServer, "index.js"));
+  fs.copyFileSync(uiBundlePath, path.join(isolatedDistUi, "index.html"));
+
+  const stderrChunks: string[] = [];
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      path.join(isolatedDistServer, "index.js"),
+      `--data-dir=${isolatedData}`
+    ],
+    cwd: isolatedRoot,
+    stderr: "pipe"
+  });
+  transport.stderr?.on("data", (chunk: Buffer | string) => {
+    stderrChunks.push(String(chunk));
+  });
+
+  const client = new Client({ name: "zero-deps-test", version: "1.0.0" });
+  try {
+    await client.connect(transport);
+    const toolsList = await client.listTools();
+    const toolNames = new Set(toolsList.tools.map((t) => t.name));
+
+    for (const expectedTool of [
+      "open_flight_recorder",
+      "list_projects",
+      "get_project_summary",
+      "get_chat_analysis",
+      "explain_bottlenecks",
+      "get_skill_optimization"
+    ]) {
+      assert.ok(toolNames.has(expectedTool), `Missing MCP tool ${expectedTool}`);
+    }
+
+    const optRes = await client.callTool({
+      name: "get_skill_optimization",
+      arguments: {}
+    });
+    assert.equal(Boolean(optRes.isError), false);
+
+    const stderrText = stderrChunks.join("");
+    assert.equal(
+      stderrText.includes("ExperimentalWarning"),
+      false,
+      `Expected clean stderr without ExperimentalWarning, got: ${stderrText}`
+    );
+
+    // 3. Manifest, hooks, skill, and public documentation contracts
+    const allowedPluginKeys = new Set([
+      "name",
+      "displayName",
+      "version",
+      "description",
+      "logo",
+      "suggestedPrompts",
+      "author",
+      "homepage",
+      "repository",
+      "disabled"
+    ]);
+    const pluginJson = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "plugin.json"), "utf8")
+    ) as Record<string, unknown>;
+    for (const key of Object.keys(pluginJson)) {
+      assert.ok(allowedPluginKeys.has(key), `Unsupported plugin.json key: ${key}`);
+    }
+    assert.equal(
+      pluginJson.repository,
+      "https://github.com/fmedery/antigravity-plugin-flight-recorder"
+    );
+    assert.ok(
+      typeof pluginJson.logo === "string" &&
+        fs.existsSync(path.join(repoRoot, pluginJson.logo))
+    );
+    assert.ok(
+      Array.isArray(pluginJson.suggestedPrompts) &&
+        pluginJson.suggestedPrompts.length <= 3
+    );
+
+    const hooksJson = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "hooks.json"), "utf8")
+    ) as Record<string, Record<string, unknown>>;
+    const hookSuite = hooksJson["flight-recorder-telemetry"];
+    assert.ok(hookSuite);
+    assert.equal("PreToolUse" in hookSuite, false, "Hooks must remain strictly passive");
+    assert.equal(
+      fs.existsSync(path.join(repoRoot, "hooks", "record_event.py")),
+      false,
+      "Legacy Python hook must be removed"
+    );
+    assert.equal(
+      fs.existsSync(path.join(repoRoot, "hooks", "record-event.mjs")),
+      true
+    );
+
+    for (const requiredDoc of ["LICENSE", "SECURITY.md", ".gitattributes", "README.md"]) {
+      assert.ok(
+        fs.existsSync(path.join(repoRoot, requiredDoc)),
+        `Missing required public repo file: ${requiredDoc}`
+      );
+    }
+
+    const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
+    assert.match(readme, /fmedery\/antigravity-plugin-flight-recorder/);
+    assert.match(readme, /PowerShell/i);
+    assert.match(readme, /USERPROFILE/);
+    assert.match(readme, /Download ZIP/i);
+    assert.match(readme, /agy plugin install/);
+  } finally {
+    await client.close().catch(() => {});
+    fs.rmSync(isolatedRoot, { recursive: true, force: true });
   }
 });
