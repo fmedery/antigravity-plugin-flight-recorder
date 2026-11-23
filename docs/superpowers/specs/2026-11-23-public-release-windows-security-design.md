@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-23  
 **Project:** Flight Recorder (`flight-recorder`)  
-**Status:** Draft (Pending Approval)
+**Status:** Approved
 
 ---
 
