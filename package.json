@@ -1,0 +1,30 @@
+{
+  "name": "flight-recorder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Antigravity plugin to track tasks, tools, skills, token/cache attribution, estimated costs, and step-by-step timing across projects and chats.",
+  "scripts": {
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:ui": "vite build",
+    "build": "npm run build:server && npm run build:ui",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
+    "install-plugin": "node scripts/install-plugin.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.0.0",
+    "@types/node": ">=22.15.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.0.2"
+  }
+}

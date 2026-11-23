@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "recorder": {
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/dist/server/index.js",
+        "--data-dir=${PLUGIN_DATA}"
+      ]
+    }
+  }
+}

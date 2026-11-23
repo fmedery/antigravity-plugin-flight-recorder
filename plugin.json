@@ -1,0 +1,12 @@
+{
+  "name": "flight-recorder",
+  "displayName": "Flight Recorder",
+  "version": "0.1.0",
+  "description": "Track tasks, tools, skills, token/cache attribution, estimated costs, and step-by-step timing across entire projects and individual chats.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open Flight Recorder to inspect this project",
+    "Why did this chat use so many tokens and where did time go?",
+    "Show all skills, tools, and subagents used to build this project"
+  ]
+}
