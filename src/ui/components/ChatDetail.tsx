@@ -1,14 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useId, useMemo, useState } from "react";
 import type {
   ConversationDetail,
   DiagnosticFinding,
   PluginSkillMetric
 } from "../../shared/types";
 import { fmtDuration, fmtK, fmtPct, fmtUsd } from "../format";
-import { ModelBreakdownPanel, ModelMixBar } from "./ModelBreakdown";
-import { PluginSkillLeaderboard } from "./PluginSkillLeaderboard";
 import { KpiHelpTip } from "./KpiHelpTip";
+import { ModelBreakdownPanel } from "./ModelBreakdown";
+import { PluginSkillLeaderboard } from "./PluginSkillLeaderboard";
 import { SkillToolMatrix } from "./SkillToolMatrix";
+import { TabStrip, type TabItem } from "./TabStrip";
 import { TimelineWaterfall } from "./TimelineWaterfall";
 import { TokenBreakdownChart } from "./TokenBreakdownChart";
 import { WhyPanel } from "./WhyPanel";
@@ -26,7 +27,8 @@ interface Props {
   onTroubleshootPrompt?: (prompt: string) => void;
 }
 
-type ChatTab = "waterfall" | "models" | "tokens" | "plugins" | "why" | "skills";
+type ChatTab = "timeline" | "issues" | "tokens" | "plugins";
+type PluginsToolsSubtab = "plugins" | "tools";
 
 export const ChatDetailView: React.FC<Props> = ({
   detail,
@@ -40,7 +42,9 @@ export const ChatDetailView: React.FC<Props> = ({
   onOptimizeSkill,
   onTroubleshootPrompt
 }) => {
-  const [tab, setTab] = useState<ChatTab>("waterfall");
+  const [tab, setTab] = useState<ChatTab>("timeline");
+  const [pluginsSubtab, setPluginsSubtab] =
+    useState<PluginsToolsSubtab>("plugins");
   const [highlightStep, setHighlightStep] = useState<number | null>(
     initialHighlightStep
   );
@@ -48,45 +52,36 @@ export const ChatDetailView: React.FC<Props> = ({
   const [projInput, setProjInput] = useState(detail.summary.projectPath);
   const [showSubagents, setShowSubagents] = useState(false);
 
+  const rawTabId = useId();
+  const tabIdPrefix = `chat-tab-${rawTabId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+
   useEffect(() => {
     if (initialHighlightStep !== undefined && initialHighlightStep !== null) {
       setHighlightStep(initialHighlightStep);
-      setTab("waterfall");
+      setTab("timeline");
     }
   }, [initialHighlightStep]);
 
   const subagentTotals = useMemo(() => {
     const subs = detail.subagents;
-    const count = subs.length;
-    let inputTokens = 0;
-    let cacheReadTokens = 0;
-    let outputTokens = 0;
     let totalActiveMs = 0;
-    let costSum = 0;
-    let anyPriced = false;
+    let totalTokens = 0;
     let hasTokenTelemetry = false;
 
     for (const sub of subs) {
-      inputTokens += sub.tokens.inputTokens;
-      cacheReadTokens += sub.tokens.cacheReadTokens;
-      outputTokens += sub.tokens.outputTokens;
+      totalTokens +=
+        sub.tokens.inputTokens +
+        sub.tokens.cacheReadTokens +
+        sub.tokens.outputTokens;
       totalActiveMs += sub.time.activeMs;
       if (sub.tokens.hasTokenTelemetry) hasTokenTelemetry = true;
-      if (sub.tokens.estimatedCostUsd !== null) {
-        anyPriced = true;
-        costSum += sub.tokens.estimatedCostUsd;
-      }
     }
 
-    const totalTokens = inputTokens + cacheReadTokens + outputTokens;
-    const denom = inputTokens + cacheReadTokens;
     return {
-      count,
+      count: subs.length,
       totalTokens,
-      cacheHitRatio: denom > 0 ? cacheReadTokens / denom : 0,
       hasTokenTelemetry,
-      totalActiveMs,
-      estimatedCostUsd: anyPriced ? costSum : null
+      totalActiveMs
     };
   }, [detail.subagents]);
 
@@ -97,6 +92,18 @@ export const ChatDetailView: React.FC<Props> = ({
   const handleSaveProject = async () => {
     await onAssignProject(s.conversationId, projInput);
     setEditingProj(false);
+  };
+
+  const chatTabs: Array<TabItem<ChatTab>> = [
+    { key: "timeline", label: "Timeline" },
+    { key: "issues", label: `Issues (${detail.diagnostics.length})` },
+    { key: "tokens", label: "Tokens & Models" },
+    { key: "plugins", label: "Plugins & Tools" }
+  ];
+
+  const jumpToTimelineStep = (stepIdx: number) => {
+    setHighlightStep(stepIdx);
+    setTab("timeline");
   };
 
   return (
@@ -121,6 +128,18 @@ export const ChatDetailView: React.FC<Props> = ({
             ))}
             {s.hasLiveHooks && (
               <span className="badge badge-success">Live Hooks</span>
+            )}
+            {detail.subagents.length > 0 && (
+              <button
+                type="button"
+                className="subagent-toggle-btn"
+                aria-expanded={showSubagents}
+                onClick={() => setShowSubagents((v) => !v)}
+              >
+                +{detail.subagents.length} subagent
+                {detail.subagents.length === 1 ? "" : "s"}{" "}
+                <span aria-hidden="true">{showSubagents ? "▾" : "▸"}</span>
+              </button>
             )}
           </div>
 
@@ -154,7 +173,7 @@ export const ChatDetailView: React.FC<Props> = ({
                 <input
                   type="text"
                   list="tracker-projects-list"
-                  className="input-field"
+                  className="input-field input-field-sm"
                   style={{ width: 220 }}
                   value={projInput}
                   onChange={(e) => setProjInput(e.target.value)}
@@ -185,81 +204,78 @@ export const ChatDetailView: React.FC<Props> = ({
             </span>
           </div>
         </div>
-
-        {s.modelBreakdown.length === 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {s.models.map((m) => {
-              const unpriced = s.tokens.unpricedModels.includes(m);
-              return (
-                <span
-                  key={m}
-                  className={`badge ${unpriced ? "badge-warning" : "badge-neutral"}`}
-                  style={unpriced ? { cursor: "pointer" } : undefined}
-                  onClick={unpriced ? onOpenSettings : undefined}
-                  title={unpriced ? "Click to configure pricing for this model" : undefined}
-                >
-                  {m}
-                  {unpriced ? " (Unpriced)" : ""}
-                </span>
-              );
-            })}
-          </div>
-        )}
       </div>
 
-      {s.modelBreakdown.length > 0 && (
-        <div
-          className="panel"
-          style={{
-            padding: "8px 12px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap"
-          }}
-        >
-          <div style={{ flex: "1 1 320px", minWidth: 0 }}>
-            <ModelMixBar
-              breakdown={s.modelBreakdown}
-              maxLabels={s.modelBreakdown.length}
-            />
+      {showSubagents && detail.subagents.length > 0 && (
+        <div className="panel" style={{ padding: "8px 12px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              marginBottom: 6,
+              fontSize: 12
+            }}
+          >
+            <strong>
+              Spawned Subagents ({subagentTotals.count} ·{" "}
+              {fmtDuration(subagentTotals.totalActiveMs)}
+              {subagentTotals.hasTokenTelemetry
+                ? ` · ${fmtK(subagentTotals.totalTokens)} tok`
+                : ""}
+              )
+            </strong>
           </div>
-          {detail.modelSwitches.length > 0 && (
-            <button
-              type="button"
-              className="badge badge-info"
-              style={{ border: "none", cursor: "pointer", flexShrink: 0 }}
-              onClick={() => setTab("models")}
-            >
-              {detail.modelSwitches.length} switch
-              {detail.modelSwitches.length === 1 ? "" : "es"}
-            </button>
-          )}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              maxHeight: 180,
+              overflowY: "auto"
+            }}
+          >
+            {detail.subagents.map((sub) => (
+              <button
+                key={sub.conversationId}
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onSelectChat(sub.conversationId)}
+              >
+                {sub.subagentRole || sub.subagentType || "Subagent"} ·{" "}
+                {fmtDuration(sub.time.activeMs)} ·{" "}
+                {sub.tokens.hasTokenTelemetry
+                  ? `${fmtK(
+                      sub.tokens.inputTokens +
+                        sub.tokens.cacheReadTokens +
+                        sub.tokens.outputTokens
+                    )} tok`
+                  : "N/A (legacy)"}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
       <div className="kpi-grid">
         <div className="kpi-card">
           <div className="kpi-label">
-            <span>Active Agent Time</span>
+            <span>Active Time</span>
             <KpiHelpTip helpKey="activeAgentTime" />
           </div>
           <div className="kpi-value">{fmtDuration(s.time.activeMs)}</div>
           <div className="kpi-sub">
-            {fmtDuration(s.time.modelMs)} model · {fmtDuration(s.time.toolWallMs)} tools (
-            {s.time.parallelismFactor}x)
+            {fmtDuration(s.time.modelMs)} model · {fmtDuration(s.time.toolWallMs)} tools
           </div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">
-            <span>User Wait / Idle</span>
+            <span>Turns &amp; Wait</span>
             <KpiHelpTip helpKey="userWaitIdle" />
           </div>
-          <div className="kpi-value">{fmtDuration(s.time.userIdleMs)}</div>
-          <div className="kpi-sub">
-            {s.turnCount} turns · {s.toolCallCount} tool calls
-          </div>
+          <div className="kpi-value">{s.turnCount} turns</div>
+          <div className="kpi-sub">{fmtDuration(s.time.userIdleMs)} idle</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">
@@ -267,20 +283,11 @@ export const ChatDetailView: React.FC<Props> = ({
             <KpiHelpTip helpKey="tokensAndCache" />
           </div>
           <div className="kpi-value">
-            {s.tokens.hasTokenTelemetry ? (
-              <>
-                {fmtK(totalTokens)}{" "}
-                <span style={{ fontSize: 13, color: "var(--txt-success)" }}>
-                  ({fmtPct(s.tokens.cacheHitRatio)})
-                </span>
-              </>
-            ) : (
-              "N/A (legacy)"
-            )}
+            {s.tokens.hasTokenTelemetry ? fmtK(totalTokens) : "N/A (legacy)"}
           </div>
           <div className="kpi-sub">
             {s.tokens.hasTokenTelemetry
-              ? `Peak ${fmtK(s.tokens.peakContextTokens)} · ${fmtK(s.tokens.inputTokens)} new`
+              ? `${fmtPct(s.tokens.cacheHitRatio)} cache · Peak ${fmtK(s.tokens.peakContextTokens)}`
               : "Legacy transcript without token counters"}
           </div>
         </div>
@@ -307,230 +314,98 @@ export const ChatDetailView: React.FC<Props> = ({
         </div>
       </div>
 
-      {detail.subagents.length > 0 && (
-        <div className="panel">
-          <div
-            style={{
-              padding: "8px 12px",
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 10
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: 12
-              }}
-            >
-              <span style={{ fontWeight: 600 }}>Spawned Subagents</span>
-              <span className="badge badge-info tabular">
-                {subagentTotals.count}{" "}
-                {subagentTotals.count === 1 ? "subagent" : "subagents"}
-              </span>
-              <span className="tabular">
-                Tokens:{" "}
-                <strong>
-                  {subagentTotals.hasTokenTelemetry
-                    ? fmtK(subagentTotals.totalTokens)
-                    : "N/A (legacy)"}
-                </strong>
-                {subagentTotals.hasTokenTelemetry ? (
-                  <span style={{ color: "var(--txt-success)" }}>
-                    {" "}
-                    ({fmtPct(subagentTotals.cacheHitRatio)} cache)
-                  </span>
-                ) : null}
-              </span>
-              <span className="tabular">
-                Total Time:{" "}
-                <strong>{fmtDuration(subagentTotals.totalActiveMs)}</strong>
-              </span>
-              {subagentTotals.estimatedCostUsd !== null && (
-                <span className="tabular">
-                  Est. Cost:{" "}
-                  <strong>{fmtUsd(subagentTotals.estimatedCostUsd)}</strong>
-                </span>
-              )}
-            </div>
+      <TabStrip
+        tabs={chatTabs}
+        activeKey={tab}
+        ariaLabel="Chat analysis sections"
+        idPrefix={tabIdPrefix}
+        onSelect={setTab}
+      />
 
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => setShowSubagents((v) => !v)}
-            >
-              {showSubagents ? "Hide list" : "Show list"}
-            </button>
+      <div role="tabpanel" aria-labelledby={`${tabIdPrefix}-${tab}`}>
+        {tab === "timeline" && (
+          <TimelineWaterfall
+            turns={detail.turns}
+            plannerSteps={detail.plannerSteps}
+            toolCalls={detail.toolCalls}
+            highlightStepIndex={highlightStep}
+          />
+        )}
+
+        {tab === "issues" && (
+          <WhyPanel
+            findings={detail.diagnostics}
+            canSendMessage={canSendMessage}
+            onJumpToStep={jumpToTimelineStep}
+            onAskAgent={onAskAgent}
+          />
+        )}
+
+        {tab === "tokens" && (
+          <div>
+            <TokenBreakdownChart plannerSteps={detail.plannerSteps} />
+            <ModelBreakdownPanel
+              title="Model Mix & Switches"
+              breakdown={s.modelBreakdown}
+              switches={detail.modelSwitches}
+              unpricedModels={s.tokens.unpricedModels}
+              onOpenSettings={onOpenSettings}
+              onJumpToStep={jumpToTimelineStep}
+            />
           </div>
+        )}
 
-          {showSubagents && (
-            <div
-              style={{
-                borderTop: "1px solid var(--bdr-secondary)",
-                padding: "8px 12px",
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 6,
-                maxHeight: 220,
-                overflowY: "auto",
-                background: "var(--bg-primary)"
-              }}
-            >
-              {detail.subagents.map((sub) => (
-                <button
-                  key={sub.conversationId}
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => onSelectChat(sub.conversationId)}
-                >
-                  {sub.subagentRole || sub.subagentType || "Subagent"} ·{" "}
-                  {fmtDuration(sub.time.activeMs)} ·{" "}
-                  {sub.tokens.hasTokenTelemetry
-                    ? `${fmtK(
-                        sub.tokens.inputTokens +
-                          sub.tokens.cacheReadTokens +
-                          sub.tokens.outputTokens
-                      )} tok`
-                    : "N/A (legacy)"}
-                </button>
-              ))}
+        {tab === "plugins" && (
+          <div>
+            <div className="subtab-bar" role="group" aria-label="Plugins and tools views">
+              <button
+                type="button"
+                className={`basis-btn ${pluginsSubtab === "plugins" ? "active" : ""}`}
+                onClick={() => setPluginsSubtab("plugins")}
+              >
+                Plugins &amp; Skills ({detail.pluginSkillMetrics.length})
+              </button>
+              <button
+                type="button"
+                className={`basis-btn ${pluginsSubtab === "tools" ? "active" : ""}`}
+                onClick={() => setPluginsSubtab("tools")}
+              >
+                All Tools ({detail.skillToolMetrics.length})
+              </button>
             </div>
-          )}
-        </div>
-      )}
 
-      <div className="tab-strip">
-        <button
-          type="button"
-          className={`tab-pill ${tab === "waterfall" ? "active" : ""}`}
-          onClick={() => setTab("waterfall")}
-        >
-          Chat Waterfall
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "models" ? "active" : ""}`}
-          onClick={() => setTab("models")}
-        >
-          Models ({s.modelBreakdown.length}
-          {detail.modelSwitches.length > 0
-            ? ` · ${detail.modelSwitches.length} sw`
-            : ""}
-          )
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "tokens" ? "active" : ""}`}
-          onClick={() => setTab("tokens")}
-        >
-          Tokens &amp; Cache
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "plugins" ? "active" : ""}`}
-          onClick={() => setTab("plugins")}
-        >
-          Plugins &amp; Skills ({detail.pluginSkillMetrics.length})
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "why" ? "active" : ""}`}
-          onClick={() => setTab("why")}
-        >
-          Why &amp; Bottlenecks ({detail.diagnostics.length})
-        </button>
-        <button
-          type="button"
-          className={`tab-pill ${tab === "skills" ? "active" : ""}`}
-          onClick={() => setTab("skills")}
-        >
-          All Tools ({detail.skillToolMetrics.length})
-        </button>
+            {pluginsSubtab === "plugins" ? (
+              <PluginSkillLeaderboard
+                title="Plugins & Skills Impact"
+                subtitle={
+                  detail.subagents.length > 0
+                    ? `Includes ${detail.subagents.length} subagent${
+                        detail.subagents.length === 1 ? "" : "s"
+                      }`
+                    : undefined
+                }
+                metrics={detail.pluginSkillMetrics}
+                scopeLabel={`conversation "${s.title}" (${s.conversationId.slice(0, 8)})`}
+                currentConversationId={s.conversationId}
+                canSendMessage={canSendMessage}
+                onSelectChat={onSelectChat}
+                onJumpToStep={jumpToTimelineStep}
+                onOptimizeSkill={onOptimizeSkill}
+              />
+            ) : (
+              <SkillToolMatrix
+                metrics={detail.skillToolMetrics}
+                scopeLabel={`conversation "${s.title}" (${s.conversationId.slice(0, 8)})`}
+                currentConversationId={s.conversationId}
+                canSendMessage={canSendMessage}
+                onSelectChat={onSelectChat}
+                onJumpToStep={jumpToTimelineStep}
+                onTroubleshootPrompt={onTroubleshootPrompt}
+              />
+            )}
+          </div>
+        )}
       </div>
-
-      {tab === "waterfall" && (
-        <TimelineWaterfall
-          turns={detail.turns}
-          plannerSteps={detail.plannerSteps}
-          toolCalls={detail.toolCalls}
-          highlightStepIndex={highlightStep}
-        />
-      )}
-
-      {tab === "models" && (
-        <ModelBreakdownPanel
-          title="Chat Model Mix & Orchestrator Switches"
-          breakdown={s.modelBreakdown}
-          switches={detail.modelSwitches}
-          unpricedModels={s.tokens.unpricedModels}
-          onOpenSettings={onOpenSettings}
-          onJumpToStep={(stepIdx) => {
-            setHighlightStep(stepIdx);
-            setTab("waterfall");
-          }}
-        />
-      )}
-
-      {tab === "tokens" && (
-        <TokenBreakdownChart
-          plannerSteps={detail.plannerSteps}
-          diagnostics={detail.diagnostics}
-        />
-      )}
-
-      {tab === "plugins" && (
-        <PluginSkillLeaderboard
-          title="Plugins & Skills Impact"
-          subtitle={
-            detail.subagents.length > 0
-              ? `Includes ${detail.subagents.length} subagent${
-                  detail.subagents.length === 1 ? "" : "s"
-                }`
-              : undefined
-          }
-          metrics={detail.pluginSkillMetrics}
-          scopeLabel={`conversation "${s.title}" (${s.conversationId.slice(0, 8)})`}
-          currentConversationId={s.conversationId}
-          canSendMessage={canSendMessage}
-          onSelectChat={onSelectChat}
-          onJumpToStep={(stepIdx) => {
-            setHighlightStep(stepIdx);
-            setTab("waterfall");
-          }}
-          onOptimizeSkill={onOptimizeSkill}
-        />
-      )}
-
-      {tab === "why" && (
-        <WhyPanel
-          findings={detail.diagnostics}
-          canSendMessage={canSendMessage}
-          onJumpToStep={(stepIdx) => {
-            setHighlightStep(stepIdx);
-            setTab("waterfall");
-          }}
-          onAskAgent={onAskAgent}
-        />
-      )}
-
-      {tab === "skills" && (
-        <SkillToolMatrix
-          metrics={detail.skillToolMetrics}
-          scopeLabel={`conversation "${s.title}" (${s.conversationId.slice(0, 8)})`}
-          currentConversationId={s.conversationId}
-          canSendMessage={canSendMessage}
-          onSelectChat={onSelectChat}
-          onJumpToStep={(stepIdx) => {
-            setHighlightStep(stepIdx);
-            setTab("waterfall");
-          }}
-          onTroubleshootPrompt={onTroubleshootPrompt}
-        />
-      )}
     </div>
   );
 };

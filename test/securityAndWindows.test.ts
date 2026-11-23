@@ -518,8 +518,12 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(uiHtml, /popovertargetaction/);
     assert.match(uiHtml, /Impact for you:/);
     assert.equal(uiHtml.includes("aria-describedby"), false);
-    assert.match(uiHtml, /Top Bottlenecks & Diagnostics/);
-    assert.match(uiHtml, /Root Chats/);
+    assert.match(uiHtml, /Top Issues/);
+    assert.match(uiHtml, /Conversation Timeline/);
+    assert.match(uiHtml, /Tokens & Models/);
+    assert.match(uiHtml, /Plugins & Tools/);
+    assert.match(uiHtml, /wf-turn-row/);
+    assert.match(uiHtml, /diag-summary-btn/);
     assert.match(uiHtml, /tablist/);
     assert.match(uiHtml, /Possible remediation:/);
     assert.match(uiHtml, /diag-guidance/);

@@ -20,7 +20,7 @@ interface Props {
 }
 
 type CategoryFilter = "All" | "Skill" | "Tool" | "MCP" | "Subagent";
-type SortField = "compoundedCacheTokens" | "directTokens" | "totalDurationMs" | "calls";
+type SortField = "context" | "totalDurationMs";
 
 export const SkillToolMatrix: React.FC<Props> = ({
   metrics,
@@ -32,7 +32,7 @@ export const SkillToolMatrix: React.FC<Props> = ({
   onTroubleshootPrompt
 }) => {
   const [filter, setFilter] = useState<CategoryFilter>("All");
-  const [sortBy, setSortBy] = useState<SortField>("compoundedCacheTokens");
+  const [sortBy, setSortBy] = useState<SortField>("context");
   const [sortDesc, setSortDesc] = useState(true);
   const [expandedErrorKeys, setExpandedErrorKeys] = useState<Set<string>>(
     () => new Set()
@@ -43,13 +43,42 @@ export const SkillToolMatrix: React.FC<Props> = ({
     [metrics]
   );
 
+  const categoryCounts = useMemo(() => {
+    const counts: Record<Exclude<CategoryFilter, "All">, number> = {
+      Skill: 0,
+      Tool: 0,
+      MCP: 0,
+      Subagent: 0
+    };
+    for (const m of metrics) {
+      counts[m.category] += 1;
+    }
+    return counts;
+  }, [metrics]);
+
+  const visibleCategories = useMemo(() => {
+    const list: CategoryFilter[] = ["All"];
+    for (const cat of ["Skill", "Tool", "MCP", "Subagent"] as const) {
+      if (categoryCounts[cat] > 0) list.push(cat);
+    }
+    return list;
+  }, [categoryCounts]);
+
   const filtered = useMemo(() => {
     const base =
       filter === "All"
         ? metrics
         : metrics.filter((m) => m.category === filter);
     return [...base].sort((a, b) => {
-      const diff = a[sortBy] - b[sortBy];
+      const aVal =
+        sortBy === "context"
+          ? a.compoundedCacheTokens + a.directTokens
+          : a.totalDurationMs;
+      const bVal =
+        sortBy === "context"
+          ? b.compoundedCacheTokens + b.directTokens
+          : b.totalDurationMs;
+      const diff = aVal - bVal;
       return sortDesc ? -diff : diff;
     });
   }, [metrics, filter, sortBy, sortDesc]);
@@ -94,19 +123,6 @@ export const SkillToolMatrix: React.FC<Props> = ({
     }
   };
 
-  const badgeClass = (cat: SkillToolMetric["category"]): string => {
-    switch (cat) {
-      case "Skill":
-        return "badge badge-warning";
-      case "MCP":
-        return "badge badge-info";
-      case "Subagent":
-        return "badge badge-success";
-      default:
-        return "badge badge-neutral";
-    }
-  };
-
   return (
     <div>
       <div
@@ -120,18 +136,16 @@ export const SkillToolMatrix: React.FC<Props> = ({
         }}
       >
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {(["All", "Skill", "Tool", "MCP", "Subagent"] as CategoryFilter[]).map(
-            (cat) => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setFilter(cat)}
-                className={`tab-pill ${filter === cat ? "active" : ""}`}
-              >
-                {cat === "All" ? `All (${metrics.length})` : `${cat}s`}
-              </button>
-            )
-          )}
+          {visibleCategories.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setFilter(cat)}
+              className={`tab-pill ${filter === cat ? "active" : ""}`}
+            >
+              {cat === "All" ? `All (${metrics.length})` : `${cat}s`}
+            </button>
+          ))}
         </div>
         <span style={{ fontSize: 12, color: "var(--txt-tertiary)" }}>
           {hasAnyErrors
@@ -145,16 +159,7 @@ export const SkillToolMatrix: React.FC<Props> = ({
           <table className="data-table">
             <thead>
               <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Type</th>
-                <th
-                  scope="col"
-                  className="text-right"
-                  style={{ cursor: "pointer" }}
-                  onClick={() => toggleSort("calls")}
-                >
-                  Calls {sortBy === "calls" ? (sortDesc ? "↓" : "↑") : ""}
-                </th>
+                <th scope="col">Tool / Skill</th>
                 <th
                   scope="col"
                   className="text-right"
@@ -168,18 +173,10 @@ export const SkillToolMatrix: React.FC<Props> = ({
                   scope="col"
                   className="text-right"
                   style={{ cursor: "pointer" }}
-                  onClick={() => toggleSort("directTokens")}
+                  onClick={() => toggleSort("context")}
                 >
-                  Direct {sortBy === "directTokens" ? (sortDesc ? "↓" : "↑") : ""}
-                </th>
-                <th
-                  scope="col"
-                  className="text-right"
-                  style={{ cursor: "pointer" }}
-                  onClick={() => toggleSort("compoundedCacheTokens")}
-                >
-                  Compounded Carry{" "}
-                  {sortBy === "compoundedCacheTokens" ? (sortDesc ? "↓" : "↑") : ""}
+                  Context Impact{" "}
+                  {sortBy === "context" ? (sortDesc ? "↓" : "↑") : ""}
                 </th>
                 <th scope="col" className="text-right">Est. Cost</th>
               </tr>
@@ -187,71 +184,63 @@ export const SkillToolMatrix: React.FC<Props> = ({
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ color: "var(--txt-tertiary)", padding: 14 }}>
+                  <td colSpan={4} style={{ color: "var(--txt-tertiary)", padding: 14 }}>
                     No items in this category.
                   </td>
                 </tr>
               ) : (
                 filtered.map((m) => {
+                  const totalContextTok =
+                    m.compoundedCacheTokens + m.directTokens;
                   const pct = Math.max(
                     4,
-                    Math.round(
-                      ((m.compoundedCacheTokens + m.directTokens) / maxImpact) * 100
-                    )
+                    Math.round((totalContextTok / maxImpact) * 100)
                   );
                   const isErrOpen = expandedErrorKeys.has(m.key);
                   return (
                     <React.Fragment key={m.key}>
                       <tr>
                         <td>
-                          <strong>{m.name}</strong>
-                          {m.pluginOrServer && (
-                            <span
-                              style={{
-                                marginLeft: 6,
-                                color: "var(--txt-tertiary)",
-                                fontSize: 12
-                              }}
-                            >
-                              ({m.pluginOrServer})
-                            </span>
-                          )}
-                          {m.errors > 0 && (() => {
-                            const errGuidance = describeErrorBadge(
-                              m.category,
-                              m.errors,
-                              m.name,
-                              m.errorSamples
-                            );
-                            return (
-                              <button
-                                type="button"
-                                className="badge badge-danger badge-btn"
-                                style={{ marginLeft: 6 }}
-                                aria-expanded={isErrOpen}
-                                aria-label={`${m.errors} err on ${m.name} — inspect errors and remediation`}
-                                title={errGuidance.summary}
-                                onClick={() => toggleErrorRow(m.key)}
-                              >
-                                {m.errors} err{" "}
-                                <span aria-hidden="true">
-                                  {isErrOpen ? "▾" : "▸"}
-                                </span>
-                              </button>
-                            );
-                          })()}
+                          <div>
+                            <strong>{m.name}</strong>
+                            {m.errors > 0 && (() => {
+                              const errGuidance = describeErrorBadge(
+                                m.category,
+                                m.errors,
+                                m.name,
+                                m.errorSamples
+                              );
+                              return (
+                                <button
+                                  type="button"
+                                  className="badge badge-danger badge-btn"
+                                  style={{ marginLeft: 6 }}
+                                  aria-expanded={isErrOpen}
+                                  aria-label={`${m.errors} err on ${m.name} — inspect errors and remediation`}
+                                  title={errGuidance.summary}
+                                  onClick={() => toggleErrorRow(m.key)}
+                                >
+                                  {m.errors} err{" "}
+                                  <span aria-hidden="true">
+                                    {isErrOpen ? "▾" : "▸"}
+                                  </span>
+                                </button>
+                              );
+                            })()}
+                          </div>
+                          <div className="cell-sub">
+                            {m.category}
+                            {m.pluginOrServer ? ` · ${m.pluginOrServer}` : ""}
+                            {` · ${m.calls} calls`}
+                          </div>
                         </td>
-                        <td>
-                          <span className={badgeClass(m.category)}>{m.category}</span>
-                        </td>
-                        <td className="text-right tabular">{m.calls}</td>
                         <td className="text-right tabular">
                           {fmtDuration(m.totalDurationMs)}
                         </td>
-                        <td className="text-right tabular">
-                          +{fmtK(m.directTokens)}
-                        </td>
-                        <td className="text-right">
+                        <td
+                          className="text-right"
+                          title={`+${fmtK(m.directTokens)} direct / +${fmtK(m.compoundedCacheTokens)} cache carry`}
+                        >
                           <div
                             style={{
                               display: "inline-flex",
@@ -277,8 +266,8 @@ export const SkillToolMatrix: React.FC<Props> = ({
                                 }}
                               />
                             </div>
-                            <span className="tabular" style={{ minWidth: 46, fontWeight: 600 }}>
-                              +{fmtK(m.compoundedCacheTokens)}
+                            <span className="tabular" style={{ minWidth: 52, fontWeight: 600 }}>
+                              +{fmtK(totalContextTok)}
                             </span>
                           </div>
                         </td>
@@ -288,7 +277,7 @@ export const SkillToolMatrix: React.FC<Props> = ({
                       </tr>
                       {isErrOpen && m.errors > 0 && (
                         <tr className="err-detail-row">
-                          <td colSpan={7}>
+                          <td colSpan={4}>
                             <ErrorGuidanceBlock
                               title={`${m.category}: ${m.name}`}
                               kind={m.category}

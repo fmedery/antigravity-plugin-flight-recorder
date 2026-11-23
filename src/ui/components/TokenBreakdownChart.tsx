@@ -5,13 +5,10 @@ import { buildModelColorMap, getModelColor } from "../modelColors";
 
 interface Props {
   plannerSteps: PlannerStepRecord[];
-  diagnostics: DiagnosticFinding[];
+  diagnostics?: DiagnosticFinding[];
 }
 
-export const TokenBreakdownChart: React.FC<Props> = ({
-  plannerSteps,
-  diagnostics
-}) => {
+export const TokenBreakdownChart: React.FC<Props> = ({ plannerSteps }) => {
   const [selectedIdx, setSelectedIdx] = useState<number>(() => {
     const missIdx = plannerSteps.findIndex((s) => s.isCacheMiss);
     return missIdx >= 0 ? missIdx : Math.max(0, plannerSteps.length - 1);
@@ -69,18 +66,6 @@ export const TokenBreakdownChart: React.FC<Props> = ({
     const key = (model || "").trim() || "unknown";
     return modelColorMap.get(key) ?? getModelColor(key);
   };
-
-  const tokenDrivers = useMemo(
-    () =>
-      diagnostics.filter(
-        (d) =>
-          d.category === "token_driver" ||
-          d.category === "cache_miss" ||
-          d.category === "repeated_read" ||
-          d.category === "model_split"
-      ),
-    [diagnostics]
-  );
 
   if (plannerSteps.length === 0) {
     return (
@@ -380,48 +365,6 @@ export const TokenBreakdownChart: React.FC<Props> = ({
           </svg>
         </div>
       </div>
-
-      {tokenDrivers.length > 0 && (
-        <div className="panel" style={{ padding: "10px 12px" }}>
-          <div className="panel-title" style={{ marginBottom: 6 }}>
-            Why Tokens Grew
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {tokenDrivers.slice(0, 6).map((d) => (
-              <div
-                key={d.id}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  paddingTop: 5,
-                  borderTop: "1px solid var(--bdr-secondary)"
-                }}
-              >
-                <div>
-                  <span
-                    className={`badge ${
-                      d.severity === "warning" ? "badge-warning" : "badge-info"
-                    }`}
-                    style={{ marginRight: 6 }}
-                  >
-                    {d.citation}
-                  </span>
-                  <strong>{d.title}</strong>
-                  <div style={{ color: "var(--txt-secondary)", marginTop: 2 }}>
-                    {d.detail}
-                  </div>
-                </div>
-                {d.impactTokens !== null && (
-                  <div className="tabular" style={{ fontWeight: 600, flexShrink: 0 }}>
-                    +{fmtK(d.impactTokens)} tok
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

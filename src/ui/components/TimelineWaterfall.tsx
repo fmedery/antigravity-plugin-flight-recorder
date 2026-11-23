@@ -35,19 +35,25 @@ interface WaterfallItem {
   parallelFactor?: number;
 }
 
+interface TurnGroup {
+  turn: TurnRecord;
+  items: WaterfallItem[];
+  turnTimelineMs: number;
+  errorCount: number;
+  cacheMissCount: number;
+  hasSubagent: boolean;
+  modelsUsed: string[];
+}
+
 export const TimelineWaterfall: React.FC<Props> = ({
   turns,
   plannerSteps,
   toolCalls,
   highlightStepIndex
 }) => {
-  const { turnGroups, totalActiveTimelineMs, allItems, distinctModels, modelColors } = useMemo(() => {
-    let cursorMs = 0;
+  const { turnGroups, allItems, modelColors } = useMemo(() => {
     const flatItems: WaterfallItem[] = [];
-    const groups: Array<{
-      turn: TurnRecord;
-      items: WaterfallItem[];
-    }> = [];
+    const groups: TurnGroup[] = [];
 
     const globalIdxByStep = new Map<PlannerStepRecord, number>();
     const switchFromByStep = new Map<PlannerStepRecord, string>();
@@ -92,6 +98,11 @@ export const TimelineWaterfall: React.FC<Props> = ({
           ];
 
     for (const turn of orderedTurns) {
+      let turnCursorMs = 0;
+      let errorCount = 0;
+      let cacheMissCount = 0;
+      let hasSubagent = false;
+      const turnModels = new Set<string>();
       const turnItems: WaterfallItem[] = [];
       const steps = plannerSteps.filter((s) => s.turnIndex === turn.turnIndex);
 
@@ -99,6 +110,9 @@ export const TimelineWaterfall: React.FC<Props> = ({
         const psGlobalIdx = globalIdxByStep.get(ps) ?? 0;
         const switchedFrom = switchFromByStep.get(ps);
         const isModelSwitch = Boolean(switchedFrom);
+        const cleanModel = (ps.model || "").trim() || "unknown";
+        turnModels.add(cleanModel);
+        if (ps.isCacheMiss) cacheMissCount += 1;
 
         let badge = "Model";
         let badgeVariant: WaterfallItem["badgeVariant"] = "info";
@@ -123,9 +137,9 @@ export const TimelineWaterfall: React.FC<Props> = ({
           badge,
           badgeVariant,
           barColor: hasMultiModel
-            ? (colorMap.get((ps.model || "").trim() || "unknown") ?? getModelColor(ps.model))
+            ? (colorMap.get(cleanModel) ?? getModelColor(ps.model))
             : "var(--chart-model)",
-          activeOffsetMs: cursorMs,
+          activeOffsetMs: turnCursorMs,
           durationMs: modelDur,
           outputLabel: `${fmtK(ps.outputTokens)} out`,
           directTokens: ps.inputTokens,
@@ -138,7 +152,7 @@ export const TimelineWaterfall: React.FC<Props> = ({
                 ? `Model switched (${switchedFrom} → ${ps.model}) · ${ps.attributedSummary || "Model planning & response generation"}`
                 : ps.attributedSummary || "Model planning & response generation"
         };
-        cursorMs += modelDur;
+        turnCursorMs += modelDur;
         turnItems.push(modelItem);
         flatItems.push(modelItem);
 
@@ -169,6 +183,9 @@ export const TimelineWaterfall: React.FC<Props> = ({
               : 1;
 
           batchTools.forEach((tc, idx) => {
+            if (tc.isError) errorCount += 1;
+            if (tc.category === "subagent") hasSubagent = true;
+
             const relStart =
               Number.isFinite(batchMinStart) &&
               tc.startedAtMs &&
@@ -177,32 +194,32 @@ export const TimelineWaterfall: React.FC<Props> = ({
                 : 0;
             const dur = Math.max(120, tc.durationMs);
 
-            let badge = "Tool";
-            let badgeVariant: WaterfallItem["badgeVariant"] = "neutral";
+            let tBadge = "Tool";
+            let tBadgeVariant: WaterfallItem["badgeVariant"] = "neutral";
             let barColor = "var(--chart-cache)";
 
             if (tc.isError) {
-              badge = "Error";
-              badgeVariant = "danger";
+              tBadge = "Error";
+              tBadgeVariant = "danger";
               barColor = "var(--chart-error)";
             } else if (tc.category === "skill") {
-              badge = "Skill";
-              badgeVariant = "warning";
+              tBadge = "Skill";
+              tBadgeVariant = "warning";
               barColor = "var(--chart-skill)";
             } else if (tc.category === "subagent") {
-              badge = "Subagent";
-              badgeVariant = "info";
+              tBadge = "Subagent";
+              tBadgeVariant = "info";
               barColor = "var(--chart-subagent)";
             } else if (tc.category === "mcp") {
-              badge = tc.mcpServer ? `MCP:${tc.mcpServer}` : "MCP";
-              badgeVariant = "info";
+              tBadge = tc.mcpServer ? `MCP:${tc.mcpServer}` : "MCP";
+              tBadgeVariant = "info";
               barColor = "var(--chart-output)";
             } else if (
               idx === batchTools.length - 1 &&
               parallelRatio >= 1.3
             ) {
-              badge = `${parallelRatio}x parallel`;
-              badgeVariant = "success";
+              tBadge = `${parallelRatio}x parallel`;
+              tBadgeVariant = "success";
             }
 
             const toolLabel = tc.skillName
@@ -217,10 +234,10 @@ export const TimelineWaterfall: React.FC<Props> = ({
               stepIndex: tc.stepIndex,
               turnIndex: turn.turnIndex,
               name: toolLabel,
-              badge,
-              badgeVariant,
+              badge: tBadge,
+              badgeVariant: tBadgeVariant,
               barColor,
-              activeOffsetMs: cursorMs + relStart,
+              activeOffsetMs: turnCursorMs + relStart,
               durationMs: dur,
               outputLabel: fmtBytes(tc.resultBytes),
               directTokens: tc.attributedInputTokens,
@@ -238,43 +255,59 @@ export const TimelineWaterfall: React.FC<Props> = ({
             flatItems.push(toolItem);
           });
 
-          cursorMs += Math.max(150, batchWall);
+          turnCursorMs += Math.max(150, batchWall);
         }
       }
 
-      groups.push({ turn, items: turnItems });
+      groups.push({
+        turn,
+        items: turnItems,
+        turnTimelineMs: Math.max(turnCursorMs, 1),
+        errorCount,
+        cacheMissCount,
+        hasSubagent,
+        modelsUsed: Array.from(turnModels)
+      });
     }
 
     return {
       turnGroups: groups,
-      totalActiveTimelineMs: Math.max(cursorMs, 1),
       allItems: flatItems,
-      distinctModels: modelList,
       modelColors: colorMap
     };
   }, [turns, plannerSteps, toolCalls]);
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expandedTurns, setExpandedTurns] = useState<Set<number>>(() => {
+    const initial = new Set<number>();
+    if (highlightStepIndex !== undefined && highlightStepIndex !== null) {
+      const target = allItems.find((it) => it.stepIndex === highlightStepIndex);
+      if (target) initial.add(target.turnIndex);
+    } else if (turnGroups.length === 1) {
+      initial.add(turnGroups[0].turn.turnIndex);
+    }
+    return initial;
+  });
+
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    if (highlightStepIndex !== undefined && highlightStepIndex !== null) {
+      const target = allItems.find((it) => it.stepIndex === highlightStepIndex);
+      if (target) return target.id;
+    }
+    return null;
+  });
 
   useEffect(() => {
-    if (highlightStepIndex !== undefined && highlightStepIndex !== null) {
-      setSelectedId(null);
-    }
-  }, [highlightStepIndex]);
-
-  const selectedItem = useMemo(() => {
-    if (highlightStepIndex !== undefined && highlightStepIndex !== null) {
-      const byHighlight = allItems.find(
-        (it) => it.stepIndex === highlightStepIndex
-      );
-      if (byHighlight && !selectedId) return byHighlight;
-    }
-    if (selectedId) {
-      const found = allItems.find((it) => it.id === selectedId);
-      if (found) return found;
-    }
-    return allItems[0] ?? null;
-  }, [allItems, selectedId, highlightStepIndex]);
+    if (highlightStepIndex === undefined || highlightStepIndex === null) return;
+    const target = allItems.find((it) => it.stepIndex === highlightStepIndex);
+    if (!target) return;
+    setExpandedTurns((prev) => {
+      if (prev.has(target.turnIndex)) return prev;
+      const next = new Set(prev);
+      next.add(target.turnIndex);
+      return next;
+    });
+    setSelectedId(target.id);
+  }, [highlightStepIndex, allItems]);
 
   if (allItems.length === 0) {
     return (
@@ -284,225 +317,328 @@ export const TimelineWaterfall: React.FC<Props> = ({
     );
   }
 
+  const allTurnsExpanded =
+    turnGroups.length > 0 &&
+    turnGroups.every((g) => expandedTurns.has(g.turn.turnIndex));
+
+  const toggleTurn = (turnIndex: number) => {
+    setExpandedTurns((prev) => {
+      const next = new Set(prev);
+      if (next.has(turnIndex)) next.delete(turnIndex);
+      else next.add(turnIndex);
+      return next;
+    });
+  };
+
+  const toggleAllTurns = () => {
+    if (allTurnsExpanded) {
+      setExpandedTurns(new Set());
+    } else {
+      setExpandedTurns(new Set(turnGroups.map((g) => g.turn.turnIndex)));
+    }
+  };
+
   return (
-    <div>
-      <div className="panel">
-        <div className="panel-header">
-          <span className="panel-title">
-            Step-by-Step Active Waterfall (click any bar to inspect)
-          </span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, color: "var(--txt-secondary)" }}>
-            {distinctModels.length > 1 ? (
-              <>
-                {distinctModels.slice(0, 5).map((m) => (
-                  <span key={m} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <span
-                      style={{
-                        width: 9,
-                        height: 9,
-                        borderRadius: 2,
-                        background: modelColors.get(m) ?? getModelColor(m)
-                      }}
-                    />
-                    {m}
-                  </span>
-                ))}
-                {distinctModels.length > 5 && (
-                  <span style={{ color: "var(--txt-tertiary)" }}>
-                    +{distinctModels.length - 5} more
-                  </span>
-                )}
-              </>
-            ) : (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--chart-model)" }} />
-                Model
-              </span>
-            )}
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--chart-skill)" }} />
-              Skill
-            </span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--chart-cache)" }} />
-              Tool
-            </span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--chart-subagent)" }} />
-              Subagent
-            </span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--chart-error)" }} />
-              Error
-            </span>
-            <span className="tabular" style={{ color: "var(--txt-tertiary)" }}>
-              0s → {fmtDuration(totalActiveTimelineMs)}
-            </span>
-          </div>
-        </div>
-
+    <div className="panel">
+      <div className="panel-header">
         <div>
-          {turnGroups.map(({ turn, items }) => (
-            <React.Fragment key={turn.turnIndex}>
-              {turn.userIdleBeforeMs > 2000 && (
-                <div
-                  style={{
-                    padding: "4px 10px",
-                    textAlign: "center",
-                    fontSize: 12,
-                    color: "var(--txt-tertiary)",
-                    background: "var(--bg-primary)",
-                    borderBottom: "1px dashed var(--bdr-primary)"
-                  }}
-                >
-                  ⋯ User Wait / Idle Gap: {fmtDuration(turn.userIdleBeforeMs)} (excluded from active agent time) ⋯
-                </div>
-              )}
-
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 8,
-                  padding: "6px 10px",
-                  background: "var(--bg-tertiary)",
-                  borderBottom: "1px solid var(--bdr-secondary)",
-                  fontSize: 12,
-                  fontWeight: 600
-                }}
-              >
-                <span className="truncate">
-                  Turn {turn.turnIndex + 1}
-                  {turn.slashCommand ? ` (${turn.slashCommand})` : ""} — {turn.promptPreview}
-                </span>
-                <span className="tabular" style={{ color: "var(--txt-secondary)", fontWeight: 500, flexShrink: 0 }}>
-                  {fmtDuration(turn.activeMs)} active
-                </span>
-              </div>
-
-              {items.map((item) => {
-                const leftPct = Math.max(
-                  0,
-                  Math.min(97, (item.activeOffsetMs / totalActiveTimelineMs) * 100)
-                );
-                const widthPct = Math.max(
-                  1.5,
-                  Math.min(100 - leftPct, (item.durationMs / totalActiveTimelineMs) * 100)
-                );
-                const isSelected = selectedItem?.id === item.id;
-
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setSelectedId(item.id)}
-                    className={`wf-row ${isSelected ? "selected" : ""}`}
-                  >
-                    <div className="wf-label">
-                      <span
-                        className="truncate"
-                        style={{ fontWeight: isSelected ? 600 : 400 }}
-                        title={item.name}
-                      >
-                        {item.name}
-                      </span>
-                      <span className={`badge badge-${item.badgeVariant}`}>
-                        {item.badge}
-                      </span>
-                    </div>
-                    <div className="wf-track">
-                      <div
-                        className="wf-bar"
-                        style={{
-                          left: `${leftPct.toFixed(2)}%`,
-                          width: `${widthPct.toFixed(2)}%`,
-                          background: item.barColor
-                        }}
-                      />
-                    </div>
-                    <div
-                      className="tabular text-right"
-                      style={{ width: 58, flexShrink: 0, fontWeight: 500 }}
-                    >
-                      {fmtDuration(item.durationMs)}
-                    </div>
-                  </button>
-                );
-              })}
-            </React.Fragment>
-          ))}
-        </div>
-      </div>
-
-      {selectedItem && (
-        <div
-          className="panel"
-          style={{
-            padding: "9px 12px",
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10
-          }}
-        >
-          <div style={{ minWidth: 0, flex: "1 1 280px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-              <span className={`badge badge-${selectedItem.badgeVariant}`}>
-                {selectedItem.badge}
-              </span>
-              <strong>{selectedItem.name}</strong>
-              <span style={{ color: "var(--txt-tertiary)" }}>
-                (Step {selectedItem.stepIndex}, Turn {selectedItem.turnIndex + 1})
-              </span>
-            </div>
-            <div style={{ marginTop: 3, color: "var(--txt-secondary)", fontSize: 12 }}>
-              {selectedItem.why}
-            </div>
-            {selectedItem.argsPreview && (
-              <div
-                className="truncate"
-                style={{
-                  marginTop: 2,
-                  color: "var(--txt-tertiary)",
-                  fontSize: 12,
-                  fontFamily: "monospace"
-                }}
-                title={selectedItem.argsPreview}
-              >
-                {selectedItem.argsPreview}
-              </div>
-            )}
-          </div>
-
-          <div
-            className="tabular"
+          <span className="panel-title">Conversation Timeline</span>
+          <span
             style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 12,
+              marginLeft: 8,
               fontSize: 12,
-              flexShrink: 0
+              color: "var(--txt-tertiary)",
+              fontWeight: 400
             }}
           >
-            <span>
-              Duration: <strong>{fmtDuration(selectedItem.durationMs)}</strong>
-            </span>
-            <span>
-              Size: <strong>{selectedItem.outputLabel}</strong>
-            </span>
-            <span>
-              Direct: <strong>+{fmtK(selectedItem.directTokens)}</strong>
-            </span>
-            {selectedItem.compoundedTokens > 0 && (
-              <span style={{ color: "var(--txt-info)" }}>
-                Cache Carry: <strong>+{fmtK(selectedItem.compoundedTokens)}</strong>
-              </span>
-            )}
-          </div>
+            Each row is a user turn. Click a turn to inspect its model and tool steps.
+          </span>
         </div>
-      )}
+        {turnGroups.length > 1 && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={toggleAllTurns}
+          >
+            {allTurnsExpanded ? "Collapse all" : `Expand all (${turnGroups.length})`}
+          </button>
+        )}
+      </div>
+
+      <div>
+        {turnGroups.map(
+          ({
+            turn,
+            items,
+            turnTimelineMs,
+            errorCount,
+            cacheMissCount,
+            hasSubagent,
+            modelsUsed
+          }) => {
+            const isTurnOpen = expandedTurns.has(turn.turnIndex);
+            const activeSub = `${fmtDuration(turn.modelMs)} model · ${fmtDuration(turn.toolWallMs)} tools`;
+
+            return (
+              <React.Fragment key={turn.turnIndex}>
+                {turn.userIdleBeforeMs > 2000 && (
+                  <div className="wf-idle-divider">
+                    Paused {fmtDuration(turn.userIdleBeforeMs)} before next prompt
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  className="wf-turn-row"
+                  aria-expanded={isTurnOpen}
+                  onClick={() => toggleTurn(turn.turnIndex)}
+                >
+                  <span className="wf-turn-main">
+                    <span className="diag-chevron" aria-hidden="true">
+                      {isTurnOpen ? "▾" : "▸"}
+                    </span>
+                    <strong style={{ flexShrink: 0 }}>
+                      Turn {turn.turnIndex + 1}
+                    </strong>
+                    {turn.slashCommand && (
+                      <span className="badge badge-info">{turn.slashCommand}</span>
+                    )}
+                    <span className="truncate wf-turn-prompt" title={turn.promptPreview}>
+                      {turn.promptPreview}
+                    </span>
+                  </span>
+
+                  <span className="wf-turn-meta tabular">
+                    {errorCount > 0 && (
+                      <span className="badge badge-danger">{errorCount} err</span>
+                    )}
+                    {cacheMissCount > 0 && (
+                      <span className="badge badge-warning">Cache miss</span>
+                    )}
+                    <span style={{ color: "var(--txt-tertiary)" }}>
+                      {items.length} step{items.length === 1 ? "" : "s"}
+                    </span>
+                    {turn.inputTokens > 0 && (
+                      <span style={{ color: "var(--txt-secondary)" }}>
+                        +{fmtK(turn.inputTokens)} new
+                      </span>
+                    )}
+                    <strong title={activeSub}>{fmtDuration(turn.activeMs)}</strong>
+                  </span>
+                </button>
+
+                {isTurnOpen && (
+                  <div className="wf-turn-body">
+                    <div className="wf-turn-legend">
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                        {modelsUsed.length > 1 ? (
+                          modelsUsed.slice(0, 4).map((m) => (
+                            <span
+                              key={m}
+                              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                            >
+                              <span
+                                style={{
+                                  width: 8,
+                                  height: 8,
+                                  borderRadius: 2,
+                                  background: modelColors.get(m) ?? getModelColor(m)
+                                }}
+                              />
+                              {m}
+                            </span>
+                          ))
+                        ) : (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: 2,
+                                background: "var(--chart-model)"
+                              }}
+                            />
+                            Model
+                          </span>
+                        )}
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: 2,
+                              background: "var(--chart-skill)"
+                            }}
+                          />
+                          Skill
+                        </span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: 2,
+                              background: "var(--chart-cache)"
+                            }}
+                          />
+                          Tool
+                        </span>
+                        {hasSubagent && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: 2,
+                                background: "var(--chart-subagent)"
+                              }}
+                            />
+                            Subagent
+                          </span>
+                        )}
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: 2,
+                              background: "var(--chart-error)"
+                            }}
+                          />
+                          Error
+                        </span>
+                      </div>
+                      <span className="tabular" style={{ color: "var(--txt-tertiary)" }}>
+                        0s → {fmtDuration(turnTimelineMs)}
+                      </span>
+                    </div>
+
+                    {items.length === 0 ? (
+                      <div
+                        style={{
+                          padding: "10px 12px",
+                          fontSize: 12,
+                          color: "var(--txt-tertiary)"
+                        }}
+                      >
+                        No step telemetry recorded for this turn.
+                      </div>
+                    ) : (
+                      items.map((item) => {
+                        const leftPct = Math.max(
+                          0,
+                          Math.min(97, (item.activeOffsetMs / turnTimelineMs) * 100)
+                        );
+                        const widthPct = Math.max(
+                          1.5,
+                          Math.min(
+                            100 - leftPct,
+                            (item.durationMs / turnTimelineMs) * 100
+                          )
+                        );
+                        const isSelected = selectedId === item.id;
+
+                        return (
+                          <React.Fragment key={item.id}>
+                            <button
+                              type="button"
+                              aria-expanded={isSelected}
+                              onClick={() =>
+                                setSelectedId((prev) =>
+                                  prev === item.id ? null : item.id
+                                )
+                              }
+                              className={`wf-row ${isSelected ? "selected" : ""}`}
+                            >
+                              <div className="wf-label">
+                                <span
+                                  className="truncate"
+                                  style={{ fontWeight: isSelected ? 600 : 400 }}
+                                  title={item.name}
+                                >
+                                  {item.name}
+                                </span>
+                                <span className={`badge badge-${item.badgeVariant}`}>
+                                  {item.badge}
+                                </span>
+                              </div>
+                              <div className="wf-track">
+                                <div
+                                  className="wf-bar"
+                                  style={{
+                                    left: `${leftPct.toFixed(2)}%`,
+                                    width: `${widthPct.toFixed(2)}%`,
+                                    background: item.barColor
+                                  }}
+                                />
+                              </div>
+                              <div
+                                className="tabular text-right"
+                                style={{ width: 58, flexShrink: 0, fontWeight: 500 }}
+                              >
+                                {fmtDuration(item.durationMs)}
+                              </div>
+                            </button>
+
+                            {isSelected && (
+                              <div className="wf-step-detail">
+                                <div className="wf-step-detail-main">
+                                  <div>
+                                    <span
+                                      className={`badge badge-${item.badgeVariant}`}
+                                      style={{ marginRight: 6 }}
+                                    >
+                                      Step {item.stepIndex}
+                                    </span>
+                                    <span style={{ color: "var(--txt-secondary)" }}>
+                                      {item.why}
+                                    </span>
+                                  </div>
+                                  {item.argsPreview && (
+                                    <div
+                                      className="truncate"
+                                      style={{
+                                        marginTop: 3,
+                                        color: "var(--txt-tertiary)",
+                                        fontSize: 11,
+                                        fontFamily: "monospace"
+                                      }}
+                                      title={item.argsPreview}
+                                    >
+                                      {item.argsPreview}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="wf-step-detail-metrics tabular">
+                                  <span>
+                                    Duration: <strong>{fmtDuration(item.durationMs)}</strong>
+                                  </span>
+                                  <span>
+                                    Size: <strong>{item.outputLabel}</strong>
+                                  </span>
+                                  <span>
+                                    Direct: <strong>+{fmtK(item.directTokens)}</strong>
+                                  </span>
+                                  {item.compoundedTokens > 0 && (
+                                    <span style={{ color: "var(--txt-info)" }}>
+                                      Cache Carry:{" "}
+                                      <strong>+{fmtK(item.compoundedTokens)}</strong>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          }
+        )}
+      </div>
     </div>
   );
 };

@@ -64,9 +64,13 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
     return { all: metrics.length, plugins, skills };
   }, [metrics]);
 
+  const showKindFilter = counts.plugins > 0 && counts.skills > 0;
+
   const sortedAndFiltered = useMemo(() => {
     const base =
-      filter === "All" ? metrics : metrics.filter((m) => m.kind === filter);
+      !showKindFilter || filter === "All"
+        ? metrics
+        : metrics.filter((m) => m.kind === filter);
     return [...base].sort((a, b) => {
       if (basis === "context") {
         return (
@@ -86,7 +90,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
         a.name.localeCompare(b.name)
       );
     });
-  }, [metrics, filter, basis]);
+  }, [metrics, filter, basis, showKindFilter]);
 
   const visible =
     defaultLimit && !showAll
@@ -140,54 +144,45 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
             gap: 6
           }}
         >
-          <div
-            className="basis-toggle"
-            role="group"
-            aria-label="Ranking impact basis"
-          >
-            <button
-              type="button"
-              className={`basis-btn ${basis === "spend" ? "active" : ""}`}
-              onClick={() => setBasis("spend")}
+          {showKindFilter && (
+            <div
+              className="basis-toggle"
+              role="group"
+              aria-label="Filter plugins or skills"
             >
-              Spend &amp; Time
-            </button>
-            <button
-              type="button"
-              className={`basis-btn ${basis === "context" ? "active" : ""}`}
-              onClick={() => setBasis("context")}
-            >
-              Context Carry
-            </button>
-          </div>
+              <button
+                type="button"
+                className={`basis-btn ${filter === "All" ? "active" : ""}`}
+                onClick={() => setFilter("All")}
+              >
+                All ({counts.all})
+              </button>
+              <button
+                type="button"
+                className={`basis-btn ${filter === "Plugin" ? "active" : ""}`}
+                onClick={() => setFilter("Plugin")}
+              >
+                Plugins ({counts.plugins})
+              </button>
+              <button
+                type="button"
+                className={`basis-btn ${filter === "Skill" ? "active" : ""}`}
+                onClick={() => setFilter("Skill")}
+              >
+                Skills ({counts.skills})
+              </button>
+            </div>
+          )}
 
-          <div
-            className="basis-toggle"
-            role="group"
-            aria-label="Filter plugins or skills"
+          <select
+            className="input-field input-field-sm"
+            aria-label="Sort plugins and skills"
+            value={basis}
+            onChange={(e) => setBasis(e.target.value as ImpactBasis)}
           >
-            <button
-              type="button"
-              className={`basis-btn ${filter === "All" ? "active" : ""}`}
-              onClick={() => setFilter("All")}
-            >
-              All ({counts.all})
-            </button>
-            <button
-              type="button"
-              className={`basis-btn ${filter === "Plugin" ? "active" : ""}`}
-              onClick={() => setFilter("Plugin")}
-            >
-              Plugins ({counts.plugins})
-            </button>
-            <button
-              type="button"
-              className={`basis-btn ${filter === "Skill" ? "active" : ""}`}
-              onClick={() => setFilter("Skill")}
-            >
-              Skills ({counts.skills})
-            </button>
-          </div>
+            <option value="spend">Sort: Spend &amp; Time</option>
+            <option value="context">Sort: Context Tokens</option>
+          </select>
 
           {onViewAll && (hasMore || metrics.length > (defaultLimit ?? Infinity)) ? (
             <button
@@ -218,31 +213,26 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
         <table className="data-table">
           <thead>
             <tr>
-              <th scope="col">#</th>
               <th scope="col">Plugin / Skill</th>
               <th scope="col">
-                {basis === "spend" ? "Share of Spend" : "Share of Context"}
+                {basis === "spend" ? "Impact" : "Context Share"}
               </th>
               <th scope="col" className="text-right">Active Time</th>
-              <th scope="col" className="text-right">Context (Instr / Exec)</th>
-              <th scope="col" className="text-right">Calls</th>
-              <th scope="col" className="text-right">
-                {showProjectsColumn ? "Projects" : "Chats"}
-              </th>
+              <th scope="col" className="text-right">Context</th>
             </tr>
           </thead>
           <tbody>
             {visible.length === 0 ? (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={4}
                   style={{ color: "var(--txt-tertiary)", padding: 14 }}
                 >
                   No plugin or skill invocations recorded in this scope.
                 </td>
               </tr>
             ) : (
-              visible.map((m, idx) => {
+              visible.map((m) => {
                 const isExpanded = expandedIds.has(m.id);
                 const shareRatio =
                   basis === "context"
@@ -258,10 +248,9 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                   m.kind === "Plugin"
                     ? "var(--chart-model)"
                     : "var(--chart-skill)";
-                const instrPct =
-                  m.totalTokens > 0
-                    ? Math.round((m.instructionTokens / m.totalTokens) * 100)
-                    : 0;
+                const scopeStat = showProjectsColumn
+                  ? `${m.projectCount ?? 1} proj`
+                  : `${m.chatCount} chat${m.chatCount === 1 ? "" : "s"}`;
 
                 return (
                   <React.Fragment key={m.id}>
@@ -270,12 +259,6 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                       onClick={() => toggleExpand(m.id)}
                       aria-expanded={isExpanded}
                     >
-                      <td
-                        className="tabular"
-                        style={{ color: "var(--txt-tertiary)", width: 28 }}
-                      >
-                        {idx + 1}
-                      </td>
                       <td>
                         <div
                           style={{
@@ -296,20 +279,6 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                             {isExpanded ? "▾" : "▸"}
                           </span>
                           <strong>{m.name}</strong>
-                          <span
-                            className={`badge ${
-                              m.kind === "Plugin"
-                                ? "badge-info"
-                                : "badge-warning"
-                            }`}
-                          >
-                            {m.kind}
-                          </span>
-                          {m.children.length > 1 && (
-                            <span className="badge badge-neutral">
-                              {m.children.length} items
-                            </span>
-                          )}
                           {m.warningCount > 0 && (
                             <span
                               className="badge badge-warning"
@@ -353,8 +322,13 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                             );
                           })()}
                         </div>
+                        <div className="cell-sub" style={{ paddingLeft: 16 }}>
+                          {m.kind}
+                          {m.children.length > 1 ? ` · ${m.children.length} items` : ""}
+                          {` · ${m.calls} calls · ${scopeStat}`}
+                        </div>
                       </td>
-                      <td style={{ minWidth: 195 }}>
+                      <td style={{ minWidth: 185 }}>
                         <div
                           style={{
                             display: "flex",
@@ -386,7 +360,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                 className="tabular"
                                 style={{
                                   fontWeight: 600,
-                                  minWidth: 40,
+                                  minWidth: 38,
                                   textAlign: "right"
                                 }}
                               >
@@ -409,7 +383,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                 className="tabular"
                                 style={{
                                   fontWeight: 600,
-                                  minWidth: 38,
+                                  minWidth: 36,
                                   textAlign: "right"
                                 }}
                               >
@@ -448,29 +422,13 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                         </span>
                       </td>
                       <td className="text-right tabular">
-                        <span>+{fmtK(m.totalTokens)}</span>{" "}
-                        {m.totalTokens > 0 && (
-                          <span
-                            style={{
-                              fontSize: 11,
-                              color: "var(--txt-tertiary)"
-                            }}
-                          >
-                            ({instrPct}% instr)
-                          </span>
-                        )}
-                      </td>
-                      <td className="text-right tabular">{m.calls}</td>
-                      <td className="text-right tabular">
-                        {showProjectsColumn
-                          ? (m.projectCount ?? 1)
-                          : m.chatCount}
+                        +{fmtK(m.totalTokens)}
                       </td>
                     </tr>
 
                     {isExpanded && (
                       <tr>
-                        <td colSpan={7} style={{ padding: 0 }}>
+                        <td colSpan={4} style={{ padding: 0 }}>
                           <div className="drilldown-drawer">
                             <div className="drilldown-header">
                               <span
@@ -480,9 +438,9 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                   color: "var(--txt-secondary)"
                                 }}
                               >
-                                Breakdown under {m.name} (raw tool wall:{" "}
+                                Breakdown under {m.name} ({m.calls} calls · raw tool wall:{" "}
                                 {fmtDuration(m.totalDurationMs)} · +{fmtK(m.instructionTokens)}{" "}
-                                instruction / +{fmtK(m.executionTokens)} execution)
+                                instr / +{fmtK(m.executionTokens)} exec)
                               </span>
                               {onOptimizeSkill && (
                                 <button
@@ -554,11 +512,9 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                 <thead>
                                   <tr>
                                     <th scope="col">Sub-Skill / Tool</th>
-                                    <th scope="col">Type</th>
-                                    <th scope="col" className="text-right">Driven Spend</th>
+                                    <th scope="col" className="text-right">Spend</th>
                                     <th scope="col" className="text-right">Active Time</th>
-                                    <th scope="col" className="text-right">Instr / Exec</th>
-                                    <th scope="col" className="text-right">Calls</th>
+                                    <th scope="col" className="text-right">Context</th>
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -570,63 +526,63 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                       <React.Fragment key={ch.key}>
                                         <tr>
                                           <td>
-                                            <strong>{ch.name}</strong>
-                                            {ch.isUnusedLoad && (() => {
-                                              const info = describePluginWarning("Unused load");
-                                              return (
-                                                <span
-                                                  className="badge badge-warning"
-                                                  style={{ marginLeft: 6 }}
-                                                  title={`${info.meaning} (${info.remediation})`}
-                                                >
-                                                  Unused load
-                                                </span>
-                                              );
-                                            })()}
-                                            {ch.duplicateReads > 0 && (() => {
-                                              const info = describePluginWarning("Duplicate read");
-                                              return (
-                                                <span
-                                                  className="badge badge-warning"
-                                                  style={{ marginLeft: 6 }}
-                                                  title={`${info.meaning} (${info.remediation})`}
-                                                >
-                                                  {ch.duplicateReads + 1}× read
-                                                </span>
-                                              );
-                                            })()}
-                                            {ch.errors > 0 && (() => {
-                                              const chErrGuidance = describeErrorBadge(
-                                                ch.kind,
-                                                ch.errors,
-                                                ch.name,
-                                                ch.errorSamples
-                                              );
-                                              return (
-                                                <button
-                                                  type="button"
-                                                  className="badge badge-danger badge-btn"
-                                                  style={{ marginLeft: 6 }}
-                                                  aria-expanded={isChildErrOpen}
-                                                  aria-label={`${ch.errors} err on ${ch.name} — inspect errors and remediation`}
-                                                  title={chErrGuidance.summary}
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    toggleChildError(errKey);
-                                                  }}
-                                                >
-                                                  {ch.errors} err{" "}
-                                                  <span aria-hidden="true">
-                                                    {isChildErrOpen ? "▾" : "▸"}
+                                            <div>
+                                              <strong>{ch.name}</strong>
+                                              {ch.isUnusedLoad && (() => {
+                                                const info = describePluginWarning("Unused load");
+                                                return (
+                                                  <span
+                                                    className="badge badge-warning"
+                                                    style={{ marginLeft: 6 }}
+                                                    title={`${info.meaning} (${info.remediation})`}
+                                                  >
+                                                    Unused load
                                                   </span>
-                                                </button>
-                                              );
-                                            })()}
-                                          </td>
-                                          <td>
-                                            <span className="badge badge-neutral">
-                                              {ch.kind}
-                                            </span>
+                                                );
+                                              })()}
+                                              {ch.duplicateReads > 0 && (() => {
+                                                const info = describePluginWarning("Duplicate read");
+                                                return (
+                                                  <span
+                                                    className="badge badge-warning"
+                                                    style={{ marginLeft: 6 }}
+                                                    title={`${info.meaning} (${info.remediation})`}
+                                                  >
+                                                    {ch.duplicateReads + 1}× read
+                                                  </span>
+                                                );
+                                              })()}
+                                              {ch.errors > 0 && (() => {
+                                                const chErrGuidance = describeErrorBadge(
+                                                  ch.kind,
+                                                  ch.errors,
+                                                  ch.name,
+                                                  ch.errorSamples
+                                                );
+                                                return (
+                                                  <button
+                                                    type="button"
+                                                    className="badge badge-danger badge-btn"
+                                                    style={{ marginLeft: 6 }}
+                                                    aria-expanded={isChildErrOpen}
+                                                    aria-label={`${ch.errors} err on ${ch.name} — inspect errors and remediation`}
+                                                    title={chErrGuidance.summary}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      toggleChildError(errKey);
+                                                    }}
+                                                  >
+                                                    {ch.errors} err{" "}
+                                                    <span aria-hidden="true">
+                                                      {isChildErrOpen ? "▾" : "▸"}
+                                                    </span>
+                                                  </button>
+                                                );
+                                              })()}
+                                            </div>
+                                            <div className="cell-sub">
+                                              {ch.kind} · {ch.calls} calls
+                                            </div>
                                           </td>
                                           <td className="text-right tabular">
                                             {fmtUsd(ch.drivenCostUsd)}
@@ -634,17 +590,16 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                           <td className="text-right tabular">
                                             {fmtDuration(ch.drivenActiveMs)}
                                           </td>
-                                          <td className="text-right tabular">
-                                            +{fmtK(ch.instructionTokens)} / +
-                                            {fmtK(ch.executionTokens)}
-                                          </td>
-                                          <td className="text-right tabular">
-                                            {ch.calls}
+                                          <td
+                                            className="text-right tabular"
+                                            title={`+${fmtK(ch.instructionTokens)} instruction / +${fmtK(ch.executionTokens)} execution`}
+                                          >
+                                            +{fmtK(ch.totalTokens)}
                                           </td>
                                         </tr>
                                         {isChildErrOpen && ch.errors > 0 && (
                                           <tr className="err-detail-row">
-                                            <td colSpan={6}>
+                                            <td colSpan={4}>
                                               <ErrorGuidanceBlock
                                                 title={`${ch.kind}: ${ch.name}`}
                                                 kind={ch.kind}

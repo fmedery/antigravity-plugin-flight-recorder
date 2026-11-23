@@ -309,14 +309,11 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
           <table className="data-table">
             <thead>
               <tr>
-                <th>Model</th>
-                <th>Share</th>
-                <th className="text-right">Steps</th>
-                <th className="text-right">Tokens</th>
-                <th className="text-right">Cache Hit</th>
-                <th className="text-right">Model Time</th>
-                {showChatsColumn && <th className="text-right">Chats</th>}
-                <th className="text-right">Est. Cost</th>
+                <th scope="col">Model</th>
+                <th scope="col">Share</th>
+                <th scope="col" className="text-right">Tokens &amp; Cache</th>
+                <th scope="col" className="text-right">Model Time</th>
+                <th scope="col" className="text-right">Est. Cost</th>
               </tr>
             </thead>
             <tbody>
@@ -353,6 +350,10 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                           </button>
                         )}
                       </div>
+                      <div className="cell-sub" style={{ paddingLeft: 14 }}>
+                        {m.steps} steps ({fmtPct(m.stepShare)})
+                        {showChatsColumn ? ` · ${m.chatCount} chats` : ""}
+                      </div>
                     </td>
                     <td style={{ minWidth: 130 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -383,27 +384,16 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                       </div>
                     </td>
                     <td className="text-right tabular">
-                      {m.steps}{" "}
-                      <span style={{ color: "var(--txt-tertiary)" }}>
-                        ({fmtPct(m.stepShare)})
-                      </span>
-                    </td>
-                    <td className="text-right tabular">
-                      {m.totalTokens > 0 || hasAnyTokens
-                        ? fmtK(m.totalTokens)
-                        : "N/A (legacy)"}
-                    </td>
-                    <td
-                      className="text-right tabular"
-                      style={{
-                        color:
-                          m.totalTokens > 0
-                            ? "var(--txt-success)"
-                            : "var(--txt-tertiary)",
-                        fontWeight: m.totalTokens > 0 ? 600 : 400
-                      }}
-                    >
-                      {m.totalTokens > 0 ? fmtPct(m.cacheHitRatio) : "—"}
+                      {m.totalTokens > 0 || hasAnyTokens ? (
+                        <>
+                          <span>{fmtK(m.totalTokens)}</span>{" "}
+                          <span style={{ color: "var(--txt-success)", fontWeight: 600 }}>
+                            ({fmtPct(m.cacheHitRatio)})
+                          </span>
+                        </>
+                      ) : (
+                        "N/A (legacy)"
+                      )}
                     </td>
                     <td className="text-right tabular">
                       {fmtDuration(m.modelDurationMs)}{" "}
@@ -411,9 +401,6 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                         ({fmtPct(m.timeShare)})
                       </span>
                     </td>
-                    {showChatsColumn && (
-                      <td className="text-right tabular">{m.chatCount}</td>
-                    )}
                     <td className="text-right tabular">
                       {fmtUsd(m.estimatedCostUsd)}
                     </td>
@@ -425,19 +412,8 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
         </div>
       )}
 
-      {switches && switches.length > 0 && (
-        <div style={{ borderTop: "1px solid var(--bdr-secondary)" }}>
-          <div
-            style={{
-              padding: "8px 12px",
-              fontWeight: 600,
-              fontSize: 12,
-              background: "var(--bg-secondary)",
-              borderBottom: "1px solid var(--bdr-secondary)"
-            }}
-          >
-            Model Switches ({switches.length})
-          </div>
+      {switches && switches.length > 0 && (() => {
+        const renderSwitchesList = () => (
           <div>
             {switches.map((sw, idx) => (
               <div key={`${sw.stepIndex}-${idx}`} className="switch-row">
@@ -480,8 +456,36 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
               </div>
             ))}
           </div>
-        </div>
-      )}
+        );
+
+        if (switches.length > 5) {
+          return (
+            <div style={{ borderTop: "1px solid var(--bdr-secondary)" }}>
+              <details className="err-samples-details" style={{ padding: "8px 12px" }}>
+                <summary>Model Switches ({switches.length})</summary>
+                <div style={{ marginTop: 6 }}>{renderSwitchesList()}</div>
+              </details>
+            </div>
+          );
+        }
+
+        return (
+          <div style={{ borderTop: "1px solid var(--bdr-secondary)" }}>
+            <div
+              style={{
+                padding: "8px 12px",
+                fontWeight: 600,
+                fontSize: 12,
+                background: "var(--bg-secondary)",
+                borderBottom: "1px solid var(--bdr-secondary)"
+              }}
+            >
+              Model Switches ({switches.length})
+            </div>
+            {renderSwitchesList()}
+          </div>
+        );
+      })()}
     </div>
   );
 };

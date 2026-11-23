@@ -188,7 +188,7 @@ select {
   background: var(--bg-secondary);
   border: 1px solid var(--bdr-secondary);
   border-radius: 8px;
-  padding: 8px 11px;
+  padding: 7px 10px;
 }
 
 .kpi-label {
@@ -953,4 +953,217 @@ table.data-table tbody tr.err-detail-row:hover {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.4;
+}
+
+.cell-sub {
+  font-size: 11px;
+  color: var(--txt-tertiary);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.input-field-sm {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.subtab-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-top: 10px;
+  padding: 2px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--bdr-primary);
+  border-radius: 6px;
+}
+
+.diag-summary-btn {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diag-summary-btn:hover {
+  background: var(--bg-secondary);
+}
+
+.diag-summary-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.diag-embedded-row {
+  padding: 0;
+}
+
+.diag-embedded-row .diag-summary-btn {
+  padding: 8px 12px;
+}
+
+.diag-summary-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.diag-chevron {
+  color: var(--txt-tertiary);
+  font-size: 11px;
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.diag-summary-title {
+  color: var(--txt-primary);
+  font-weight: 600;
+}
+
+.diag-summary-citation {
+  font-size: 11px;
+  color: var(--txt-tertiary);
+}
+
+.diag-summary-impact {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--txt-secondary);
+  flex-shrink: 0;
+}
+
+.diag-expanded-body {
+  padding: 2px 12px 10px 28px;
+  border-top: 1px solid var(--bdr-secondary);
+}
+
+.diag-detail-row {
+  margin-top: 6px;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.diag-detail-row .diag-detail {
+  margin-top: 0;
+}
+
+.diag-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wf-idle-divider {
+  padding: 4px 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--txt-tertiary);
+  background: var(--bg-primary);
+  border-bottom: 1px dashed var(--bdr-primary);
+}
+
+.wf-turn-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: none;
+  border-bottom: 1px solid var(--bdr-secondary);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.wf-turn-row:hover {
+  background: var(--bg-secondary);
+}
+
+.wf-turn-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.wf-turn-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.wf-turn-prompt {
+  color: var(--txt-secondary);
+  font-weight: 400;
+  min-width: 0;
+}
+
+.wf-turn-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.wf-turn-body {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--bdr-secondary);
+  padding-left: 14px;
+}
+
+.wf-turn-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--txt-secondary);
+  border-bottom: 1px solid var(--bdr-secondary);
+}
+
+.wf-step-detail {
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--bdr-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.wf-step-detail-main {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.wf-step-detail-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  flex-shrink: 0;
 }
