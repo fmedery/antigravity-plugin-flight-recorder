@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import readline from "node:readline";
 import { isAbsoluteLocalPath, unwrapFileUri } from "../shared/paths.js";
+import { sanitizePreviewText } from "../shared/redact.js";
 import type { ToolCategory } from "../shared/types.js";
 
 export interface ParsedTurnRaw {
@@ -151,9 +152,7 @@ function extractUserRequest(content: string): {
 }
 
 function makePreview(text: string, maxLen: number): string {
-  const singleLine = text.replace(/\s+/g, " ").trim();
-  if (singleLine.length <= maxLen) return singleLine;
-  return singleLine.slice(0, maxLen - 3) + "...";
+  return sanitizePreviewText(text, maxLen);
 }
 
 function extractGenericHeaders(content: string): {

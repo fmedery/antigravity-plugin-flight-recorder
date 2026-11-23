@@ -888,17 +888,19 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       title: "Update Model Pricing Rules",
       description: "App-only endpoint saving updated USD pricing rules to SQLite.",
       inputSchema: {
-        rules: z.array(
-          z.object({
-            id: z.string(),
-            pattern: z.string(),
-            label: z.string(),
-            inputPer1M: z.number().min(0),
-            cacheReadPer1M: z.number().min(0),
-            outputPer1M: z.number().min(0),
-            enabled: z.boolean()
-          })
-        )
+        rules: z
+          .array(
+            z.object({
+              id: z.string().min(1).max(160),
+              pattern: z.string().min(1).max(160),
+              label: z.string().min(1).max(160),
+              inputPer1M: z.number().finite().min(0).max(100_000),
+              cacheReadPer1M: z.number().finite().min(0).max(100_000),
+              outputPer1M: z.number().finite().min(0).max(100_000),
+              enabled: z.boolean()
+            })
+          )
+          .max(100)
       },
       _meta: {
         ui: {
@@ -926,8 +928,8 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       title: "Assign Conversation to Project",
       description: "App-only endpoint overriding a conversation's assigned project path.",
       inputSchema: {
-        conversationId: z.string(),
-        projectPath: z.string()
+        conversationId: z.string().min(1).max(128),
+        projectPath: z.string().max(1024)
       },
       _meta: {
         ui: {

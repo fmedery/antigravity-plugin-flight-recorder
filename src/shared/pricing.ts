@@ -48,14 +48,40 @@ export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
   }
 ];
 
-function globToRegex(pattern: string): RegExp {
-  const escaped = pattern
+function wildcardMatch(text: string, rawPattern: string): boolean {
+  const pat = rawPattern
     .trim()
     .toLowerCase()
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*")
-    .replace(/\?/g, ".");
-  return new RegExp(`^${escaped}$`);
+    .slice(0, 128)
+    .replace(/\*+/g, "*");
+  const str = text.slice(0, 256);
+
+  let tIdx = 0;
+  let pIdx = 0;
+  let starIdx = -1;
+  let matchIdx = 0;
+
+  while (tIdx < str.length) {
+    if (pIdx < pat.length && (pat[pIdx] === "?" || pat[pIdx] === str[tIdx])) {
+      pIdx += 1;
+      tIdx += 1;
+    } else if (pIdx < pat.length && pat[pIdx] === "*") {
+      starIdx = pIdx;
+      matchIdx = tIdx;
+      pIdx += 1;
+    } else if (starIdx !== -1) {
+      pIdx = starIdx + 1;
+      matchIdx += 1;
+      tIdx = matchIdx;
+    } else {
+      return false;
+    }
+  }
+
+  while (pIdx < pat.length && pat[pIdx] === "*") {
+    pIdx += 1;
+  }
+  return pIdx === pat.length;
 }
 
 export function matchPricingRule(
@@ -80,7 +106,7 @@ export function matchPricingRule(
     (a, b) => b.pattern.replace(/\*/g, "").length - a.pattern.replace(/\*/g, "").length
   );
   for (const rule of sorted) {
-    if (globToRegex(rule.pattern).test(normalized)) {
+    if (wildcardMatch(normalized, rule.pattern)) {
       return rule;
     }
   }

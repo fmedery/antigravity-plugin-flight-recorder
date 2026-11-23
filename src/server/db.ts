@@ -1,6 +1,33 @@
-import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+
+function loadDatabaseSync(): typeof DatabaseSyncType {
+  const req = createRequire(import.meta.url);
+  const origEmit = process.emitWarning;
+  process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
+    const msg = typeof warning === "string" ? warning : warning?.message ?? "";
+    const typeArg =
+      typeof args[0] === "string"
+        ? args[0]
+        : (args[0] as { type?: string } | undefined)?.type ??
+          (warning as Error)?.name ??
+          "";
+    if (typeArg === "ExperimentalWarning" && /sqlite/i.test(msg)) {
+      return;
+    }
+    return (origEmit as (...a: unknown[]) => void).call(process, warning, ...args);
+  }) as typeof process.emitWarning;
+  try {
+    const mod = req("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
+    return mod.DatabaseSync;
+  } finally {
+    process.emitWarning = origEmit;
+  }
+}
+
+const DatabaseSync = loadDatabaseSync();
 import { DEFAULT_PRICING_RULES } from "../shared/pricing.js";
 import type {
   ConversationDetail,
@@ -82,16 +109,32 @@ export interface PersistConversationInput {
 }
 
 export class TrackerDatabase {
-  public readonly db: DatabaseSync;
+  public readonly db: DatabaseSyncType;
   public readonly dbPath: string;
 
   constructor(dataDir: string) {
-    fs.mkdirSync(dataDir, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.dbPath = path.join(dataDir, "tracker.sqlite");
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec("PRAGMA busy_timeout = 5000;");
+    if (process.platform !== "win32") {
+      for (const [target, mode] of [
+        [dataDir, 0o700],
+        [this.dbPath, 0o600],
+        [`${this.dbPath}-wal`, 0o600],
+        [`${this.dbPath}-shm`, 0o600]
+      ] as const) {
+        try {
+          if (fs.existsSync(target)) {
+            fs.chmodSync(target, mode);
+          }
+        } catch {
+          // Best-effort permission tightening
+        }
+      }
+    }
     this.migrate();
     this.seedDefaultPricing();
   }

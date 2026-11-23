@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { sanitizePreviewText } from "../shared/redact.js";
 import type { HookEventRow, TrackerDatabase } from "./db.js";
 
 export interface HookIngestResult {
@@ -7,12 +8,27 @@ export interface HookIngestResult {
   touchedConversationIds: string[];
 }
 
+export interface HookIngestOptions {
+  maxChunkBytes?: number;
+}
+
+const DEFAULT_MAX_CHUNK_BYTES = 16 * 1024 * 1024; // 16 MiB per pass
+
 export function ingestHookEvents(
   db: TrackerDatabase,
-  eventsPath: string
+  eventsPath: string,
+  options: HookIngestOptions = {}
 ): HookIngestResult {
   if (!fs.existsSync(eventsPath)) {
     return { ingestedCount: 0, touchedConversationIds: [] };
+  }
+
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(eventsPath, 0o600);
+    } catch {
+      // Best-effort permission tightening
+    }
   }
 
   const stat = fs.statSync(eventsPath);
@@ -29,24 +45,40 @@ export function ingestHookEvents(
     return { ingestedCount: 0, touchedConversationIds: [] };
   }
 
-  const bytesToRead = stat.size - startOffset;
-  const buf = Buffer.alloc(bytesToRead);
+  const maxChunkBytes = Math.max(
+    64,
+    options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES
+  );
+  const hardCapBytes = 64 * 1024 * 1024;
+  let windowBytes = Math.min(stat.size - startOffset, maxChunkBytes);
+
   const fd = fs.openSync(eventsPath, "r");
-  let bytesRead = 0;
+  let chunkBuf: Buffer = Buffer.alloc(0);
+  let lastNewlineIdx = -1;
   try {
-    bytesRead = fs.readSync(fd, buf, 0, bytesToRead, startOffset);
+    while (true) {
+      const buf = Buffer.alloc(windowBytes);
+      const bytesRead = fs.readSync(fd, buf, 0, windowBytes, startOffset);
+      if (bytesRead <= 0) {
+        return { ingestedCount: 0, touchedConversationIds: [] };
+      }
+      chunkBuf = buf.subarray(0, bytesRead);
+      lastNewlineIdx = chunkBuf.lastIndexOf(0x0a); // '\n'
+      if (
+        lastNewlineIdx >= 0 ||
+        startOffset + bytesRead >= stat.size ||
+        windowBytes >= hardCapBytes
+      ) {
+        break;
+      }
+      windowBytes = Math.min(stat.size - startOffset, windowBytes * 2, hardCapBytes);
+    }
   } finally {
     fs.closeSync(fd);
   }
 
-  if (bytesRead <= 0) {
-    return { ingestedCount: 0, touchedConversationIds: [] };
-  }
-
-  const chunkBuf = buf.subarray(0, bytesRead);
-  const lastNewlineIdx = chunkBuf.lastIndexOf(0x0a); // '\n'
   if (lastNewlineIdx < 0) {
-    // Partial line still being written; wait for newline on next scan.
+    // Partial line at EOF still being written; wait for newline on next scan.
     return { ingestedCount: 0, touchedConversationIds: [] };
   }
 
@@ -104,9 +136,14 @@ export function ingestHookEvents(
         typeof raw.invocationNum === "number" ? raw.invocationNum : null,
       terminationReason:
         typeof raw.terminationReason === "string" ? raw.terminationReason : null,
-      error: typeof raw.error === "string" ? raw.error : null,
+      error:
+        typeof raw.error === "string"
+          ? sanitizePreviewText(raw.error, 300)
+          : null,
       lastUserInput:
-        typeof raw.lastUserInput === "string" ? raw.lastUserInput : null,
+        typeof raw.lastUserInput === "string"
+          ? sanitizePreviewText(raw.lastUserInput, 500)
+          : null,
       toolCallId:
         toolCall && typeof toolCall.id === "string" ? toolCall.id : null,
       toolName:

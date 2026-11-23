@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { TrackerDatabase } from "../src/server/db.js";
+import { ingestHookEvents } from "../src/server/hookIngestor.js";
 import {
   isAbsoluteLocalPath,
   isWindowsPath,
@@ -11,6 +14,8 @@ import {
   toFileUri,
   unwrapFileUri
 } from "../src/shared/paths.js";
+import { matchPricingRule } from "../src/shared/pricing.js";
+import { sanitizePreviewText } from "../src/shared/redact.js";
 import { findProjectRootForPath } from "../src/server/scanner.js";
 import {
   clearInstalledPluginsCache,
@@ -213,5 +218,107 @@ test("Windows AGY project inference, transcript path extraction, .exe/.cmd plugi
   } finally {
     clearInstalledPluginsCache();
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("sanitizePreviewText, hooks/record-event.mjs, POSIX 0600 permissions, ReDoS guard, and chunked hook ingestion protect local data", () => {
+  const dirty =
+    "\u001b[31mError\u001b[0m \u001b]52;c;c2VjcmV0\u0007 GITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuv " +
+    "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl " +
+    "key=AIzaSyA123456789012345678901234567890 url=https://admin:s3cr3t@example.com/repo.git " +
+    "outputTokens=500 model=gemini-4-hydrogen";
+  const cleaned = sanitizePreviewText(dirty, 500);
+
+  assert.equal(cleaned.includes("\u001b"), false);
+  assert.equal(cleaned.includes("ghp_1234"), false);
+  assert.equal(cleaned.includes("eyJhbGci"), false);
+  assert.equal(cleaned.includes("AIzaSyA"), false);
+  assert.equal(cleaned.includes("s3cr3t"), false);
+  assert.ok(cleaned.includes("[REDACTED]"));
+  assert.ok(cleaned.includes("outputTokens=500 model=gemini-4-hydrogen"));
+
+  // ReDoS guard: pathological glob pattern must evaluate in < 25ms
+  const tStart = performance.now();
+  const matched = matchPricingRule("a".repeat(80) + "!", [
+    {
+      id: "evil",
+      pattern: "a*a*a*a*a*a*a*a*a*b",
+      label: "Evil",
+      inputPer1M: 1,
+      cacheReadPer1M: 0.1,
+      outputPer1M: 2,
+      enabled: true
+    }
+  ]);
+  assert.equal(matched, null);
+  assert.ok(performance.now() - tStart < 25, "Expected ReDoS-safe glob evaluation < 25ms");
+
+  // Node hook spooler fail-open, secret redaction, POSIX 0700/0600 permissions, and chunked mid-line ingestion
+  const tmpDir = path.join(os.tmpdir(), `fr-sec-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const hookScript = path.resolve(import.meta.dirname, "..", "..", "hooks", "record-event.mjs");
+  try {
+    // 1. Malformed JSON stdin fails open with {} and exit 0
+    const badRes = spawnSync(process.execPath, [hookScript], {
+      input: "{not valid json",
+      env: { ...process.env, PLUGIN_DATA: tmpDir },
+      encoding: "utf8"
+    });
+    assert.equal(badRes.status, 0);
+    assert.equal(badRes.stdout.trim(), "{}");
+
+    // 2. Secret-bearing hook payloads get redacted and written with private modes
+    for (let i = 0; i < 4; i++) {
+      const okRes = spawnSync(process.execPath, [hookScript], {
+        input: JSON.stringify({
+          hookEventName: "PostToolUse",
+          conversationId: `conv-sec-${i}`,
+          lastUserInput: "Deploy with OPENAI_API_KEY=sk-proj-1234567890abcdefghijklmnop",
+          toolCall: {
+            id: `tc-${i}`,
+            name: "run_command",
+            args: {
+              CommandLine: "OPENAI_API_KEY=sk-proj-1234567890abcdefghijklmnop npm run deploy"
+            }
+          }
+        }),
+        env: { ...process.env, PLUGIN_DATA: tmpDir },
+        encoding: "utf8"
+      });
+      assert.equal(okRes.status, 0);
+      assert.equal(okRes.stdout.trim(), "{}");
+    }
+
+    const eventsPath = path.join(tmpDir, "events.jsonl");
+    const eventsRaw = fs.readFileSync(eventsPath, "utf8");
+    assert.equal(eventsRaw.includes("sk-proj-1234"), false);
+    assert.ok(eventsRaw.includes("[REDACTED]"));
+
+    const db = new TrackerDatabase(tmpDir);
+    try {
+      if (process.platform !== "win32") {
+        const dirMode = fs.statSync(tmpDir).mode & 0o777;
+        const eventsMode = fs.statSync(eventsPath).mode & 0o777;
+        const dbMode = fs.statSync(db.dbPath).mode & 0o777;
+        assert.equal(dirMode, 0o700);
+        assert.equal(eventsMode, 0o600);
+        assert.equal(dbMode, 0o600);
+      }
+
+      // 3. Chunked mid-line ingestion (maxChunkBytes = 210 cuts across JSONL lines)
+      let totalIngested = 0;
+      const touchedAll = new Set<string>();
+      for (let pass = 0; pass < 10; pass++) {
+        const r = ingestHookEvents(db, eventsPath, { maxChunkBytes: 210 });
+        if (r.ingestedCount === 0) break;
+        totalIngested += r.ingestedCount;
+        for (const id of r.touchedConversationIds) touchedAll.add(id);
+      }
+      assert.equal(totalIngested, 4);
+      assert.equal(touchedAll.size, 4);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

@@ -3,14 +3,14 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "python3 ./hooks/record_event.py",
+        "command": "node ./hooks/record-event.mjs",
         "timeout": 5
       }
     ],
     "PreInvocation": [
       {
         "type": "command",
-        "command": "python3 ./hooks/record_event.py",
+        "command": "node ./hooks/record-event.mjs",
         "timeout": 5
       }
     ],
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ./hooks/record_event.py",
+            "command": "node ./hooks/record-event.mjs",
             "timeout": 5
           }
         ]
@@ -29,14 +29,14 @@
     "PostInvocation": [
       {
         "type": "command",
-        "command": "python3 ./hooks/record_event.py",
+        "command": "node ./hooks/record-event.mjs",
         "timeout": 5
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python3 ./hooks/record_event.py",
+        "command": "node ./hooks/record-event.mjs",
         "timeout": 5
       }
     ]
