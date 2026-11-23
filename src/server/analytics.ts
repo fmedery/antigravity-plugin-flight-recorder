@@ -5,6 +5,7 @@ import {
   aggregateCosts,
   estimateStepCost
 } from "../shared/pricing.js";
+import { pathBaseName } from "../shared/paths.js";
 import type {
   ConversationDetail,
   ConversationSummary,
@@ -574,7 +575,7 @@ function buildDiagnostics(
       ? `Skill: ${tc.skillName}`
       : tc.mcpServer
         ? `MCP ${tc.mcpServer}: ${tc.toolName}`
-        : `${tc.toolName}${tc.targetPath ? ` (${path.basename(tc.targetPath)})` : ""}`;
+        : `${tc.toolName}${tc.targetPath ? ` (${pathBaseName(tc.targetPath)})` : ""}`;
     findings.push({
       id: `tok-${tc.stepIndex}-${tc.toolName}`,
       severity: tc.compoundedCacheTokens > 25_000 ? "warning" : "info",
@@ -664,7 +665,7 @@ function buildDiagnostics(
         id: `reread-${f.path}`,
         severity: "info",
         category: "repeated_read",
-        title: `Repeated reads: ${path.basename(f.path)} (${f.reads}×)`,
+        title: `Repeated reads: ${pathBaseName(f.path)} (${f.reads}×)`,
         detail: `${f.path} was read ${f.reads} times (${(f.totalBytesRead / 1024).toFixed(1)} KB total), contributing ~${formatShortTokens(f.directTokens)} direct tokens.`,
         stepIndex: null,
         turnIndex: null,
@@ -1107,7 +1108,7 @@ function resolveProjectDisplayName(projectPath: string): string {
   if (gitName) return gitName;
 
   // 7. Directory basename fallback
-  return path.basename(projectPath) || projectPath;
+  return pathBaseName(projectPath) || projectPath;
 }
 
 export function projectDisplayName(projectPath: string): string {

@@ -7,6 +7,7 @@ import type {
 import { fmtDuration, fmtK, fmtPct, fmtUsd } from "../format";
 import { ModelBreakdownPanel, ModelMixBar } from "./ModelBreakdown";
 import { PluginSkillLeaderboard } from "./PluginSkillLeaderboard";
+import { KpiHelpTip } from "./KpiHelpTip";
 import { SkillToolMatrix } from "./SkillToolMatrix";
 import { TimelineWaterfall } from "./TimelineWaterfall";
 import { TokenBreakdownChart } from "./TokenBreakdownChart";
@@ -227,7 +228,10 @@ export const ChatDetailView: React.FC<Props> = ({
 
       <div className="kpi-grid">
         <div className="kpi-card">
-          <div className="kpi-label">Active Agent Time</div>
+          <div className="kpi-label">
+            <span>Active Agent Time</span>
+            <KpiHelpTip helpKey="activeAgentTime" />
+          </div>
           <div className="kpi-value">{fmtDuration(s.time.activeMs)}</div>
           <div className="kpi-sub">
             {fmtDuration(s.time.modelMs)} model · {fmtDuration(s.time.toolWallMs)} tools (
@@ -235,14 +239,20 @@ export const ChatDetailView: React.FC<Props> = ({
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">User Wait / Idle</div>
+          <div className="kpi-label">
+            <span>User Wait / Idle</span>
+            <KpiHelpTip helpKey="userWaitIdle" />
+          </div>
           <div className="kpi-value">{fmtDuration(s.time.userIdleMs)}</div>
           <div className="kpi-sub">
             {s.turnCount} turns · {s.toolCallCount} tool calls
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Tokens &amp; Cache</div>
+          <div className="kpi-label">
+            <span>Tokens &amp; Cache</span>
+            <KpiHelpTip helpKey="tokensAndCache" />
+          </div>
           <div className="kpi-value">
             {s.tokens.hasTokenTelemetry ? (
               <>
@@ -262,7 +272,10 @@ export const ChatDetailView: React.FC<Props> = ({
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Est. Cost</div>
+          <div className="kpi-label">
+            <span>Est. Cost</span>
+            <KpiHelpTip helpKey="estCost" />
+          </div>
           <div className="kpi-value">{fmtUsd(s.tokens.estimatedCostUsd)}</div>
           <div className="kpi-sub">
             {s.tokens.unpricedModels.length > 0 ? (

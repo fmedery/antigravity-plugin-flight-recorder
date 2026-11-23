@@ -21,6 +21,7 @@ import {
   type ModelShareBasis
 } from "./ModelBreakdown";
 import { PluginSkillLeaderboard } from "./PluginSkillLeaderboard";
+import { KpiHelpTip } from "./KpiHelpTip";
 import { SkillToolMatrix } from "./SkillToolMatrix";
 import { WhyPanel } from "./WhyPanel";
 
@@ -83,21 +84,30 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
     <div>
       <div className="kpi-grid">
         <div className="kpi-card">
-          <div className="kpi-label">Projects</div>
+          <div className="kpi-label">
+            <span>Projects</span>
+            <KpiHelpTip helpKey="projects" />
+          </div>
           <div className="kpi-value">{tot.projectCount}</div>
           <div className="kpi-sub">
             {tot.chatCount} chats · {tot.subagentCount} subagents
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Total Tokens</div>
+          <div className="kpi-label">
+            <span>Total Tokens</span>
+            <KpiHelpTip helpKey="totalTokens" />
+          </div>
           <div className="kpi-value">{fmtK(grandTokens)}</div>
           <div className="kpi-sub">
             {fmtK(tot.tokens.inputTokens)} new · {fmtK(tot.tokens.outputTokens)} out
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Cache Hit Ratio</div>
+          <div className="kpi-label">
+            <span>Cache Hit Ratio</span>
+            <KpiHelpTip helpKey="cacheHitRatio" />
+          </div>
           <div className="kpi-value" style={{ color: "var(--txt-success)" }}>
             {fmtPct(tot.tokens.cacheHitRatio)}
           </div>
@@ -108,14 +118,20 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Active Agent Time</div>
+          <div className="kpi-label">
+            <span>Active Agent Time</span>
+            <KpiHelpTip helpKey="activeAgentTime" />
+          </div>
           <div className="kpi-value">{fmtDuration(tot.time.activeMs)}</div>
           <div className="kpi-sub">
             {fmtDuration(tot.time.modelMs)} model · {fmtDuration(tot.time.toolWallMs)} tools
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Est. Cost</div>
+          <div className="kpi-label">
+            <span>Est. Cost</span>
+            <KpiHelpTip helpKey="estCost" />
+          </div>
           <div className="kpi-value">{fmtUsd(tot.tokens.estimatedCostUsd)}</div>
           <div className="kpi-sub">
             {tot.tokens.unpricedModels.length > 0 ? (
@@ -456,7 +472,10 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
 
       <div className="kpi-grid">
         <div className="kpi-card">
-          <div className="kpi-label">Chats &amp; Subagents</div>
+          <div className="kpi-label">
+            <span>Chats &amp; Subagents</span>
+            <KpiHelpTip helpKey="chatsSubagents" />
+          </div>
           <div className="kpi-value">
             {s.chatCount}{" "}
             <span style={{ fontSize: 13, fontWeight: 500, color: "var(--txt-secondary)" }}>
@@ -468,7 +487,10 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Total Tokens</div>
+          <div className="kpi-label">
+            <span>Total Tokens</span>
+            <KpiHelpTip helpKey="totalTokens" />
+          </div>
           <div className="kpi-value">
             {s.tokens.hasTokenTelemetry ? fmtK(totalTokens) : "N/A (legacy)"}
           </div>
@@ -479,7 +501,10 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Active Time</div>
+          <div className="kpi-label">
+            <span>Active Time</span>
+            <KpiHelpTip helpKey="activeAgentTime" />
+          </div>
           <div className="kpi-value">{fmtDuration(s.time.activeMs)}</div>
           <div className="kpi-sub">
             {s.time.subagentMs > 0
@@ -489,7 +514,10 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Est. Cost</div>
+          <div className="kpi-label">
+            <span>Est. Cost</span>
+            <KpiHelpTip helpKey="estCost" />
+          </div>
           <div className="kpi-value">{fmtUsd(s.tokens.estimatedCostUsd)}</div>
           <div className="kpi-sub">
             {s.tokens.unpricedModels.length > 0 ? (

@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { pathBaseName } from "../shared/paths.js";
 import type {
   DiagnosticFinding,
   ModelPricingRule,
@@ -140,7 +141,7 @@ function resolveProjectMatch(
     const exact = dash.projects.find((p) => p.projectPath === projectPath);
     if (exact) return exact.projectPath;
     const byBasename = dash.projects.find(
-      (p) => p.projectName.toLowerCase() === path.basename(projectPath).toLowerCase()
+      (p) => p.projectName.toLowerCase() === pathBaseName(projectPath).toLowerCase()
     );
     if (byBasename) return byBasename.projectPath;
   }

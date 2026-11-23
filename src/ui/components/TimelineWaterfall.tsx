@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { pathTailSegments } from "../../shared/paths";
 import type {
   PlannerStepRecord,
   ToolCallRecord,
@@ -207,7 +208,7 @@ export const TimelineWaterfall: React.FC<Props> = ({
             const toolLabel = tc.skillName
               ? `${tc.toolName}: ${tc.skillName}`
               : tc.targetPath
-                ? `${tc.toolName}: ${tc.targetPath.split("/").slice(-2).join("/")}`
+                ? `${tc.toolName}: ${pathTailSegments(tc.targetPath, 2)}`
                 : tc.toolName;
 
             const toolItem: WaterfallItem = {

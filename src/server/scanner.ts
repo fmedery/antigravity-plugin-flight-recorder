@@ -1,6 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  isAbsoluteLocalPath,
+  isWindowsPath,
+  pathDirName,
+  pathExtName,
+  pathJoin,
+  unwrapFileUri
+} from "../shared/paths.js";
 import type { ProjectSource, SurfaceType } from "../shared/types.js";
 import { analyzeConversation } from "./analytics.js";
 import type { HookEventRow, TrackerDatabase } from "./db.js";
@@ -74,38 +82,92 @@ function inferSurfaceFromPath(filePath: string): SurfaceType {
   return "unknown";
 }
 
-function isIgnoredSystemPath(p: string): boolean {
+function isIgnoredSystemPath(p: string, homeOverride?: string): boolean {
   const norm = p.replace(/\\/g, "/");
-  const geminiRoot = path.join(os.homedir(), ".gemini").replace(/\\/g, "/");
-  if (norm === geminiRoot || norm.startsWith(geminiRoot + "/")) return true;
-  if (norm === "/tmp" || norm === os.homedir()) return true;
+  const lower = norm.toLowerCase();
+  const home = (homeOverride || os.homedir()).replace(/\\/g, "/").replace(/\/+$/, "");
+  const homeLower = home.toLowerCase();
+  const geminiLower = `${homeLower}/.gemini`;
+  if (lower === geminiLower || lower.startsWith(`${geminiLower}/`)) return true;
+  if (norm === "/tmp" || lower === homeLower) return true;
+
+  const tmpDirNorm = os.tmpdir().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  if (tmpDirNorm && (lower === tmpDirNorm || lower.startsWith(`${tmpDirNorm}/`))) {
+    return true;
+  }
+
+  // Windows system & temp locations
+  if (
+    /^[a-z]:\/(?:windows|program files|program files \(x86\)|programdata|perflogs|\$recycle\.bin)(?:\/|$)/i.test(
+      norm
+    ) ||
+    lower.includes("/appdata/local/temp/") ||
+    lower.endsWith("/appdata/local/temp")
+  ) {
+    return true;
+  }
+
   return IGNORED_PATH_PREFIXES.some((prefix) => norm.startsWith(prefix));
 }
 
-export function findProjectRootForPath(candidatePath: string): string | null {
-  if (!candidatePath || !candidatePath.startsWith("/")) return null;
-  if (isIgnoredSystemPath(candidatePath)) return null;
+export interface FindProjectRootOptions {
+  existsFn?: (p: string) => boolean;
+  isFileFn?: (p: string) => boolean;
+  homeDir?: string;
+}
 
-  const home = os.homedir();
+export function findProjectRootForPath(
+  rawCandidatePath: string,
+  options: FindProjectRootOptions = {}
+): string | null {
+  const candidatePath = unwrapFileUri(rawCandidatePath);
+  if (!candidatePath || !isAbsoluteLocalPath(candidatePath)) return null;
+  const home = options.homeDir ?? os.homedir();
+  if (isIgnoredSystemPath(candidatePath, home)) return null;
+
+  const existsFn = options.existsFn ?? ((p: string) => fs.existsSync(p));
+  const isFileFn =
+    options.isFileFn ??
+    ((p: string) => {
+      try {
+        return fs.existsSync(p) && fs.statSync(p).isFile();
+      } catch {
+        return false;
+      }
+    });
+
+  const winMode = isWindowsPath(candidatePath);
+  const samePath = (a: string, b: string) => {
+    const na = a.replace(/[\\/]+$/, "");
+    const nb = b.replace(/[\\/]+$/, "");
+    return winMode ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+  };
+
   let dir = candidatePath;
   try {
-    if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).isFile()) {
-      dir = path.dirname(candidatePath);
-    } else if (!fs.existsSync(candidatePath) && path.extname(candidatePath)) {
-      dir = path.dirname(candidatePath);
+    if (isFileFn(candidatePath)) {
+      dir = pathDirName(candidatePath);
+    } else if (!existsFn(candidatePath) && pathExtName(candidatePath)) {
+      dir = pathDirName(candidatePath);
     }
   } catch {
-    dir = path.dirname(candidatePath);
+    dir = pathDirName(candidatePath);
   }
 
   let fallbackCandidate: string | null = null;
   for (let depth = 0; depth < 12; depth++) {
-    if (!dir || dir === "/" || dir === home) break;
+    if (
+      !dir ||
+      dir === "/" ||
+      /^[a-zA-Z]:[\\/]?$/.test(dir) ||
+      samePath(dir, home)
+    ) {
+      break;
+    }
 
     for (const marker of PROJECT_MARKERS) {
       try {
-        if (fs.existsSync(path.join(dir, marker))) {
-          // Prefer `.git` root immediately if found.
+        if (existsFn(pathJoin(dir, marker))) {
           if (marker === ".git") return dir;
           if (!fallbackCandidate) fallbackCandidate = dir;
         }
@@ -114,24 +176,29 @@ export function findProjectRootForPath(candidatePath: string): string | null {
       }
     }
 
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
+    const parent = pathDirName(dir);
+    if (parent === dir || parent === ".") break;
     dir = parent;
   }
 
   if (fallbackCandidate) return fallbackCandidate;
 
   // Fallback for non-repo folders directly under ~/git/<project> or ~/Projects/<project>
-  const rel = path.relative(home, candidatePath);
-  if (rel && !rel.startsWith("..")) {
-    const segs = rel.split(path.sep);
+  const normHome = home.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normCand = candidatePath.replace(/\\/g, "/");
+  const startsWithHome = winMode
+    ? normCand.toLowerCase().startsWith(`${normHome.toLowerCase()}/`)
+    : normCand.startsWith(`${normHome}/`);
+  if (startsWithHome) {
+    const rel = normCand.slice(normHome.length + 1);
+    const segs = rel.split("/").filter(Boolean);
     if (
       segs.length >= 2 &&
-      ["git", "projects", "Projects", "src", "workspace", "workspaces", "code", "dev"].includes(
+      ["git", "projects", "Projects", "src", "workspace", "workspaces", "code", "dev", "repos"].includes(
         segs[0]
       )
     ) {
-      return path.join(home, segs[0], segs[1]);
+      return pathJoin(pathJoin(home, segs[0]), segs[1]);
     }
   }
 
@@ -211,9 +278,11 @@ function discoverTranscripts(
   for (const hk of db.getHookTranscriptPaths()) {
     if (byConv.has(hk.conversationId)) continue;
     let candidate = hk.transcriptPath;
-    if (candidate.endsWith("/transcript.jsonl")) {
-      const fullVariant = candidate.slice(0, -"/transcript.jsonl".length) + "/transcript_full.jsonl";
-      if (fs.existsSync(fullVariant)) {
+    if (/[\\/]transcript\.jsonl$/i.test(candidate)) {
+      const sep = candidate.endsWith("\\transcript.jsonl") ? "\\" : "/";
+      const fullVariant =
+        candidate.slice(0, -"transcript.jsonl".length) + "transcript_full.jsonl";
+      if (sep && fs.existsSync(fullVariant)) {
         candidate = fullVariant;
       }
     }

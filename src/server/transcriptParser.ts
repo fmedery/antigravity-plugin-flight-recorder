@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import readline from "node:readline";
+import { isAbsoluteLocalPath, unwrapFileUri } from "../shared/paths.js";
 import type { ToolCategory } from "../shared/types.js";
 
 export interface ParsedTurnRaw {
@@ -258,7 +259,7 @@ function extractSkillMetadata(
 ): { skillName: string | null; skillPlugin: string | null } {
   const norm = targetPath.replace(/\\/g, "/");
   let skillPlugin: string | null = null;
-  const pluginMatch = norm.match(/\/plugins\/([^/]+)\//);
+  const pluginMatch = norm.match(/\/(?:builtin\/)?plugins\/([^/]+)\//);
   if (pluginMatch) {
     skillPlugin = pluginMatch[1];
   } else if (norm.includes("/builtin/skills/")) {
@@ -298,16 +299,21 @@ function extractPathFromArgs(args: Record<string, unknown>): string | null {
     args.Cwd
   ];
   for (const c of candidates) {
-    if (typeof c === "string" && c.trim().startsWith("/")) {
-      return c.trim();
+    if (typeof c === "string" && c.trim()) {
+      const unwrapped = unwrapFileUri(c.trim());
+      if (isAbsoluteLocalPath(unwrapped)) {
+        return unwrapped;
+      }
     }
   }
   return null;
 }
 
 function extractCommandPathHints(cmd: string): string[] {
-  const matches = cmd.match(/\/[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)+/g);
-  return matches ? Array.from(new Set(matches)) : [];
+  const posixMatches = cmd.match(/\/[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)+/g) ?? [];
+  const winMatches = cmd.match(/[a-zA-Z]:[\\/][a-zA-Z0-9_.\-\\/]+/g) ?? [];
+  const combined = [...posixMatches, ...winMatches];
+  return combined.length > 0 ? Array.from(new Set(combined)) : [];
 }
 
 function extractChildConversationId(body: string): string | null {

@@ -361,7 +361,7 @@ test("projectDisplayName resolves displayName/name from manifests, git origin UR
     fs.mkdirSync(path.join(pGitHttps, ".git"), { recursive: true });
     fs.writeFileSync(
       path.join(pGitHttps, ".git", "config"),
-      '[core]\n\tbare = false\n[remote "origin"]\n\turl = https://github.com/fmedery/musiclab.git\n',
+      '[core]\n\tbare = false\n[remote "origin"]\n\turl = https://github.com/acme/musiclab.git\n',
       "utf8"
     );
     assert.equal(projectDisplayName(pGitHttps), "musiclab");

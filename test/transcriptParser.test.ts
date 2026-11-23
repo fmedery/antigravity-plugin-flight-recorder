@@ -36,7 +36,7 @@ test("parseTranscriptFile parses turns, tokens, stringified args, skills, MCP, s
           id: "tc-1",
           name: "read_file",
           args: {
-            Path: '"/Users/frederic/.gemini/config/plugins/superpowers/skills/writing-plans/SKILL.md"'
+            Path: '"/Users/dev/.gemini/config/plugins/superpowers/skills/writing-plans/SKILL.md"'
           }
         },
         {
@@ -126,7 +126,7 @@ test("parseTranscriptFile parses turns, tokens, stringified args, skills, MCP, s
     assert.equal(skillTool.durationMs, 2000);
     assert.equal(
       skillTool.targetPath,
-      "/Users/frederic/.gemini/config/plugins/superpowers/skills/writing-plans/SKILL.md"
+      "/Users/dev/.gemini/config/plugins/superpowers/skills/writing-plans/SKILL.md"
     );
 
     const mcpTool = parsed.toolCalls[1];

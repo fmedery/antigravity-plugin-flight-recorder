@@ -53,6 +53,81 @@ export function fmtDateShort(ms: number): string {
 
 import type { PluginSkillMetric } from "../shared/types.js";
 
+export type KpiHelpKey =
+  | "projects"
+  | "chatsSubagents"
+  | "totalTokens"
+  | "cacheHitRatio"
+  | "tokensAndCache"
+  | "activeAgentTime"
+  | "userWaitIdle"
+  | "estCost";
+
+export interface KpiHelpEntry {
+  title: string;
+  meaning: string;
+  impact: string;
+}
+
+export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
+  projects: {
+    title: "Tracked Projects & Sessions",
+    meaning:
+      "Workspaces inferred from Antigravity Hub, IDE, and CLI transcripts, plus total root chats and spawned subagents.",
+    impact:
+      "Splitting broad exploration into subagents keeps individual parent chats leaner and prevents context compaction."
+  },
+  chatsSubagents: {
+    title: "Chats & Spawned Subagents",
+    meaning:
+      "Top-level user conversations in this project alongside background research, browser, or coding subagents they launched.",
+    impact:
+      "Subagents run in isolated context windows so heavy codebase searches do not bloat your main chat's prompt cache."
+  },
+  totalTokens: {
+    title: "Total Tokens Processed",
+    meaning:
+      "Sum of uncached new input tokens, cached context reads, and model output tokens across every planner step.",
+    impact:
+      "Large SKILL.md files or verbose tool outputs read early get re-read on every subsequent step—keep peak context below the 200k cliff."
+  },
+  cacheHitRatio: {
+    title: "Prompt Cache Hit Ratio",
+    meaning:
+      "Share of input context served from the prompt cache instead of billed and processed as fresh uncached input.",
+    impact:
+      "Cached tokens typically cost 75–90% less and prefill faster; >4 min idle gaps, model switches, or context compaction trigger expensive cache misses."
+  },
+  tokensAndCache: {
+    title: "Tokens, Peak Context & Cache",
+    meaning:
+      "Total tokens processed in this chat (with prompt cache hit %) alongside peak single-step context size and fresh uncached input.",
+    impact:
+      "Crossing 200k–256k peak context degrades recall and triggers prefix compaction, forcing skills and files to be re-read at full uncached cost."
+  },
+  activeAgentTime: {
+    title: "Active Agent Time",
+    meaning:
+      "Wall-clock time the agent spent thinking and running tools (merging parallel tool calls and excluding user idle/approval waits).",
+    impact:
+      "Highlights whether latency comes from heavy model reasoning, sequential tool calls that could run in parallel, or slow workflow plugins."
+  },
+  userWaitIdle: {
+    title: "User Wait & Idle Time",
+    meaning:
+      "Elapsed time between turns or during permission/review pauses when no model step or tool was actively executing.",
+    impact:
+      "Excluded from Active Agent Time so pauses never skew plugin speed, though idle gaps over ~4–5 minutes can expire the prompt cache TTL."
+  },
+  estCost: {
+    title: "Estimated API Equivalent Spend",
+    meaning:
+      "Estimated USD value of uncached input, cache reads, and output tokens using your configured per-1M model pricing rules.",
+    impact:
+      "Reveals which plugins, skills, and model choices consume the most quota/budget; configure custom rates in Pricing for any unpriced models."
+  }
+};
+
 export function buildSkillOptimizationPrompt(
   metric: PluginSkillMetric,
   scopeLabel: string

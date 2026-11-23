@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathBaseName, pathDirName } from "../shared/paths.js";
 import type {
   PluginSkillChildKind,
   ToolCallRecord
@@ -103,9 +104,9 @@ function collectPluginCliBinaries(
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     for (const ent of entries) {
       if (!ent.isFile() && !ent.isSymbolicLink()) continue;
-      const base = ent.name;
-      if (base.includes(".")) continue;
-      const lower = base.toLowerCase();
+      const stripped = ent.name.replace(/\.(?:exe|cmd|bat)$/i, "");
+      if (stripped.includes(".")) continue;
+      const lower = stripped.toLowerCase();
       if (GENERIC_CLI_NAMES.has(lower)) continue;
       if (
         lower === idLower ||
@@ -140,10 +141,19 @@ function textMentionsAnyToken(body: string, tokens: string[]): boolean {
 }
 
 export function discoverInstalledPlugins(
-  pluginsDir = path.join(os.homedir(), ".gemini", "config", "plugins")
+  pluginsDirs?: string | string[]
 ): InstalledPluginRegistry {
+  const dirs = Array.isArray(pluginsDirs)
+    ? pluginsDirs
+    : typeof pluginsDirs === "string"
+      ? [pluginsDirs]
+      : [
+          path.join(os.homedir(), ".gemini", "config", "plugins"),
+          path.join(os.homedir(), ".gemini", "antigravity", "builtin", "plugins")
+        ];
+  const cacheKey = dirs.join(path.delimiter);
   const now = Date.now();
-  const cached = pluginRegistryCache.get(pluginsDir);
+  const cached = pluginRegistryCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
     return cached.registry;
   }
@@ -152,38 +162,41 @@ export function discoverInstalledPlugins(
   const cliToPlugin = new Map<string, string>();
   const mcpToPlugin = new Map<string, string>();
 
-  try {
-    if (fs.existsSync(pluginsDir)) {
-      const entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-        const pluginPath = path.join(pluginsDir, entry.name);
-        let stat: fs.Stats | null = null;
-        try {
-          stat = fs.statSync(pluginPath);
-        } catch {
-          stat = null;
-        }
-        if (!stat || !stat.isDirectory()) continue;
-
-        let id = entry.name;
-        let displayName = entry.name;
-        const manifestText = readTextSafe(path.join(pluginPath, "plugin.json"));
-        if (manifestText) {
+  for (const pluginsDir of dirs) {
+    try {
+      if (fs.existsSync(pluginsDir)) {
+        const entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+          const pluginPath = path.join(pluginsDir, entry.name);
+          let stat: fs.Stats | null = null;
           try {
-            const parsed = JSON.parse(manifestText) as Record<string, unknown>;
-            if (typeof parsed.name === "string" && parsed.name.trim()) {
-              id = parsed.name.trim();
-            }
-            if (typeof parsed.displayName === "string" && parsed.displayName.trim()) {
-              displayName = parsed.displayName.trim();
-            } else {
-              displayName = id;
-            }
+            stat = fs.statSync(pluginPath);
           } catch {
-            // Keep directory basename fallback
+            stat = null;
           }
-        }
+          if (!stat || !stat.isDirectory()) continue;
+
+          let id = entry.name;
+          let displayName = entry.name;
+          const manifestText = readTextSafe(path.join(pluginPath, "plugin.json"));
+          if (manifestText) {
+            try {
+              const parsed = JSON.parse(manifestText) as Record<string, unknown>;
+              if (typeof parsed.name === "string" && parsed.name.trim()) {
+                id = parsed.name.trim();
+              }
+              if (typeof parsed.displayName === "string" && parsed.displayName.trim()) {
+                displayName = parsed.displayName.trim();
+              } else {
+                displayName = id;
+              }
+            } catch {
+              // Keep directory basename fallback
+            }
+          }
+
+          if (byId.has(id)) continue;
 
         const mcpSet = new Set<string>();
         const mcpText = readTextSafe(path.join(pluginPath, "mcp_config.json"));
@@ -275,18 +288,19 @@ export function discoverInstalledPlugins(
           cliToPlugin.set(cli, id);
         }
         for (const srv of mcpServerNames) {
-          mcpToPlugin.set(srv, id);
-          mcpToPlugin.set(`${id}_${srv}`, id);
-          mcpToPlugin.set(`${entry.name}_${srv}`, id);
+          if (!mcpToPlugin.has(srv)) mcpToPlugin.set(srv, id);
+          if (!mcpToPlugin.has(`${id}_${srv}`)) mcpToPlugin.set(`${id}_${srv}`, id);
+          if (!mcpToPlugin.has(`${entry.name}_${srv}`)) mcpToPlugin.set(`${entry.name}_${srv}`, id);
         }
       }
     }
-  } catch {
-    // Return partial/empty registry if pluginsDir cannot be scanned
+    } catch {
+      // Return partial/empty registry if pluginsDir cannot be scanned
+    }
   }
 
   const registry: InstalledPluginRegistry = { byId, cliToPlugin, mcpToPlugin };
-  pluginRegistryCache.set(pluginsDir, {
+  pluginRegistryCache.set(cacheKey, {
     registry,
     expiresAt: now + PLUGIN_REGISTRY_TTL_MS
   });
@@ -353,7 +367,7 @@ export function resolveToolPluginAndChild(
     if (tc.skillPlugin && tc.skillPlugin !== "builtin") {
       const childLabel =
         tc.skillName ||
-        (tc.targetPath ? path.basename(path.dirname(tc.targetPath)) : "skill");
+        (tc.targetPath ? pathBaseName(pathDirName(tc.targetPath)) : "skill");
       return makePluginHit(
         tc.skillPlugin,
         "SubSkill",
@@ -372,7 +386,7 @@ export function resolveToolPluginAndChild(
           tc.skillName
         );
       }
-      const refName = tc.targetPath ? path.basename(tc.targetPath) : "SKILL.md";
+      const refName = tc.targetPath ? pathBaseName(tc.targetPath) : "SKILL.md";
       return {
         parentId: `skill:${tc.skillName}`,
         parentName: tc.skillName,
@@ -448,18 +462,21 @@ export function resolveToolPluginAndChild(
       }
       if (!seg) continue;
 
-      const scriptMatch = seg.match(
-        /^(?:(?:bash|sh|zsh|python3?|node)\s+)?["']?([^\s"']*\.gemini\/config\/plugins\/([^/\s"']+)\/(?:skills|scripts|bin)\/([^\s"']+))/
+      const normSeg = seg.replace(/\\/g, "/");
+      const scriptMatch = normSeg.match(
+        /^(?:(?:bash|sh|zsh|python3?|py|node|cmd(?:\.exe)?\s+\/c)\s+)?["']?([^\s"']*\.gemini\/(?:config|antigravity\/builtin)\/plugins\/([^/\s"']+)\/(?:skills|scripts|bin)\/([^\s"']+))/i
       );
       if (scriptMatch && scriptMatch[2]) {
-        const scriptBase = path.basename(scriptMatch[3] || scriptMatch[2]);
+        const scriptBase = pathBaseName(scriptMatch[3] || scriptMatch[2]);
         return makePluginHit(scriptMatch[2], "CLI", scriptBase, "execution", null);
       }
 
       const firstTokMatch = seg.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/);
       if (firstTokMatch) {
         const rawTok = firstTokMatch[1] ?? firstTokMatch[2] ?? firstTokMatch[3] ?? "";
-        const baseTok = path.basename(rawTok).toLowerCase();
+        const baseTok = pathBaseName(rawTok)
+          .replace(/\.(?:exe|cmd|bat)$/i, "")
+          .toLowerCase();
         const pluginId = registry.cliToPlugin.get(baseTok);
         if (pluginId) {
           return makePluginHit(pluginId, "CLI", baseTok, "execution", null);
@@ -1340,7 +1357,7 @@ function buildConversationLiveDiagnostics(
     } else if (tc.mcpServer) {
       label = `MCP ${tc.mcpServer}: ${tc.toolName}`;
     } else {
-      label = `${tc.toolName}${tc.targetPath ? ` (${path.basename(tc.targetPath)})` : ""}`;
+      label = `${tc.toolName}${tc.targetPath ? ` (${pathBaseName(tc.targetPath)})` : ""}`;
     }
 
     findings.push({
@@ -1394,7 +1411,7 @@ function buildConversationLiveDiagnostics(
         ? ` › ${info.hit.childName}`
         : "";
     findings.push({
-      id: `dupskill-${info.firstStep}-${path.basename(readKey)}`,
+      id: `dupskill-${info.firstStep}-${info.hit.childKey}`,
       severity: "warning",
       category: "unused_skill",
       title: `Duplicate skill read: ${info.hit.parentName}${subLabel} (${info.count}×)`,
@@ -1506,7 +1523,7 @@ function buildConversationLiveDiagnostics(
         0
       );
       const wastedMs = streak.reduce((s, x) => s + x.durationMs, 0);
-      const targetHint = tc.targetPath ? ` (${path.basename(tc.targetPath)})` : "";
+      const targetHint = tc.targetPath ? ` (${pathBaseName(tc.targetPath)})` : "";
       findings.push({
         id: `thrash-${tc.stepIndex}-${tc.toolName}`,
         severity: "warning",
@@ -1557,7 +1574,7 @@ function buildConversationLiveDiagnostics(
     );
     const wastedMs = errCalls.reduce((s, x) => s + x.durationMs, 0);
     const targetHint = first.targetPath
-      ? ` (${path.basename(first.targetPath)})`
+      ? ` (${pathBaseName(first.targetPath)})`
       : first.argsPreview
         ? ` (${first.argsPreview.slice(0, 32)})`
         : "";
@@ -1692,7 +1709,7 @@ function buildConversationLiveDiagnostics(
         id: `reread-${f.path}`,
         severity: "info",
         category: "repeated_read",
-        title: `Repeated reads: ${path.basename(f.path)} (${f.reads}×)`,
+        title: `Repeated reads: ${pathBaseName(f.path)} (${f.reads}×)`,
         detail: `${f.path} was read ${f.reads} times (${(f.totalBytesRead / 1024).toFixed(1)} KB total), contributing ~${fmtShortTok(f.directTokens)} direct tokens.`,
         stepIndex: null,
         turnIndex: null,

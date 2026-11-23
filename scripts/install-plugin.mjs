@@ -7,42 +7,74 @@ const pluginsDir = path.join(os.homedir(), ".gemini", "config", "plugins");
 const targetPath = path.join(pluginsDir, "flight-recorder");
 const legacyPath = path.join(pluginsDir, "antigravity-tracker");
 const forceFlag = process.argv.includes("--force");
+const linkType = process.platform === "win32" ? "junction" : "dir";
+
+function sameResolvedPath(a: string, b: string): boolean {
+  return process.platform === "win32"
+    ? a.toLowerCase() === b.toLowerCase()
+    : a === b;
+}
+
+function linkOrCopyPlugin(src: string, dest: string): void {
+  try {
+    fs.symlinkSync(src, dest, linkType);
+    console.log(`Linked plugin (${linkType}): ${dest} -> ${src}`);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EPERM" || code === "ENOTSUP" || code === "EXDEV") {
+      fs.cpSync(src, dest, {
+        recursive: true,
+        filter: (item) => {
+          const rel = path.relative(src, item);
+          if (!rel) return true;
+          const top = rel.split(path.sep)[0];
+          return (
+            top !== "node_modules" &&
+            top !== ".git" &&
+            top !== "dist-test" &&
+            top !== ".superpowers" &&
+            top !== ".worktrees"
+          );
+        }
+      });
+      console.log(`Copied plugin bundle (symlink unavailable: ${code}): ${dest}`);
+      return;
+    }
+    throw err;
+  }
+}
 
 fs.mkdirSync(pluginsDir, { recursive: true });
 
-// Remove legacy symlink if it points to this repo so there are no duplicate plugins.
 const legacyStat = fs.lstatSync(legacyPath, { throwIfNoEntry: false });
 if (legacyStat?.isSymbolicLink()) {
   const existingLegacy = fs.readlinkSync(legacyPath);
-  if (path.resolve(pluginsDir, existingLegacy) === repoRoot) {
+  if (sameResolvedPath(path.resolve(pluginsDir, existingLegacy), repoRoot)) {
     fs.unlinkSync(legacyPath);
     console.log(`Removed legacy symlink: ${legacyPath}`);
   }
 }
 
-if (fs.existsSync(targetPath) || fs.lstatSync(targetPath, { throwIfNoEntry: false })) {
-  const stat = fs.lstatSync(targetPath);
+const stat = fs.lstatSync(targetPath, { throwIfNoEntry: false });
+if (stat) {
   if (stat.isSymbolicLink()) {
     const existing = fs.readlinkSync(targetPath);
-    if (path.resolve(pluginsDir, existing) === repoRoot) {
+    if (sameResolvedPath(path.resolve(pluginsDir, existing), repoRoot)) {
       console.log(`Already linked: ${targetPath} -> ${repoRoot}`);
     } else {
       fs.unlinkSync(targetPath);
-      fs.symlinkSync(repoRoot, targetPath, "dir");
-      console.log(`Updated symlink: ${targetPath} -> ${repoRoot}`);
+      linkOrCopyPlugin(repoRoot, targetPath);
     }
   } else if (forceFlag) {
     fs.rmSync(targetPath, { recursive: true, force: true });
-    fs.symlinkSync(repoRoot, targetPath, "dir");
-    console.log(`Replaced directory with symlink: ${targetPath} -> ${repoRoot}`);
+    linkOrCopyPlugin(repoRoot, targetPath);
   } else {
     throw new Error(
       `Target exists and is not a symlink: ${targetPath}. Re-run with --force to replace.`
     );
   }
 } else {
-  fs.symlinkSync(repoRoot, targetPath, "dir");
-  console.log(`Linked plugin: ${targetPath} -> ${repoRoot}`);
+  linkOrCopyPlugin(repoRoot, targetPath);
 }
 
 const manifestPath = path.join(targetPath, "plugin.json");

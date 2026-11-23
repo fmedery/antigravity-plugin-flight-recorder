@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/ext-apps";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
+import { pathBaseName, toFileUri } from "../shared/paths";
 import type {
   ConversationDetail,
   DashboardData,
@@ -283,7 +284,7 @@ export const AppRoot: React.FC = () => {
     try {
       const req = {
         method: "com.google.antigravity/toggle-aux-pane",
-        params: { tabType: "fileView", uri: `file://${filePath}` }
+        params: { tabType: "fileView", uri: toFileUri(filePath) }
       } as unknown as Parameters<App["request"]>[0];
       const res = await app.request(req, ToggleAuxPaneResultSchema);
       if (res?.isError) {
@@ -349,7 +350,7 @@ export const AppRoot: React.FC = () => {
   const projectLabel =
     projectDetail?.summary.projectName ??
     (selectedProjectPath
-      ? selectedProjectPath.split("/").filter(Boolean).pop() || selectedProjectPath
+      ? pathBaseName(selectedProjectPath) || selectedProjectPath
       : null);
 
   return (
