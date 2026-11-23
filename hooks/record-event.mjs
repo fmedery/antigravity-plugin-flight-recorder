@@ -11,7 +11,11 @@ const MAX_ARG_KEYS = 20;
 
 function sanitizeText(input, maxChars) {
   if (typeof input !== "string" || !input) return input;
-  const cleaned = input
+  const bounded =
+    typeof maxChars === "number" && input.length > Math.max(4096, maxChars * 8)
+      ? input.slice(0, Math.max(4096, maxChars * 8))
+      : input;
+  const cleaned = bounded
     .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "")
@@ -22,8 +26,11 @@ function sanitizeText(input, maxChars) {
       "[REDACTED]"
     )
     .replace(
-      /\b([A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE|(?:AUTH|ACCESS|REFRESH|ID|SESSION|API|GITHUB|GH|NPM|HF|SLACK|BEARER|BOT|CLIENT)[_-]?TOKEN)\b|[Tt][Oo][Kk][Ee][Nn])\s*([=:])\s*(?![0-9]+\b)("[^"]*"|'[^']*'|[^\s"',;]+)/gi,
-      "$1$2[REDACTED]"
+      /\b([A-Za-z0-9_]{0,64}?(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|AUTH[_-]?TOKEN|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE)[A-Za-z0-9_]{0,64})((?:["'])?\s*[=:]\s*)(?!(?:[0-9]+(?:\.[0-9]+)?|true|false|null)\b)("[^"\r\n]{0,512}"|'[^'\r\n]{0,512}'|[^\s"',;}\]]{1,512})/gi,
+      (_m, k, sep, val) =>
+        val.startsWith('"') && val.endsWith('"')
+          ? `${k}${sep}"[REDACTED]"`
+          : `${k}${sep}[REDACTED]`
     );
 
   if (typeof maxChars === "number" && cleaned.length > maxChars) {

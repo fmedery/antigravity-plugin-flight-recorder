@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { KPI_HELP_COPY, type KpiHelpKey } from "../format";
 
 interface Props {
@@ -38,12 +38,15 @@ function ensurePopoverHintFallback(): void {
 export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
   const reactId = useId();
   const tipId = `kpi-tip-${helpKey}-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const anchorName = `--${tipId}`;
   const info = KPI_HELP_COPY[helpKey];
   const [open, setOpen] = useState(false);
   const [fallbackPos, setFallbackPos] = useState<{ top: number; left: number } | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
-  const popRef = useRef<(HTMLDivElement & { showPopover?: () => void; hidePopover?: () => void }) | null>(null);
+  const popRef = useRef<
+    (HTMLDivElement & { showPopover?: (opts?: { source?: HTMLElement | null }) => void; hidePopover?: () => void }) | null
+  >(null);
 
   const supportsNativeInterest =
     typeof HTMLButtonElement !== "undefined" &&
@@ -58,7 +61,7 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
     ensurePopoverHintFallback();
   }, []);
 
-  const updateFallbackPosition = () => {
+  const updateFallbackPosition = useCallback(() => {
     if (supportsCssAnchor || !btnRef.current || typeof window === "undefined") return;
     const rect = btnRef.current.getBoundingClientRect();
     const tooltipWidth = 272;
@@ -68,7 +71,7 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
     );
     const top = rect.bottom + 6;
     setFallbackPos({ top, left });
-  };
+  }, [supportsCssAnchor]);
 
   useEffect(() => {
     const el = popRef.current;
@@ -83,7 +86,7 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
     };
     el.addEventListener("toggle", onToggle);
     return () => el.removeEventListener("toggle", onToggle);
-  });
+  }, [updateFallbackPosition]);
 
   useEffect(() => {
     if (!open) return;
@@ -128,9 +131,13 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
     if (!supportsNativeInterest) {
       setOpen(true);
       try {
-        popRef.current?.showPopover?.();
+        popRef.current?.showPopover?.({ source: btnRef.current });
       } catch {
-        // Ignore if already open or Popover API absent
+        try {
+          popRef.current?.showPopover?.();
+        } catch {
+          // Ignore if already open or Popover API absent
+        }
       }
     }
   };
@@ -149,6 +156,12 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
         className="kpi-help-btn"
         aria-label={`About ${info.title}`}
         aria-expanded={open}
+        aria-describedby={tipId}
+        style={
+          supportsCssAnchor
+            ? ({ anchorName } as React.CSSProperties)
+            : undefined
+        }
         onClick={(e) => {
           e.stopPropagation();
           handleOpen();
@@ -169,9 +182,11 @@ export const KpiHelpTip: React.FC<Props> = ({ helpKey }) => {
         role="tooltip"
         className={`kpi-help-popover ${open ? "is-fallback-open" : ""}`}
         style={
-          !supportsCssAnchor && fallbackPos
-            ? { top: `${fallbackPos.top}px`, left: `${fallbackPos.left}px` }
-            : undefined
+          supportsCssAnchor
+            ? ({ positionAnchor: anchorName } as React.CSSProperties)
+            : fallbackPos
+              ? { top: `${fallbackPos.top}px`, left: `${fallbackPos.left}px` }
+              : undefined
         }
         onMouseEnter={handleOpen}
         onMouseLeave={scheduleClose}

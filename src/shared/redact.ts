@@ -24,18 +24,25 @@ export function redactSecrets(input: string): string {
         /\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]{20,}|sk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g,
         "[REDACTED]"
       )
-      // Named credential assignments (e.g., API_KEY=..., GITHUB_TOKEN: "...", password=...)
-      // Excludes purely numeric counters like outputTokens=500
+      // Named credential assignments & JSON keys (e.g., API_KEY=..., CLOUDFLARE_TOKEN=..., {"apiKey":"..."})
+      // Preserves numeric counters and booleans like outputTokens=500 or {"outputTokens":500,"hasTokenTelemetry":true}
       .replace(
-        /\b([A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE|(?:AUTH|ACCESS|REFRESH|ID|SESSION|API|GITHUB|GH|NPM|HF|SLACK|BEARER|BOT|CLIENT)[_-]?TOKEN)\b|[Tt][Oo][Kk][Ee][Nn])\s*([=:])\s*(?![0-9]+\b)("[^"]*"|'[^']*'|[^\s"',;]+)/gi,
-        "$1$2[REDACTED]"
+        /\b([A-Za-z0-9_]{0,64}?(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|AUTH[_-]?TOKEN|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE)[A-Za-z0-9_]{0,64})((?:["'])?\s*[=:]\s*)(?!(?:[0-9]+(?:\.[0-9]+)?|true|false|null)\b)("[^"\r\n]{0,512}"|'[^'\r\n]{0,512}'|[^\s"',;}\]]{1,512})/gi,
+        (_m, k: string, sep: string, val: string) =>
+          val.startsWith('"') && val.endsWith('"')
+            ? `${k}${sep}"[REDACTED]"`
+            : `${k}${sep}[REDACTED]`
       )
   );
 }
 
 export function sanitizePreviewText(input: string, maxChars?: number): string {
   if (!input) return "";
-  const cleaned = redactSecrets(stripControlAndAnsi(input))
+  const bounded =
+    maxChars !== undefined && input.length > Math.max(4096, maxChars * 8)
+      ? input.slice(0, Math.max(4096, maxChars * 8))
+      : input;
+  const cleaned = redactSecrets(stripControlAndAnsi(bounded))
     .replace(/\s+/g, " ")
     .trim();
   if (maxChars !== undefined && maxChars > 3 && cleaned.length > maxChars) {

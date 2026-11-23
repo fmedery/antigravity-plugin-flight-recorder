@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { analyzeConversation } from "../src/server/analytics.js";
+import { createTrackerMcpServer } from "../src/server/tools.js";
 import { TrackerDatabase } from "../src/server/db.js";
 import { ingestHookEvents } from "../src/server/hookIngestor.js";
 import {
@@ -21,16 +24,29 @@ import { sanitizePreviewText } from "../src/shared/redact.js";
 import { findProjectRootForPath } from "../src/server/scanner.js";
 import {
   clearInstalledPluginsCache,
+  computeScopeSkillEfficiency,
   discoverInstalledPlugins,
   resolveToolPluginAndChild
 } from "../src/server/skillEfficiency.js";
 import { parseTranscriptFile } from "../src/server/transcriptParser.js";
 import { KPI_HELP_COPY } from "../src/ui/format.js";
 
-test("paths.ts handles Windows drive/UNC paths, percent-encoded file:// URIs with spaces, and RFC 8089 toFileUri", () => {
+test("paths.ts handles Windows drive/UNC paths, percent-encoded file:// URIs with spaces, UTF-8, %3A drive colons, and RFC 8089 toFileUri", () => {
   assert.equal(
     unwrapFileUri("file:///C:/Users/Jane%20Doe/My%20App/src/100%.ts"),
     "C:/Users/Jane Doe/My App/src/100%.ts"
+  );
+  assert.equal(
+    unwrapFileUri("file:///c%3A/Users/Jane%20Doe/caf%C3%A9/100%bad.ts"),
+    "c:/Users/Jane Doe/café/100%bad.ts"
+  );
+  assert.equal(
+    isWindowsPath(unwrapFileUri("file:///c%3A/Users/Jane%20Doe/app/a.ts")),
+    true
+  );
+  assert.equal(
+    toFileUri(unwrapFileUri("file:///c%3A/Users/Jane%20Doe/caf%C3%A9/a.ts")),
+    "file:///c:/Users/Jane%20Doe/caf%C3%A9/a.ts"
   );
   assert.equal(
     unwrapFileUri("file:///Users/jane/My%20App/100%bad.md"),
@@ -457,8 +473,215 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(readme, /USERPROFILE/);
     assert.match(readme, /Download ZIP/i);
     assert.match(readme, /agy plugin install/);
+
+    // 4. Server version & plain .mjs script syntax checks (no TypeScript syntax in .mjs!)
+    assert.equal(client.getServerVersion()?.version, "0.2.0");
+    for (const mjsRel of [
+      "scripts/install-plugin.mjs",
+      "scripts/build-server.mjs",
+      "hooks/record-event.mjs"
+    ]) {
+      const chk = spawnSync(process.execPath, ["--check", path.join(repoRoot, mjsRel)], {
+        encoding: "utf8"
+      });
+      assert.equal(
+        chk.status,
+        0,
+        `Expected valid JS syntax in ${mjsRel}, got: ${chk.stderr}`
+      );
+    }
+
+    // 5. KpiHelpTip explicit CSS anchor + aria-describedby check in UI bundle
+    const uiHtml = fs.readFileSync(uiBundlePath, "utf8");
+    assert.match(uiHtml, /positionAnchor/);
+    assert.match(uiHtml, /aria-describedby/);
   } finally {
     await client.close().catch(() => {});
     fs.rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+});
+
+test("Windows backslash SKILL.md paths, JSON/custom *_TOKEN redaction, SQLite v6 upgrade, and Windows MCP projectPath lookup work end-to-end", async () => {
+  // 1. JSON keys + arbitrary *_TOKEN / *_SECRET_* redaction without touching numeric outputTokens
+  const jsonDirty = JSON.stringify({
+    apiKey: "custom_secret_abc123",
+    password: "hunter2password",
+    env: "CLOUDFLARE_TOKEN=cf_tok_987654321 JWT_SECRET_V2=s3cr3t_val",
+    outputTokens: 500,
+    hasTokenTelemetry: true
+  });
+  const redactedJson = sanitizePreviewText(jsonDirty, 500);
+  assert.equal(redactedJson.includes("custom_secret_abc123"), false);
+  assert.equal(redactedJson.includes("hunter2password"), false);
+  assert.equal(redactedJson.includes("cf_tok_987654321"), false);
+  assert.equal(redactedJson.includes("s3cr3t_val"), false);
+  assert.ok(redactedJson.includes('"outputTokens":500'));
+  assert.ok(redactedJson.includes('"hasTokenTelemetry":true'));
+
+  // 2. Native Windows backslash SKILL.md path parsed by parseTranscriptFile + duplicate read detection
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fr-win-skill-"));
+  try {
+    const tPath = path.join(tmp, "win-skill.jsonl");
+    const winSkillPath =
+      "C:\\Users\\Jane\\.gemini\\config\\plugins\\superpowers\\skills\\brainstorming\\SKILL.md";
+    fs.writeFileSync(
+      tPath,
+      [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          created_at: "2026-11-23T12:00:00Z",
+          content: "<USER_REQUEST>Design feature</USER_REQUEST>"
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          created_at: "2026-11-23T12:00:01Z",
+          model: "gemini-2.5-pro",
+          input_tokens: 1000,
+          cache_read_tokens: 0,
+          output_tokens: 100,
+          tool_calls: [
+            { id: "sk1", name: "read_file", args: { Path: winSkillPath } },
+            {
+              id: "sk2",
+              name: "read_file",
+              args: { Path: winSkillPath.replace(/\\/g, "/").toLowerCase() }
+            }
+          ]
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "GENERIC",
+          created_at: "2026-11-23T12:00:02Z",
+          content: "---\nname: brainstorming\n---\n# Brainstorming"
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "GENERIC",
+          created_at: "2026-11-23T12:00:03Z",
+          content: "---\nname: brainstorming\n---\n# Brainstorming"
+        })
+      ].join("\n") + "\n"
+    );
+
+    const parsed = await parseTranscriptFile(tPath, "win-skill-conv");
+    assert.equal(parsed.toolCalls[0].category, "skill");
+    assert.equal(parsed.toolCalls[0].skillName, "brainstorming");
+    assert.equal(parsed.toolCalls[0].skillPlugin, "superpowers");
+
+    const eff = computeScopeSkillEfficiency(
+      [
+        {
+          conversationId: "win-skill-conv",
+          parentConversationId: null,
+          activeMs: 5_000,
+          hasTokenTelemetry: true,
+          filesTouched: [],
+          plannerSteps: parsed.plannerSteps.map((s) => ({
+            ...s,
+            completedAtMs: s.createdAtMs + 2_000,
+            modelDurationMs: 2_000,
+            cacheHitRatio: 0,
+            isCacheMiss: false,
+            cacheMissCause: null,
+            attributedSummary: ""
+          })),
+          toolCalls: parsed.toolCalls.map((tc, idx) => ({
+            ...tc,
+            id: idx + 1,
+            attributedInputTokens: 500,
+            compoundedCacheTokens: 500
+          }))
+        }
+      ],
+      []
+    );
+    assert.equal(eff.pluginSkillMetrics[0]?.children[0]?.duplicateReads, 1);
+
+    // 3. SQLite PRAGMA user_version === 6 + Windows case/slash/URI MCP projectPath lookup
+    const db = new TrackerDatabase(path.join(tmp, "db"));
+    try {
+      const ver = db.db.prepare("PRAGMA user_version").get() as {
+        user_version: number;
+      };
+      assert.equal(ver.user_version, 6);
+
+      db.upsertConversation(
+        analyzeConversation(
+          {
+            conversationId: "win-proj-conv",
+            transcriptPath: "D:\\brain\\win-proj-conv.jsonl",
+            title: "Win App Chat",
+            hasTokenTelemetry: true,
+            startedAtMs: 1000,
+            endedAtMs: 5000,
+            models: ["gemini-2.5-pro"],
+            slashCommands: [],
+            candidatePaths: [],
+            turns: [
+              {
+                turnIndex: 0,
+                stepIndex: 0,
+                createdAtMs: 1000,
+                promptText: "Hi",
+                promptPreview: "Hi",
+                promptBytes: 2,
+                slashCommand: null
+              }
+            ],
+            plannerSteps: [],
+            toolCalls: []
+          },
+          [],
+          {
+            surface: "antigravity",
+            projectPath: "D:\\work\\service",
+            projectSource: "hook",
+            parentConversationId: null,
+            subagentRole: null,
+            subagentType: null
+          }
+        )
+      );
+
+      const mcpSrv = createTrackerMcpServer({
+        db,
+        dataDir: path.join(tmp, "db"),
+        uiHtmlPath: path.join(tmp, "missing.html"),
+        brainRoots: []
+      });
+      const mcpCli = new Client({ name: "win-lookup", version: "1.0.0" });
+      const [cTrans, sTrans] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcpSrv.connect(sTrans), mcpCli.connect(cTrans)]);
+      try {
+        const sumRes = await mcpCli.callTool({
+          name: "get_project_summary",
+          arguments: { projectPath: "file:///d:/work/service" }
+        });
+        const sumTxt =
+          Array.isArray(sumRes.content) && sumRes.content[0]?.type === "text"
+            ? (sumRes.content[0].text ?? "")
+            : "";
+        assert.match(sumTxt, /D:\\work\\service/);
+
+        const chatRes = await mcpCli.callTool({
+          name: "get_chat_analysis",
+          arguments: { projectPath: "d:/work/service" }
+        });
+        const chatTxt =
+          Array.isArray(chatRes.content) && chatRes.content[0]?.type === "text"
+            ? (chatRes.content[0].text ?? "")
+            : "";
+        assert.match(chatTxt, /Win App Chat/);
+      } finally {
+        await mcpCli.close();
+        await mcpSrv.close();
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

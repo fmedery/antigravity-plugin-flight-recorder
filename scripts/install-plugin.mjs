@@ -9,18 +9,26 @@ const legacyPath = path.join(pluginsDir, "antigravity-tracker");
 const forceFlag = process.argv.includes("--force");
 const linkType = process.platform === "win32" ? "junction" : "dir";
 
-function sameResolvedPath(a: string, b: string): boolean {
-  return process.platform === "win32"
-    ? a.toLowerCase() === b.toLowerCase()
-    : a === b;
+function normalizeLinkTarget(p) {
+  return String(p || "")
+    .replace(/^\\\\\?\\/, "")
+    .replace(/[\\/]+$/, "");
 }
 
-function linkOrCopyPlugin(src: string, dest: string): void {
+function sameResolvedPath(a, b) {
+  const na = normalizeLinkTarget(a);
+  const nb = normalizeLinkTarget(b);
+  return process.platform === "win32"
+    ? na.toLowerCase() === nb.toLowerCase()
+    : na === nb;
+}
+
+function linkOrCopyPlugin(src, dest) {
   try {
     fs.symlinkSync(src, dest, linkType);
     console.log(`Linked plugin (${linkType}): ${dest} -> ${src}`);
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
+    const code = err && typeof err === "object" ? err.code : undefined;
     if (code === "EPERM" || code === "ENOTSUP" || code === "EXDEV") {
       fs.cpSync(src, dest, {
         recursive: true,

@@ -7,7 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { pathBaseName } from "../shared/paths.js";
+import { pathBaseName, sameLocalPath, unwrapFileUri } from "../shared/paths.js";
 import type {
   DiagnosticFinding,
   ModelPricingRule,
@@ -138,10 +138,11 @@ function resolveProjectMatch(
   if (dash.projects.length === 0) return null;
 
   if (projectPath) {
-    const exact = dash.projects.find((p) => p.projectPath === projectPath);
+    const cleanInput = unwrapFileUri(projectPath);
+    const exact = dash.projects.find((p) => sameLocalPath(p.projectPath, cleanInput));
     if (exact) return exact.projectPath;
     const byBasename = dash.projects.find(
-      (p) => p.projectName.toLowerCase() === pathBaseName(projectPath).toLowerCase()
+      (p) => p.projectName.toLowerCase() === pathBaseName(cleanInput).toLowerCase()
     );
     if (byBasename) return byBasename.projectPath;
   }
@@ -175,7 +176,7 @@ function readUiHtml(uiHtmlPath: string): string {
 export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
   const server = new McpServer({
     name: "flight-recorder",
-    version: "0.1.0"
+    version: "0.2.0"
   });
 
   const scanNow = async () =>
@@ -430,7 +431,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       if (!targetId) {
         const dash = buildDashboardData(ctx.db);
         const candidates = projectPath
-          ? dash.recentChats.filter((c) => c.projectPath === projectPath)
+          ? dash.recentChats.filter((c) => sameLocalPath(c.projectPath, projectPath))
           : dash.recentChats;
         targetId = candidates[0]?.conversationId;
       }

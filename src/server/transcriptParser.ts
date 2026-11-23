@@ -268,7 +268,7 @@ function extractSkillMetadata(
   const skillDirMatch = norm.match(/^(.*\/skills\/([^/]+))\//);
   let skillName: string | null = skillDirMatch ? skillDirMatch[2] : null;
 
-  if (norm.endsWith("/SKILL.md")) {
+  if (/\/SKILL\.md$/i.test(norm)) {
     const parsedName = extractYamlName(body);
     if (parsedName) {
       skillName = parsedName;
@@ -350,10 +350,12 @@ function classifyTool(
   let childConversationId: string | null = null;
   let commandPathHints: string[] = [];
 
+  const normTarget = targetPath ? targetPath.replace(/\\/g, "/") : null;
   if (
     targetPath &&
+    normTarget &&
     (toolName === "read_file" || toolName === "view_file") &&
-    (targetPath.endsWith("/SKILL.md") || /\/skills\/[^/]+\//.test(targetPath))
+    (/\/SKILL\.md$/i.test(normTarget) || /\/skills\/[^/]+\//i.test(normTarget))
   ) {
     const skillMeta = extractSkillMetadata(targetPath, body);
     if (skillMeta.skillName) {

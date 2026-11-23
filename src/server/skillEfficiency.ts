@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathBaseName, pathDirName } from "../shared/paths.js";
+import { isWindowsPath, pathBaseName, pathDirName } from "../shared/paths.js";
 import type {
   PluginSkillChildKind,
   ToolCallRecord
@@ -943,8 +943,12 @@ export function computeScopeSkillEfficiency(
         p.warnings.add("Unused load");
       }
 
-      if (tc.category === "skill" && (!tc.targetPath || tc.targetPath.endsWith("/SKILL.md"))) {
-        const readKey = tc.targetPath || `${hit.parentId}:${hit.childKey}`;
+      if (tc.category === "skill" && (!tc.targetPath || /[\\/]SKILL\.md$/i.test(tc.targetPath))) {
+        const readKey = tc.targetPath
+          ? isWindowsPath(tc.targetPath)
+            ? tc.targetPath.replace(/\\/g, "/").toLowerCase()
+            : tc.targetPath
+          : `${hit.parentId}:${hit.childKey}`;
         const prev = skillReadCounts.get(readKey);
         if (!prev) {
           skillReadCounts.set(readKey, {

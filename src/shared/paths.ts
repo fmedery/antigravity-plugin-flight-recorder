@@ -1,9 +1,15 @@
 function safeDecodePercent(raw: string): string {
-  return raw.replace(/%[0-9A-Fa-f]{2}/g, (seq) => {
+  return raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
     try {
-      return decodeURIComponent(seq);
+      return decodeURIComponent(run);
     } catch {
-      return seq;
+      return run.replace(/%[0-7][0-9A-Fa-f]/g, (asciiSeq) => {
+        try {
+          return decodeURIComponent(asciiSeq);
+        } catch {
+          return asciiSeq;
+        }
+      });
     }
   });
 }
@@ -17,11 +23,14 @@ export function unwrapFileUri(raw: string): string {
     rest = rest.slice("localhost".length);
   }
 
+  // Decode percent-encoded Windows drive colons (e.g., file:///c%3A/Users/...)
+  rest = rest.replace(/^(\/?[a-zA-Z])%3[aA](?=[\\/]|$)/, "$1:");
+
   // Windows drive letter URI: file:///C:/Users/... or file://C:/Users/...
-  if (/^\/[a-zA-Z]:[\\/]/.test(rest)) {
+  if (/^\/[a-zA-Z]:[\\/]/.test(rest) || /^\/[a-zA-Z]:$/.test(rest)) {
     return safeDecodePercent(rest.slice(1));
   }
-  if (/^[a-zA-Z]:[\\/]/.test(rest)) {
+  if (/^[a-zA-Z]:[\\/]/.test(rest) || /^[a-zA-Z]:$/.test(rest)) {
     return safeDecodePercent(rest);
   }
   // Windows UNC URI: file://server/share/...
@@ -33,7 +42,7 @@ export function unwrapFileUri(raw: string): string {
 
 export function isWindowsPath(p: string): boolean {
   const s = (p || "").trim();
-  return /^[a-zA-Z]:[\\/]/.test(s) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(s);
+  return /^[a-zA-Z]:[\\/]/.test(s) || /^[a-zA-Z]:$/.test(s) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(s);
 }
 
 export function isAbsoluteLocalPath(p: string): boolean {
@@ -48,6 +57,19 @@ function stripTrailingSeparators(p: string): string {
   const uncRoot = p.match(/^(\\\\[^\\/]+\\[^\\/]+)[\\/]*$/);
   if (uncRoot) return uncRoot[1];
   return p.replace(/[\\/]+$/, "");
+}
+
+export function sameLocalPath(a: string, b: string): boolean {
+  const ua = stripTrailingSeparators(unwrapFileUri(a));
+  const ub = stripTrailingSeparators(unwrapFileUri(b));
+  if (!ua || !ub) return ua === ub;
+  if (isWindowsPath(ua) || isWindowsPath(ub)) {
+    return (
+      ua.replace(/\\/g, "/").toLowerCase() ===
+      ub.replace(/\\/g, "/").toLowerCase()
+    );
+  }
+  return ua === ub;
 }
 
 export function pathBaseName(p: string): string {
@@ -116,7 +138,7 @@ export function toFileUri(filePath: string): string {
   }
 
   // Windows drive path: C:\Users\Jane Doe\a.ts -> file:///C:/Users/Jane%20Doe/a.ts
-  if (/^[a-zA-Z]:[\\/]/.test(unwrapped)) {
+  if (/^[a-zA-Z]:(?:[\\/]|$)/.test(unwrapped)) {
     const drive = unwrapped.slice(0, 2);
     const rest = unwrapped
       .slice(2)

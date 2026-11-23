@@ -348,10 +348,10 @@ export class TrackerDatabase {
     const versionRow = this.db
       .prepare("PRAGMA user_version")
       .get() as { user_version: number } | undefined;
-    if (Number(versionRow?.user_version ?? 0) < 5) {
+    if (Number(versionRow?.user_version ?? 0) < 6) {
       this.db.exec(`
         DELETE FROM indexed_files WHERE path LIKE '%transcript%';
-        PRAGMA user_version = 5;
+        PRAGMA user_version = 6;
       `);
     }
   }

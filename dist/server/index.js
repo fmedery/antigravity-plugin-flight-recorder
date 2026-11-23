@@ -16244,9 +16244,9 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
       "ALTER TABLE conversations ADD COLUMN has_token_telemetry INTEGER NOT NULL DEFAULT 1;"
     );
     let versionRow = this.db.prepare("PRAGMA user_version").get();
-    Number(versionRow?.user_version ?? 0) < 5 && this.db.exec(`
+    Number(versionRow?.user_version ?? 0) < 6 && this.db.exec(`
         DELETE FROM indexed_files WHERE path LIKE '%transcript%';
-        PRAGMA user_version = 5;
+        PRAGMA user_version = 6;
       `);
   }
   seedDefaultPricing() {
@@ -16753,11 +16753,17 @@ import path4 from "node:path";
 
 // src/shared/paths.ts
 function safeDecodePercent(raw) {
-  return raw.replace(/%[0-9A-Fa-f]{2}/g, (seq) => {
+  return raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
     try {
-      return decodeURIComponent(seq);
+      return decodeURIComponent(run);
     } catch {
-      return seq;
+      return run.replace(/%[0-7][0-9A-Fa-f]/g, (asciiSeq) => {
+        try {
+          return decodeURIComponent(asciiSeq);
+        } catch {
+          return asciiSeq;
+        }
+      });
     }
   });
 }
@@ -16765,11 +16771,11 @@ function unwrapFileUri(raw) {
   let trimmed = (raw || "").trim();
   if (!/^file:\/\//i.test(trimmed)) return trimmed;
   let rest = trimmed.slice(7);
-  return /^localhost\//i.test(rest) && (rest = rest.slice(9)), /^\/[a-zA-Z]:[\\/]/.test(rest) ? safeDecodePercent(rest.slice(1)) : /^[a-zA-Z]:[\\/]/.test(rest) ? safeDecodePercent(rest) : !rest.startsWith("/") && rest.includes("/") ? "\\\\" + safeDecodePercent(rest).replace(/\//g, "\\") : safeDecodePercent(rest);
+  return /^localhost\//i.test(rest) && (rest = rest.slice(9)), rest = rest.replace(/^(\/?[a-zA-Z])%3[aA](?=[\\/]|$)/, "$1:"), /^\/[a-zA-Z]:[\\/]/.test(rest) || /^\/[a-zA-Z]:$/.test(rest) ? safeDecodePercent(rest.slice(1)) : /^[a-zA-Z]:[\\/]/.test(rest) || /^[a-zA-Z]:$/.test(rest) ? safeDecodePercent(rest) : !rest.startsWith("/") && rest.includes("/") ? "\\\\" + safeDecodePercent(rest).replace(/\//g, "\\") : safeDecodePercent(rest);
 }
 function isWindowsPath(p2) {
   let s = (p2 || "").trim();
-  return /^[a-zA-Z]:[\\/]/.test(s) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(s);
+  return /^[a-zA-Z]:[\\/]/.test(s) || /^[a-zA-Z]:$/.test(s) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(s);
 }
 function isAbsoluteLocalPath(p2) {
   let s = (p2 || "").trim();
@@ -16781,6 +16787,10 @@ function stripTrailingSeparators(p2) {
   if (/^[a-zA-Z]:[\\/]$/.test(p2)) return p2;
   let uncRoot = p2.match(/^(\\\\[^\\/]+\\[^\\/]+)[\\/]*$/);
   return uncRoot ? uncRoot[1] : p2.replace(/[\\/]+$/, "");
+}
+function sameLocalPath(a, b) {
+  let ua = stripTrailingSeparators(unwrapFileUri(a)), ub = stripTrailingSeparators(unwrapFileUri(b));
+  return !ua || !ub ? ua === ub : isWindowsPath(ua) || isWindowsPath(ub) ? ua.replace(/\\/g, "/").toLowerCase() === ub.replace(/\\/g, "/").toLowerCase() : ua === ub;
 }
 function pathBaseName(p2) {
   let clean = stripTrailingSeparators((p2 || "").trim());
@@ -17282,8 +17292,8 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
         end: Math.max(tc.startedAtMs, tc.completedAtMs ?? tc.startedAtMs + tc.durationMs)
       }) : p2.unplacedToolMs += tc.durationMs;
       let callTok = tc.attributedInputTokens + tc.compoundedCacheTokens;
-      if (p2.directTokens += tc.attributedInputTokens, p2.compoundedCacheTokens += tc.compoundedCacheTokens, hit.footprint === "instruction" ? (p2.instructionTokens += callTok, ch.instructionTokens += callTok) : (p2.executionTokens += callTok, ch.executionTokens += callTok), unusedSet.has(tc) && (ch.isUnusedLoad = !0, p2.warnings.add("Unused load")), tc.category === "skill" && (!tc.targetPath || tc.targetPath.endsWith("/SKILL.md"))) {
-        let readKey = tc.targetPath || `${hit.parentId}:${hit.childKey}`, prev = skillReadCounts.get(readKey);
+      if (p2.directTokens += tc.attributedInputTokens, p2.compoundedCacheTokens += tc.compoundedCacheTokens, hit.footprint === "instruction" ? (p2.instructionTokens += callTok, ch.instructionTokens += callTok) : (p2.executionTokens += callTok, ch.executionTokens += callTok), unusedSet.has(tc) && (ch.isUnusedLoad = !0, p2.warnings.add("Unused load")), tc.category === "skill" && (!tc.targetPath || /[\\/]SKILL\.md$/i.test(tc.targetPath))) {
+        let readKey = tc.targetPath ? isWindowsPath(tc.targetPath) ? tc.targetPath.replace(/\\/g, "/").toLowerCase() : tc.targetPath : `${hit.parentId}:${hit.childKey}`, prev = skillReadCounts.get(readKey);
         prev ? (prev.count += 1, prev.wastedTok += callTok, ch.duplicateReads += 1, p2.warnings.add("Duplicate read")) : skillReadCounts.set(readKey, {
           count: 1,
           hit,
@@ -18890,13 +18900,13 @@ function redactSecrets(input) {
     /\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]{20,}|sk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g,
     "[REDACTED]"
   ).replace(
-    /\b([A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE|(?:AUTH|ACCESS|REFRESH|ID|SESSION|API|GITHUB|GH|NPM|HF|SLACK|BEARER|BOT|CLIENT)[_-]?TOKEN)\b|[Tt][Oo][Kk][Ee][Nn])\s*([=:])\s*(?![0-9]+\b)("[^"]*"|'[^']*'|[^\s"',;]+)/gi,
-    "$1$2[REDACTED]"
+    /\b([A-Za-z0-9_]{0,64}?(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|AUTH[_-]?TOKEN|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE)[A-Za-z0-9_]{0,64})((?:["'])?\s*[=:]\s*)(?!(?:[0-9]+(?:\.[0-9]+)?|true|false|null)\b)("[^"\r\n]{0,512}"|'[^'\r\n]{0,512}'|[^\s"',;}\]]{1,512})/gi,
+    (_m, k2, sep, val) => val.startsWith('"') && val.endsWith('"') ? `${k2}${sep}"[REDACTED]"` : `${k2}${sep}[REDACTED]`
   ) : "";
 }
 function sanitizePreviewText(input, maxChars) {
   if (!input) return "";
-  let cleaned = redactSecrets(stripControlAndAnsi(input)).replace(/\s+/g, " ").trim();
+  let bounded = maxChars !== void 0 && input.length > Math.max(4096, maxChars * 8) ? input.slice(0, Math.max(4096, maxChars * 8)) : input, cleaned = redactSecrets(stripControlAndAnsi(bounded)).replace(/\s+/g, " ").trim();
   return maxChars !== void 0 && maxChars > 3 && cleaned.length > maxChars ? cleaned.slice(0, maxChars - 3) + "..." : cleaned;
 }
 
@@ -19084,7 +19094,7 @@ function extractSkillMetadata(targetPath, body) {
   let norm = targetPath.replace(/\\/g, "/"), skillPlugin = null, pluginMatch = norm.match(/\/(?:builtin\/)?plugins\/([^/]+)\//);
   pluginMatch ? skillPlugin = pluginMatch[1] : norm.includes("/builtin/skills/") && (skillPlugin = "builtin");
   let skillDirMatch = norm.match(/^(.*\/skills\/([^/]+))\//), skillName = skillDirMatch ? skillDirMatch[2] : null;
-  if (norm.endsWith("/SKILL.md")) {
+  if (/\/SKILL\.md$/i.test(norm)) {
     let parsedName = extractYamlName(body);
     parsedName && (skillName = parsedName, skillDirMatch && skillFrontmatterCache.set(skillDirMatch[1], parsedName));
   } else if (skillDirMatch) {
@@ -19128,8 +19138,8 @@ function extractChildConversationId(body) {
   return anyUuid ? anyUuid[1] : null;
 }
 function classifyTool(toolName, args, body) {
-  let targetPath = extractPathFromArgs(args), category = "other", mcpServer = null, skillName = null, skillPlugin = null, childConversationId = null, commandPathHints = [];
-  if (targetPath && (toolName === "read_file" || toolName === "view_file") && (targetPath.endsWith("/SKILL.md") || /\/skills\/[^/]+\//.test(targetPath))) {
+  let targetPath = extractPathFromArgs(args), category = "other", mcpServer = null, skillName = null, skillPlugin = null, childConversationId = null, commandPathHints = [], normTarget = targetPath ? targetPath.replace(/\\/g, "/") : null;
+  if (targetPath && normTarget && (toolName === "read_file" || toolName === "view_file") && (/\/SKILL\.md$/i.test(normTarget) || /\/skills\/[^/]+\//i.test(normTarget))) {
     let skillMeta = extractSkillMetadata(targetPath, body);
     skillMeta.skillName && (category = "skill", skillName = skillMeta.skillName, skillPlugin = skillMeta.skillPlugin);
   }
@@ -25849,10 +25859,10 @@ function resolveProjectMatch(db, projectPath, projectName) {
   let dash = buildDashboardData(db);
   if (dash.projects.length === 0) return null;
   if (projectPath) {
-    let exact = dash.projects.find((p2) => p2.projectPath === projectPath);
+    let cleanInput = unwrapFileUri(projectPath), exact = dash.projects.find((p2) => sameLocalPath(p2.projectPath, cleanInput));
     if (exact) return exact.projectPath;
     let byBasename = dash.projects.find(
-      (p2) => p2.projectName.toLowerCase() === pathBaseName(projectPath).toLowerCase()
+      (p2) => p2.projectName.toLowerCase() === pathBaseName(cleanInput).toLowerCase()
     );
     if (byBasename) return byBasename.projectPath;
   }
@@ -25875,7 +25885,7 @@ function readUiHtml(uiHtmlPath) {
 function createTrackerMcpServer(ctx) {
   let server = new McpServer({
     name: "flight-recorder",
-    version: "0.1.0"
+    version: "0.2.0"
   }), scanNow = async () => runScan({
     db: ctx.db,
     dataDir: ctx.dataDir,
@@ -26061,7 +26071,7 @@ ${lines.join(`
       let targetId = conversationId;
       if (!targetId) {
         let dash = buildDashboardData(ctx.db);
-        targetId = (projectPath ? dash.recentChats.filter((c) => c.projectPath === projectPath) : dash.recentChats)[0]?.conversationId;
+        targetId = (projectPath ? dash.recentChats.filter((c) => sameLocalPath(c.projectPath, projectPath)) : dash.recentChats)[0]?.conversationId;
       }
       if (!targetId)
         return {
