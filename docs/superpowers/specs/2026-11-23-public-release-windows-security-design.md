@@ -127,9 +127,9 @@ Today, four gaps block a high-trust public release:
 
 ### 5.4 Public Metadata & Documentation (`plugin.json`, `README.md`, `SECURITY.md`, `LICENSE`, `.gitattributes`)
 - **`plugin.json`:**
-  - Keep strictly valid Antigravity manifest keys (`name`: `"flight-recorder"`, `displayName`: `"Flight Recorder"`, `version`: `"0.2.0"`, `author`: `"Frederic Medery"`, `description`: updated to highlight parent-first plugin/skill spend & active-time optimization + cache/compaction waterfalls, `logo`: `"assets/logo.svg"`, `suggestedPrompts`: 3 actionable starter prompts). *(Builder call: omit `repository`/`homepage` until the final GitHub URL is chosen so no placeholder/dead URL ships in `plugin.json`.)*
+  - Keep strictly valid Antigravity manifest keys (`name`: `"flight-recorder"`, `displayName`: `"Flight Recorder"`, `version`: `"0.2.0"`, `author`: `"Frederic Medery"`, `homepage`: `"https://github.com/fmedery/antigravity-plugin-flight-recorder#readme"`, `repository`: `"https://github.com/fmedery/antigravity-plugin-flight-recorder"`, `description`: updated to highlight parent-first plugin/skill spend & active-time optimization + cache/compaction waterfalls, `logo`: `"assets/logo.svg"`, `suggestedPrompts`: 3 actionable starter prompts).
 - **`README.md`:**
-  - Clear, structured documentation with **Installation near the very top**, covering:
+  - Clear, structured documentation using `https://github.com/fmedery/antigravity-plugin-flight-recorder` with **Installation near the very top**, covering:
     1. **Overview & Key Capabilities:** Parent-first Plugin & Skill Spend/Time Attribution, Sub-skill/MCP/CLI Drill-down & Waste Prescriptions, `200k`/`256k` Compaction Cliff Overlays, Step Timing Waterfall, Model Mix & Custom Pricing.
     2. **Prerequisites (1-line check):** Antigravity 2.x (Hub), IDE, or CLI + **Node.js `>= 22.15`** (`node -v`). Explicitly note: **no `npm install`, build step, or Python required** because prebuilt single-file bundles are included.
     3. **Step-by-Step Installation (All Surfaces & OSes):**
