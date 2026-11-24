@@ -192,8 +192,8 @@ export const ErrorGuidanceBlock: React.FC<Props> = ({
           style={{ color: "var(--txt-tertiary)", fontSize: 11 }}
         >
           No individual error preview was attached to this summary yet — click
-          Rescan (or open a chat&apos;s Waterfall or Why &amp; Bottlenecks tab) to
-          inspect the exact failing step.
+          Rescan (or open a chat&apos;s Timeline tab) to inspect the exact
+          failing step.
         </div>
       )}
     </div>

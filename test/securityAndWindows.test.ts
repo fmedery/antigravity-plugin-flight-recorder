@@ -29,19 +29,15 @@ import {
   resolveToolPluginAndChild
 } from "../src/server/skillEfficiency.js";
 import { parseTranscriptFile } from "../src/server/transcriptParser.js";
-import type {
-  ConversationSummary,
-  DiagnosticCategory,
-  DiagnosticFinding
-} from "../src/shared/types.js";
+import type { ConversationSummary } from "../src/shared/types.js";
 import {
   KPI_HELP_COPY,
   buildErrorTroubleshootingPrompt,
-  describeDiagnostic,
   describeErrorBadge,
   describePluginWarning,
+  fmtUsd,
+  fmtUsdCompact,
   groupProjectChats,
-  selectTopDiagnostics,
   type ErrorBadgeKind
 } from "../src/ui/format.js";
 
@@ -518,19 +514,26 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(uiHtml, /popovertargetaction/);
     assert.match(uiHtml, /Impact for you:/);
     assert.equal(uiHtml.includes("aria-describedby"), false);
-    assert.match(uiHtml, /Top Issues/);
+    assert.match(uiHtml, /Recent Chats/);
     assert.match(uiHtml, /Conversation Timeline/);
     assert.match(uiHtml, /Tokens & Models/);
     assert.match(uiHtml, /Plugins & Tools/);
     assert.match(uiHtml, /wf-turn-row/);
-    assert.match(uiHtml, /diag-summary-btn/);
-    assert.match(uiHtml, /tablist/);
+    assert.equal(uiHtml.includes("Top Issues"), false);
+    assert.equal(uiHtml.includes("diag-summary-btn"), false);
+    assert.equal(uiHtml.includes("diag-expanded-body"), false);
+    assert.equal(/Why (?:&|&amp;) Bottlenecks/.test(uiHtml), false);
     assert.match(uiHtml, /Possible remediation:/);
+    assert.match(uiHtml, /tablist/);
     assert.match(uiHtml, /diag-guidance/);
     assert.match(uiHtml, /badge-btn/);
     assert.match(uiHtml, /err-sample-list/);
     assert.match(uiHtml, /What to do:/);
     assert.match(uiHtml, /Troubleshoot/);
+    assert.match(uiHtml, /time-range-toolbar/);
+    assert.match(uiHtml, /aria-pressed/);
+    assert.match(uiHtml, /focusgroup/);
+    assert.match(uiHtml, /All time/);
   } finally {
     await client.close().catch(() => {});
     fs.rmSync(isolatedRoot, { recursive: true, force: true });
@@ -722,7 +725,7 @@ test("Windows backslash SKILL.md paths, JSON/custom *_TOKEN redaction, SQLite v6
   }
 });
 
-test("groupProjectChats nests multi-hop subagents safely and selectTopDiagnostics prioritizes severity and impact", () => {
+test("groupProjectChats nests multi-hop subagents safely", () => {
   const makeChat = (
     id: string,
     endedAtMs: number,
@@ -794,229 +797,9 @@ test("groupProjectChats nests multi-hop subagents safely and selectTopDiagnostic
     ["sub-a2-grandchild", "sub-a1"]
   );
   assert.equal(grouped[1].subagents.length, 0);
-
-  const findings: DiagnosticFinding[] = [
-    {
-      id: "info-big",
-      severity: "info",
-      category: "token_driver",
-      title: "Info high tokens",
-      detail: "d",
-      stepIndex: 1,
-      turnIndex: 0,
-      impactTokens: 90000,
-      impactMs: 1000,
-      citation: "S1"
-    },
-    {
-      id: "warn-small",
-      severity: "warning",
-      category: "cache_miss",
-      title: "Warn small",
-      detail: "d",
-      stepIndex: 2,
-      turnIndex: 0,
-      impactTokens: 500,
-      impactMs: 500,
-      citation: "S2"
-    },
-    {
-      id: "crit-1",
-      severity: "critical",
-      category: "compaction_cliff",
-      title: "Critical cliff",
-      detail: "d",
-      stepIndex: 3,
-      turnIndex: 0,
-      impactTokens: 10000,
-      impactMs: 2000,
-      citation: "S3"
-    },
-    {
-      id: "warn-big",
-      severity: "warning",
-      category: "slow_step",
-      title: "Warn big",
-      detail: "d",
-      stepIndex: 4,
-      turnIndex: 0,
-      impactTokens: 500,
-      impactMs: 12000,
-      citation: "S4"
-    }
-  ];
-
-  const top3 = selectTopDiagnostics(findings, 3);
-  assert.deepEqual(
-    top3.map((f) => f.id),
-    ["crit-1", "warn-big", "warn-small"]
-  );
-  assert.deepEqual(
-    selectTopDiagnostics(findings, 1).map((f) => f.id),
-    ["crit-1"]
-  );
-  assert.deepEqual(selectTopDiagnostics(findings, 0), []);
 });
 
-test("describeDiagnostic and describePluginWarning cover all diagnostic categories, sub-cases, and plugin warnings", () => {
-  const categories: DiagnosticCategory[] = [
-    "token_driver",
-    "cache_miss",
-    "slow_step",
-    "repeated_read",
-    "error_retry",
-    "model_split",
-    "unused_skill",
-    "high_skill_overhead",
-    "tool_thrash",
-    "subagent_candidate",
-    "compaction_cliff"
-  ];
-
-  for (const cat of categories) {
-    const g = describeDiagnostic({
-      id: `id-${cat}`,
-      severity: "warning",
-      category: cat,
-      title: `Title ${cat}`,
-      detail: `Detail ${cat}`,
-      stepIndex: 1,
-      turnIndex: 0,
-      impactTokens: 1000,
-      impactMs: 1000,
-      citation: "Step 1"
-    });
-    assert.ok(g.categoryLabel.length > 3, `Missing categoryLabel for ${cat}`);
-    assert.ok(g.meaning.length > 20, `Missing meaning for ${cat}`);
-    assert.ok(g.remediation.length > 20, `Missing remediation for ${cat}`);
-    assert.equal(g.meaning.includes("`"), false);
-    assert.equal(g.remediation.includes("`"), false);
-  }
-
-  // Sub-cases
-  assert.equal(
-    describeDiagnostic({
-      id: "c256",
-      severity: "critical",
-      category: "compaction_cliff",
-      title: "Exceeded 256k soft compaction ceiling at Step 5",
-      detail: "Context reached 260k",
-      stepIndex: 5,
-      turnIndex: 1,
-      impactTokens: 260000,
-      impactMs: 1000,
-      citation: "Planner Step 5"
-    }).categoryLabel,
-    "Context Ceiling"
-  );
-  assert.equal(
-    describeDiagnostic({
-      id: "c200",
-      severity: "warning",
-      category: "compaction_cliff",
-      title: "Crossed 200k context cliff at Step 4",
-      detail: "Context crossed 200k",
-      stepIndex: 4,
-      turnIndex: 1,
-      impactTokens: 205000,
-      impactMs: 1000,
-      citation: "Planner Step 4"
-    }).categoryLabel,
-    "Context Cliff"
-  );
-
-  assert.equal(
-    describeDiagnostic({
-      id: "miss-idle",
-      severity: "warning",
-      category: "cache_miss",
-      title: "Cache miss at Step 3",
-      detail: "Idle gap expired prompt cache TTL",
-      stepIndex: 3,
-      turnIndex: 1,
-      impactTokens: 5000,
-      impactMs: 500,
-      citation: "Step 3"
-    }).categoryLabel,
-    "Cache Expired (Idle)"
-  );
-  assert.equal(
-    describeDiagnostic({
-      id: "miss-model",
-      severity: "warning",
-      category: "cache_miss",
-      title: "Cache miss at Step 4",
-      detail: "Model changed (a -> b)",
-      stepIndex: 4,
-      turnIndex: 1,
-      impactTokens: 5000,
-      impactMs: 500,
-      citation: "Step 4"
-    }).categoryLabel,
-    "Cache Miss (Model Switch)"
-  );
-  assert.equal(
-    describeDiagnostic({
-      id: "miss-reset",
-      severity: "warning",
-      category: "cache_miss",
-      title: "Cache miss at Step 5",
-      detail: "Context compaction or prefix reset",
-      stepIndex: 5,
-      turnIndex: 1,
-      impactTokens: 5000,
-      impactMs: 500,
-      citation: "Step 5"
-    }).categoryLabel,
-    "Cache Reset"
-  );
-
-  assert.equal(
-    describeDiagnostic({
-      id: "dup-skill",
-      severity: "warning",
-      category: "unused_skill",
-      title: "Duplicate skill read: brainstorming (2×)",
-      detail: "Read twice",
-      stepIndex: 2,
-      turnIndex: 0,
-      impactTokens: 2000,
-      impactMs: null,
-      citation: "Step 2"
-    }).categoryLabel,
-    "Duplicate Skill Read"
-  );
-  assert.equal(
-    describeDiagnostic({
-      id: "slow-model",
-      severity: "warning",
-      category: "slow_step",
-      title: "Long model step: gemini-2.5-pro (Step 2)",
-      detail: "Took 15s",
-      stepIndex: 2,
-      turnIndex: 0,
-      impactTokens: null,
-      impactMs: 15000,
-      citation: "Step 2"
-    }).categoryLabel,
-    "Slow Model Step"
-  );
-  assert.equal(
-    describeDiagnostic({
-      id: "split-ok",
-      severity: "info",
-      category: "model_split",
-      title: "Orchestrator switched models 1× across 2 models",
-      detail: "All switches preserved prompt cache.",
-      stepIndex: 3,
-      turnIndex: 0,
-      impactTokens: null,
-      impactMs: null,
-      citation: "Step 3"
-    }).categoryLabel,
-    "Model Switch"
-  );
-
+test("describePluginWarning covers all plugin warning types and fallback", () => {
   for (const warn of [
     "Unused load",
     "Duplicate read",
@@ -1122,4 +905,13 @@ test("describeErrorBadge and buildErrorTroubleshootingPrompt cover all kinds, ro
   assert.match(prompt, /Build synth/);
   assert.match(prompt, /step 14/);
   assert.match(prompt, /task-start/);
+});
+
+test("fmtUsdCompact omits est. suffix while fmtUsd preserves prose estimate wording", () => {
+  assert.equal(fmtUsdCompact(null), "Unpriced");
+  assert.equal(fmtUsdCompact(Number.NaN), "Unpriced");
+  assert.equal(fmtUsdCompact(0), "$0.00");
+  assert.equal(fmtUsdCompact(0.0042), "$0.0042");
+  assert.equal(fmtUsdCompact(9.28), "$9.28");
+  assert.equal(fmtUsd(9.28), "$9.28 est.");
 });

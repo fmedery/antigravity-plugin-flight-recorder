@@ -16835,6 +16835,23 @@ function pathTailSegments(p2, count = 2) {
 import fs3 from "node:fs";
 import path3 from "node:path";
 
+// src/shared/timeRange.ts
+function computeLocalPresetSinceMs(preset, nowMs = Date.now()) {
+  if (preset === "all") return null;
+  let d2 = new Date(nowMs);
+  if (preset === "today")
+    return new Date(d2.getFullYear(), d2.getMonth(), d2.getDate()).getTime();
+  let daysBack = preset === "7d" ? 6 : 29;
+  return new Date(d2.getFullYear(), d2.getMonth(), d2.getDate() - daysBack).getTime();
+}
+function resolveTimeRangeBounds(query, nowMs = Date.now()) {
+  let preset = query?.preset ?? "all", untilMs = typeof query?.untilMs == "number" && Number.isFinite(query.untilMs) && query.untilMs > 0 ? query.untilMs : nowMs;
+  if (preset === "all")
+    return { preset: "all", sinceMs: null, untilMs };
+  let explicitSince = query?.sinceMs, sinceMs = typeof explicitSince == "number" && Number.isFinite(explicitSince) && explicitSince > 0 ? explicitSince : computeLocalPresetSinceMs(preset, untilMs);
+  return { preset, sinceMs, untilMs };
+}
+
 // src/server/skillEfficiency.ts
 import fs2 from "node:fs";
 import os from "node:os";
@@ -18806,9 +18823,76 @@ function mergeFileTouches(lists) {
     (a, b) => b.compoundedCacheTokens + b.directTokens - (a.compoundedCacheTokens + a.directTokens)
   );
 }
-function buildProjectDetail(db, projectPath) {
-  let projectRows = db.getAllConversationRecords().filter((r2) => r2.projectPath === projectPath);
-  if (projectRows.length === 0) return null;
+function rowActivityMs(row) {
+  return row.endedAtMs > 0 ? row.endedAtMs : row.startedAtMs;
+}
+function matchesTimeRange(row, sinceMs) {
+  return sinceMs === null ? !0 : rowActivityMs(row) >= sinceMs;
+}
+function emptyTokenSummary() {
+  return {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    peakContextTokens: 0,
+    cacheHitRatio: 0,
+    hasTokenTelemetry: !1,
+    estimatedCostUsd: 0,
+    cacheSavingsUsd: 0,
+    unpricedModels: []
+  };
+}
+function emptyTimeSummary() {
+  return {
+    activeMs: 0,
+    modelMs: 0,
+    toolWallMs: 0,
+    toolSumMs: 0,
+    parallelismFactor: 1,
+    subagentMs: 0,
+    userIdleMs: 0,
+    wallClockMs: 0
+  };
+}
+function buildProjectDetail(db, projectPath, options) {
+  let bounds = resolveTimeRangeBounds(options), allProjectRows = db.getAllConversationRecords().filter((r2) => r2.projectPath === projectPath);
+  if (allProjectRows.length === 0) return null;
+  let projectRows = allProjectRows.filter(
+    (r2) => matchesTimeRange(r2, bounds.sinceMs)
+  );
+  if (projectRows.length === 0)
+    return {
+      summary: {
+        projectPath,
+        projectName: projectDisplayName(projectPath),
+        chatCount: 0,
+        subagentCount: 0,
+        firstActivityMs: 0,
+        lastActivityMs: 0,
+        models: [],
+        modelBreakdown: [],
+        topSkills: [],
+        topPluginsSkills: [],
+        topTools: [],
+        mcpServers: [],
+        slashCommands: [],
+        tokens: emptyTokenSummary(),
+        time: emptyTimeSummary(),
+        errorCount: 0
+      },
+      chats: [],
+      skillToolMetrics: [],
+      pluginSkillMetrics: [],
+      filesTouched: [],
+      diagnostics: [],
+      timeRange: {
+        preset: bounds.preset,
+        sinceMs: bounds.sinceMs,
+        untilMs: bounds.untilMs,
+        firstActivityMs: 0,
+        lastActivityMs: 0
+      }
+    };
   let pricingRules = db.getPricingRules(), rowIds = new Set(projectRows.map((r2) => r2.conversationId)), summaries = [], effInputs = [], allSteps = [], allTools = [];
   for (let r2 of projectRows) {
     let steps = db.getPlannerStepsForConversation(r2.conversationId), tools = db.getToolCallsForConversation(r2.conversationId), turns = db.getTurnsForConversation(r2.conversationId), children = projectRows.filter(
@@ -18872,10 +18956,10 @@ function buildProjectDetail(db, projectPath) {
     new Set(projectRows.flatMap((r2) => r2.models))
   ).sort(), models = modelBreakdown.length > 0 ? modelBreakdown.map((m2) => m2.model) : fallbackSortedModels, slashCommands = Array.from(
     new Set(projectRows.flatMap((r2) => r2.slashCommands))
-  ).sort(), firstActivityMs = Math.min(
-    ...projectRows.map((r2) => r2.startedAtMs).filter((x) => x > 0),
-    Date.now()
-  ), lastActivityMs = Math.max(...projectRows.map((r2) => r2.endedAtMs), 0), modelMs = summaries.reduce((s, c) => s + c.time.modelMs, 0), toolWallMs = summaries.reduce((s, c) => s + c.time.toolWallMs, 0), toolSumMs = summaries.reduce((s, c) => s + c.time.toolSumMs, 0), subagentMs = subagents.reduce((s, c) => s + c.time.activeMs, 0), userIdleMs = topTimeSource.reduce((s, c) => s + c.time.userIdleMs, 0), wallClockMs = lastActivityMs > firstActivityMs ? lastActivityMs - firstActivityMs : activeMs, time3 = {
+  ).sort(), positiveStarts = projectRows.map((r2) => r2.startedAtMs > 0 ? r2.startedAtMs : r2.endedAtMs).filter((x) => x > 0), firstActivityMs = positiveStarts.length > 0 ? Math.min(...positiveStarts) : 0, lastActivityMs = Math.max(
+    ...projectRows.map((r2) => rowActivityMs(r2)),
+    0
+  ), modelMs = summaries.reduce((s, c) => s + c.time.modelMs, 0), toolWallMs = summaries.reduce((s, c) => s + c.time.toolWallMs, 0), toolSumMs = summaries.reduce((s, c) => s + c.time.toolSumMs, 0), subagentMs = subagents.reduce((s, c) => s + c.time.activeMs, 0), userIdleMs = topTimeSource.reduce((s, c) => s + c.time.userIdleMs, 0), wallClockMs = lastActivityMs > firstActivityMs ? lastActivityMs - firstActivityMs : activeMs, time3 = {
     activeMs,
     modelMs,
     toolWallMs,
@@ -18911,21 +18995,31 @@ function buildProjectDetail(db, projectPath) {
     skillToolMetrics,
     pluginSkillMetrics,
     filesTouched: mergeFileTouches(projectRows.map((r2) => r2.filesTouched)),
-    diagnostics
+    diagnostics,
+    timeRange: {
+      preset: bounds.preset,
+      sinceMs: bounds.sinceMs,
+      untilMs: bounds.untilMs,
+      firstActivityMs,
+      lastActivityMs
+    }
   };
 }
-function buildDashboardData(db) {
-  let allRows = db.getAllConversationRecords(), pricingRules = db.getPricingRules(), byProject = /* @__PURE__ */ new Map();
+function buildDashboardData(db, options) {
+  let bounds = resolveTimeRangeBounds(options), allRows = db.getAllConversationRecords().filter((r2) => matchesTimeRange(r2, bounds.sinceMs)), pricingRules = db.getPricingRules(), byProject = /* @__PURE__ */ new Map();
   for (let r2 of allRows) {
     let arr = byProject.get(r2.projectPath) ?? [];
     arr.push(r2), byProject.set(r2.projectPath, arr);
   }
   let projectDetails = [];
   for (let projectPath of byProject.keys()) {
-    let detail = buildProjectDetail(db, projectPath);
-    detail && projectDetails.push(detail);
+    let detail = buildProjectDetail(db, projectPath, bounds);
+    detail && detail.chats.length > 0 && projectDetails.push(detail);
   }
-  let projects = projectDetails.map((d2) => d2.summary).sort((a, b) => b.lastActivityMs - a.lastActivityMs), totalsTokens = mergeTokenSummaries(projects.map((p2) => p2.tokens)), totalsModelBreakdown = mergeModelBreakdowns(
+  let projects = projectDetails.map((d2) => d2.summary).sort((a, b) => b.lastActivityMs - a.lastActivityMs), positiveFirsts = projects.map((p2) => p2.firstActivityMs).filter((x) => x > 0), firstActivityMs = positiveFirsts.length > 0 ? Math.min(...positiveFirsts) : 0, lastActivityMs = projects.reduce(
+    (max, p2) => p2.lastActivityMs > max ? p2.lastActivityMs : max,
+    0
+  ), totalsTokens = projects.length > 0 ? mergeTokenSummaries(projects.map((p2) => p2.tokens)) : emptyTokenSummary(), totalsModelBreakdown = mergeModelBreakdowns(
     projects.map((p2) => p2.modelBreakdown)
   ), totalActiveMs = projects.reduce((s, p2) => s + p2.time.activeMs, 0), pluginSkillMetrics = mergePluginSkillMetrics(
     projectDetails.map((d2) => ({
@@ -18952,6 +19046,13 @@ function buildDashboardData(db) {
   }), totalToolWall = projects.reduce((s, p2) => s + p2.time.toolWallMs, 0), totalToolSum = projects.reduce((s, p2) => s + p2.time.toolSumMs, 0);
   return {
     generatedAtMs: Date.now(),
+    timeRange: {
+      preset: bounds.preset,
+      sinceMs: bounds.sinceMs,
+      untilMs: bounds.untilMs,
+      firstActivityMs,
+      lastActivityMs
+    },
     totals: {
       projectCount: projects.length,
       chatCount: projects.reduce((s, p2) => s + p2.chatCount, 0),
@@ -25897,7 +25998,7 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/server/tools.ts
 import fs7 from "node:fs";
-var APP_URI = "ui://flight-recorder/dashboard.html";
+var APP_URI = "ui://flight-recorder/dashboard.html", timeRangeSchema = external_exports2.enum(["today", "7d", "30d", "all"]).optional(), sinceMsSchema = external_exports2.number().finite().positive().nullable().optional();
 function fmtK(n) {
   return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
 }
@@ -26018,7 +26119,10 @@ function createTrackerMcpServer(ctx) {
       inputSchema: {
         projectPath: external_exports2.string().optional().describe("Optional absolute project workspace path to open directly."),
         conversationId: external_exports2.string().optional().describe("Optional conversation UUID to open directly on a specific chat."),
-        view: external_exports2.enum(["projects", "project", "chat"]).optional().describe("Initial view tab ('projects', 'project', or 'chat').")
+        view: external_exports2.enum(["projects", "project", "chat"]).optional().describe("Initial view tab ('projects', 'project', or 'chat')."),
+        timeRange: timeRangeSchema.describe(
+          "Optional time window preset ('today', '7d', '30d', or 'all'). Defaults to 'all'."
+        )
       },
       _meta: {
         ui: {
@@ -26032,9 +26136,9 @@ function createTrackerMcpServer(ctx) {
         }
       }
     },
-    async ({ projectPath, conversationId, view }) => {
+    async ({ projectPath, conversationId, view, timeRange }) => {
       await scanNow();
-      let dashboard = buildDashboardData(ctx.db), resolvedProject = projectPath ? resolveProjectMatch(ctx.db, projectPath) : null, initialView = view ?? (conversationId ? "chat" : resolvedProject ? "project" : "projects"), slimProjects = dashboard.projects.slice(0, 40).map((p2) => ({
+      let dashboard = buildDashboardData(ctx.db, { preset: timeRange }), resolvedProject = projectPath ? resolveProjectMatch(ctx.db, projectPath) : null, initialView = view ?? (conversationId ? "chat" : resolvedProject ? "project" : "projects"), slimProjects = dashboard.projects.slice(0, 40).map((p2) => ({
         ...p2,
         topSkills: p2.topSkills.slice(0, 5),
         topTools: p2.topTools.slice(0, 5)
@@ -26059,12 +26163,13 @@ function createTrackerMcpServer(ctx) {
       title: "List Tracked Projects",
       description: "List all Antigravity projects discovered from transcripts and live hooks with chat counts, per-model usage percentages, token usage, cache hit ratio, active time, and estimated USD cost.",
       inputSchema: {
-        limit: external_exports2.number().int().min(1).max(100).optional()
+        limit: external_exports2.number().int().min(1).max(100).optional(),
+        timeRange: timeRangeSchema
       }
     },
-    async ({ limit }) => {
+    async ({ limit, timeRange }) => {
       await scanNow();
-      let dash = buildDashboardData(ctx.db), list = dash.projects.slice(0, limit ?? 30), lines = list.map(
+      let dash = buildDashboardData(ctx.db, { preset: timeRange }), list = dash.projects.slice(0, limit ?? 30), lines = list.map(
         (p2) => `- **${p2.projectName}** (\`${p2.projectPath}\`): ${p2.chatCount} chats (+${p2.subagentCount} subagents), ${fmtTokenTotal(p2.tokens)}, ${fmtDur(p2.time.activeMs)} active, ${fmtCost(p2.tokens.estimatedCostUsd, p2.tokens.unpricedModels)}, models: [${fmtModelMix(p2.modelBreakdown, 3)}], plugins/skills: [${p2.topPluginsSkills.join(", ") || "none"}]`
       ), pluginSection = dash.pluginSkillMetrics.length > 0 ? `
 
@@ -26094,17 +26199,18 @@ ${lines.join(`
       description: "Get a full breakdown of what tasks, skills, tools, MCP servers, subagents, per-model usage breakdown, files, tokens, cache hits, estimated cost, and time built a project.",
       inputSchema: {
         projectPath: external_exports2.string().optional(),
-        projectName: external_exports2.string().optional()
+        projectName: external_exports2.string().optional(),
+        timeRange: timeRangeSchema
       }
     },
-    async ({ projectPath, projectName }) => {
+    async ({ projectPath, projectName, timeRange }) => {
       await scanNow();
       let resolved = resolveProjectMatch(ctx.db, projectPath, projectName);
       if (!resolved)
         return {
           content: [{ type: "text", text: "No tracked projects found." }]
         };
-      let detail = buildProjectDetail(ctx.db, resolved);
+      let detail = buildProjectDetail(ctx.db, resolved, { preset: timeRange });
       if (!detail)
         return {
           content: [
@@ -26380,16 +26486,23 @@ ${blocks.join(`
     {
       title: "Get Full Dashboard Data",
       description: "App-only endpoint returning all projects, recent chats, and pricing rules.",
-      inputSchema: {},
+      inputSchema: {
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema,
+        skipScan: external_exports2.boolean().optional()
+      },
       _meta: {
         ui: {
           visibility: ["app"]
         }
       }
     },
-    async () => {
-      await scanNow();
-      let data = buildDashboardData(ctx.db);
+    async ({ timeRange, sinceMs, skipScan }) => {
+      skipScan || await scanNow();
+      let data = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      });
       return {
         content: [{ type: "text", text: "ok" }],
         structuredContent: data
@@ -26402,7 +26515,9 @@ ${blocks.join(`
       title: "Get Project Detail",
       description: "App-only endpoint returning complete detail for one project.",
       inputSchema: {
-        projectPath: external_exports2.string()
+        projectPath: external_exports2.string(),
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
       },
       _meta: {
         ui: {
@@ -26410,8 +26525,11 @@ ${blocks.join(`
         }
       }
     },
-    async ({ projectPath }) => {
-      let detail = buildProjectDetail(ctx.db, projectPath);
+    async ({ projectPath, timeRange, sinceMs }) => {
+      let detail = buildProjectDetail(ctx.db, projectPath, {
+        preset: timeRange,
+        sinceMs
+      });
       return detail ? {
         content: [{ type: "text", text: "ok" }],
         structuredContent: detail
@@ -26451,15 +26569,21 @@ ${blocks.join(`
     {
       title: "Rescan Transcripts & Hooks",
       description: "App-only endpoint triggering an immediate incremental rescan.",
-      inputSchema: {},
+      inputSchema: {
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
+      },
       _meta: {
         ui: {
           visibility: ["app"]
         }
       }
     },
-    async () => {
-      let stats = await scanNow(), dashboard = buildDashboardData(ctx.db);
+    async ({ timeRange, sinceMs }) => {
+      let stats = await scanNow(), dashboard = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      });
       return {
         content: [{ type: "text", text: "ok" }],
         structuredContent: {
@@ -26485,7 +26609,9 @@ ${blocks.join(`
             outputPer1M: external_exports2.number().finite().min(0).max(1e5),
             enabled: external_exports2.boolean()
           })
-        ).max(100)
+        ).max(100),
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
       },
       _meta: {
         ui: {
@@ -26493,9 +26619,12 @@ ${blocks.join(`
         }
       }
     },
-    async ({ rules }) => {
+    async ({ rules, timeRange, sinceMs }) => {
       ctx.db.savePricingRules(rules);
-      let dashboard = buildDashboardData(ctx.db);
+      let dashboard = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      });
       return {
         content: [{ type: "text", text: "ok" }],
         structuredContent: {
@@ -26511,7 +26640,9 @@ ${blocks.join(`
       description: "App-only endpoint overriding a conversation's assigned project path.",
       inputSchema: {
         conversationId: external_exports2.string().min(1).max(128),
-        projectPath: external_exports2.string().max(1024)
+        projectPath: external_exports2.string().max(1024),
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
       },
       _meta: {
         ui: {
@@ -26519,9 +26650,12 @@ ${blocks.join(`
         }
       }
     },
-    async ({ conversationId, projectPath }) => {
+    async ({ conversationId, projectPath, timeRange, sinceMs }) => {
       ctx.db.setProjectOverride(conversationId, projectPath.trim() || "Unassigned");
-      let dashboard = buildDashboardData(ctx.db), chatDetail = buildConversationDetail(ctx.db, conversationId);
+      let dashboard = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      }), chatDetail = buildConversationDetail(ctx.db, conversationId);
       return {
         content: [{ type: "text", text: "ok" }],
         structuredContent: {

@@ -24,6 +24,9 @@ import { runScan, type BrainRootConfig } from "./scanner.js";
 
 export const APP_URI = "ui://flight-recorder/dashboard.html";
 
+const timeRangeSchema = z.enum(["today", "7d", "30d", "all"]).optional();
+const sinceMsSchema = z.number().finite().positive().nullable().optional();
+
 export interface TrackerServerContext {
   db: TrackerDatabase;
   dataDir: string;
@@ -238,7 +241,10 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         view: z
           .enum(["projects", "project", "chat"])
           .optional()
-          .describe("Initial view tab ('projects', 'project', or 'chat').")
+          .describe("Initial view tab ('projects', 'project', or 'chat')."),
+        timeRange: timeRangeSchema.describe(
+          "Optional time window preset ('today', '7d', '30d', or 'all'). Defaults to 'all'."
+        )
       },
       _meta: {
         ui: {
@@ -252,9 +258,9 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         }
       }
     },
-    async ({ projectPath, conversationId, view }) => {
+    async ({ projectPath, conversationId, view, timeRange }) => {
       await scanNow();
-      const dashboard = buildDashboardData(ctx.db);
+      const dashboard = buildDashboardData(ctx.db, { preset: timeRange });
 
       const resolvedProject = projectPath
         ? resolveProjectMatch(ctx.db, projectPath)
@@ -300,12 +306,13 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       description:
         "List all Antigravity projects discovered from transcripts and live hooks with chat counts, per-model usage percentages, token usage, cache hit ratio, active time, and estimated USD cost.",
       inputSchema: {
-        limit: z.number().int().min(1).max(100).optional()
+        limit: z.number().int().min(1).max(100).optional(),
+        timeRange: timeRangeSchema
       }
     },
-    async ({ limit }) => {
+    async ({ limit, timeRange }) => {
       await scanNow();
-      const dash = buildDashboardData(ctx.db);
+      const dash = buildDashboardData(ctx.db, { preset: timeRange });
       const list = dash.projects.slice(0, limit ?? 30);
 
       const lines = list.map(
@@ -346,10 +353,11 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         "Get a full breakdown of what tasks, skills, tools, MCP servers, subagents, per-model usage breakdown, files, tokens, cache hits, estimated cost, and time built a project.",
       inputSchema: {
         projectPath: z.string().optional(),
-        projectName: z.string().optional()
+        projectName: z.string().optional(),
+        timeRange: timeRangeSchema
       }
     },
-    async ({ projectPath, projectName }) => {
+    async ({ projectPath, projectName, timeRange }) => {
       await scanNow();
       const resolved = resolveProjectMatch(ctx.db, projectPath, projectName);
       if (!resolved) {
@@ -357,7 +365,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           content: [{ type: "text", text: "No tracked projects found." }]
         };
       }
-      const detail = buildProjectDetail(ctx.db, resolved);
+      const detail = buildProjectDetail(ctx.db, resolved, { preset: timeRange });
       if (!detail) {
         return {
           content: [
@@ -789,16 +797,25 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
     {
       title: "Get Full Dashboard Data",
       description: "App-only endpoint returning all projects, recent chats, and pricing rules.",
-      inputSchema: {},
+      inputSchema: {
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema,
+        skipScan: z.boolean().optional()
+      },
       _meta: {
         ui: {
           visibility: ["app"]
         }
       }
     },
-    async () => {
-      await scanNow();
-      const data = buildDashboardData(ctx.db);
+    async ({ timeRange, sinceMs, skipScan }) => {
+      if (!skipScan) {
+        await scanNow();
+      }
+      const data = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      });
       return {
         content: [{ type: "text", text: "ok" }],
         structuredContent: data as unknown as Record<string, unknown>
@@ -814,7 +831,9 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       title: "Get Project Detail",
       description: "App-only endpoint returning complete detail for one project.",
       inputSchema: {
-        projectPath: z.string()
+        projectPath: z.string(),
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
       },
       _meta: {
         ui: {
@@ -822,8 +841,11 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         }
       }
     },
-    async ({ projectPath }) => {
-      const detail = buildProjectDetail(ctx.db, projectPath);
+    async ({ projectPath, timeRange, sinceMs }) => {
+      const detail = buildProjectDetail(ctx.db, projectPath, {
+        preset: timeRange,
+        sinceMs
+      });
       if (!detail) {
         return {
           isError: true,
@@ -875,16 +897,22 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
     {
       title: "Rescan Transcripts & Hooks",
       description: "App-only endpoint triggering an immediate incremental rescan.",
-      inputSchema: {},
+      inputSchema: {
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
+      },
       _meta: {
         ui: {
           visibility: ["app"]
         }
       }
     },
-    async () => {
+    async ({ timeRange, sinceMs }) => {
       const stats = await scanNow();
-      const dashboard = buildDashboardData(ctx.db);
+      const dashboard = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      });
       return {
         content: [{ type: "text", text: "ok" }],
         structuredContent: {
@@ -915,7 +943,9 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
               enabled: z.boolean()
             })
           )
-          .max(100)
+          .max(100),
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
       },
       _meta: {
         ui: {
@@ -923,9 +953,12 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         }
       }
     },
-    async ({ rules }) => {
+    async ({ rules, timeRange, sinceMs }) => {
       ctx.db.savePricingRules(rules as ModelPricingRule[]);
-      const dashboard = buildDashboardData(ctx.db);
+      const dashboard = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      });
       return {
         content: [{ type: "text", text: "ok" }],
         structuredContent: {
@@ -944,7 +977,9 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       description: "App-only endpoint overriding a conversation's assigned project path.",
       inputSchema: {
         conversationId: z.string().min(1).max(128),
-        projectPath: z.string().max(1024)
+        projectPath: z.string().max(1024),
+        timeRange: timeRangeSchema,
+        sinceMs: sinceMsSchema
       },
       _meta: {
         ui: {
@@ -952,9 +987,12 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         }
       }
     },
-    async ({ conversationId, projectPath }) => {
+    async ({ conversationId, projectPath, timeRange, sinceMs }) => {
       ctx.db.setProjectOverride(conversationId, projectPath.trim() || "Unassigned");
-      const dashboard = buildDashboardData(ctx.db);
+      const dashboard = buildDashboardData(ctx.db, {
+        preset: timeRange,
+        sinceMs
+      });
       const chatDetail = buildConversationDetail(ctx.db, conversationId);
       return {
         content: [{ type: "text", text: "ok" }],

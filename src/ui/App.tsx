@@ -7,13 +7,14 @@ import {
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { pathBaseName, toFileUri } from "../shared/paths";
+import { buildClientTimeRangeArgs } from "../shared/timeRange.js";
 import type {
   ConversationDetail,
   DashboardData,
-  DiagnosticFinding,
   ModelPricingRule,
   PluginSkillMetric,
-  ProjectDetail
+  ProjectDetail,
+  TimeRangePreset
 } from "../shared/types";
 import { ChatDetailView } from "./components/ChatDetail";
 import {
@@ -59,6 +60,10 @@ export const AppRoot: React.FC = () => {
   const [initialChatStep, setInitialChatStep] = useState<number | null>(null);
   const [chatDetail, setChatDetail] = useState<ConversationDetail | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [timeRange, setTimeRange] = useState<TimeRangePreset>("all");
+  const timeRangeRef = useRef<TimeRangePreset>("all");
+  const [updatingRange, setUpdatingRange] = useState(false);
+  const rangeReqIdRef = useRef(0);
 
   const callAppTool = useCallback(
     async <T,>(name: string, args: Record<string, unknown> = {}): Promise<T> => {
@@ -84,7 +89,10 @@ export const AppRoot: React.FC = () => {
     try {
       setLoading(true);
       setErrorMsg(null);
-      const data = await callAppTool<DashboardData>("app_get_dashboard_data");
+      const data = await callAppTool<DashboardData>(
+        "app_get_dashboard_data",
+        buildClientTimeRangeArgs(timeRangeRef.current)
+      );
       setDashboard(data);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -104,7 +112,10 @@ export const AppRoot: React.FC = () => {
         setView("project");
         const detail = await callAppTool<ProjectDetail>(
           "app_get_project_detail",
-          { projectPath }
+          {
+            projectPath,
+            ...buildClientTimeRangeArgs(timeRangeRef.current)
+          }
         );
         setProjectDetail(detail);
       } catch (err) {
@@ -155,6 +166,10 @@ export const AppRoot: React.FC = () => {
       receivedToolResultRef.current = true;
       const sc = (result?.structuredContent ?? {}) as InitialToolPayload;
       if (sc.dashboard) {
+        if (sc.dashboard.timeRange?.preset) {
+          timeRangeRef.current = sc.dashboard.timeRange.preset;
+          setTimeRange(sc.dashboard.timeRange.preset);
+        }
         setDashboard(sc.dashboard);
         setLoading(false);
       }
@@ -202,18 +217,19 @@ export const AppRoot: React.FC = () => {
   }, [loadDashboard, openChat, openProject]);
 
   const handleRescan = async () => {
+    const rangeArgs = buildClientTimeRangeArgs(timeRangeRef.current);
     try {
       setRescanning(true);
       setErrorMsg(null);
       const res = await callAppTool<{
         stats: { transcriptsIndexed: number; hookEventsIngested: number };
         dashboard: DashboardData;
-      }>("app_rescan_all");
+      }>("app_rescan_all", rangeArgs);
       if (res.dashboard) setDashboard(res.dashboard);
       if (view === "project" && selectedProjectPath) {
         const pDetail = await callAppTool<ProjectDetail>(
           "app_get_project_detail",
-          { projectPath: selectedProjectPath }
+          { projectPath: selectedProjectPath, ...rangeArgs }
         );
         setProjectDetail(pDetail);
       } else if (view === "chat" && selectedConversationId) {
@@ -235,17 +251,18 @@ export const AppRoot: React.FC = () => {
   };
 
   const handleSavePricing = async (rules: ModelPricingRule[]) => {
+    const rangeArgs = buildClientTimeRangeArgs(timeRangeRef.current);
     try {
       setSavingPricing(true);
       const res = await callAppTool<{ dashboard: DashboardData }>(
         "app_update_pricing",
-        { rules }
+        { rules, ...rangeArgs }
       );
       if (res.dashboard) setDashboard(res.dashboard);
       if (view === "project" && selectedProjectPath) {
         const pDetail = await callAppTool<ProjectDetail>(
           "app_get_project_detail",
-          { projectPath: selectedProjectPath }
+          { projectPath: selectedProjectPath, ...rangeArgs }
         );
         setProjectDetail(pDetail);
       } else if (view === "chat" && selectedConversationId) {
@@ -267,10 +284,11 @@ export const AppRoot: React.FC = () => {
     projectPath: string
   ) => {
     try {
+      const rangeArgs = buildClientTimeRangeArgs(timeRangeRef.current);
       const res = await callAppTool<{
         dashboard: DashboardData;
         chatDetail: ConversationDetail;
-      }>("app_assign_project", { conversationId, projectPath });
+      }>("app_assign_project", { conversationId, projectPath, ...rangeArgs });
       if (res.dashboard) setDashboard(res.dashboard);
       if (res.chatDetail) {
         setChatDetail(res.chatDetail);
@@ -278,6 +296,49 @@ export const AppRoot: React.FC = () => {
       }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleTimeRangeChange = async (nextRange: TimeRangePreset) => {
+    timeRangeRef.current = nextRange;
+    setTimeRange(nextRange);
+    setUpdatingRange(true);
+    setErrorMsg(null);
+    const reqId = ++rangeReqIdRef.current;
+    const rangeArgs = buildClientTimeRangeArgs(nextRange);
+    try {
+      if (view === "project" && selectedProjectPath) {
+        const [pDetail, dash] = await Promise.all([
+          callAppTool<ProjectDetail>("app_get_project_detail", {
+            projectPath: selectedProjectPath,
+            ...rangeArgs
+          }),
+          callAppTool<DashboardData>("app_get_dashboard_data", {
+            ...rangeArgs,
+            skipScan: true
+          })
+        ]);
+        if (reqId === rangeReqIdRef.current) {
+          setProjectDetail(pDetail);
+          setDashboard(dash);
+        }
+      } else {
+        const dash = await callAppTool<DashboardData>("app_get_dashboard_data", {
+          ...rangeArgs,
+          skipScan: true
+        });
+        if (reqId === rangeReqIdRef.current) {
+          setDashboard(dash);
+        }
+      }
+    } catch (err) {
+      if (reqId === rangeReqIdRef.current) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (reqId === rangeReqIdRef.current) {
+        setUpdatingRange(false);
+      }
     }
   };
 
@@ -297,24 +358,6 @@ export const AppRoot: React.FC = () => {
     } catch {
       setStatusNotice("File viewer side pane is unavailable in this host.");
       setTimeout(() => setStatusNotice(null), 3000);
-    }
-  };
-
-  const handleAskAgent = async (finding: DiagnosticFinding) => {
-    const app = appRef.current;
-    if (!app || !canMessage) return;
-    try {
-      await app.sendMessage({
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `In conversation ${selectedConversationId ?? "current"}, please explain and help optimize "${finding.title}" (${finding.citation}): ${finding.detail}`
-          }
-        ]
-      });
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -475,6 +518,9 @@ export const AppRoot: React.FC = () => {
             <AllProjectsView
               dashboard={dashboard}
               canSendMessage={canMessage}
+              timeRange={timeRange}
+              updatingRange={updatingRange}
+              onTimeRangeChange={(next) => void handleTimeRangeChange(next)}
               onSelectProject={(p) => void openProject(p)}
               onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenSettings={() => setShowSettings(true)}
@@ -487,10 +533,12 @@ export const AppRoot: React.FC = () => {
               key={projectDetail.summary.projectPath}
               detail={projectDetail}
               canSendMessage={canMessage}
+              timeRange={timeRange}
+              updatingRange={updatingRange}
+              onTimeRangeChange={(next) => void handleTimeRangeChange(next)}
               onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenFile={handleOpenFileInAuxPane}
               onOpenSettings={() => setShowSettings(true)}
-              onAskAgent={handleAskAgent}
               onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
               onTroubleshootPrompt={(p) =>
                 void sendOrCopyPrompt(
@@ -512,7 +560,6 @@ export const AppRoot: React.FC = () => {
               onAssignProject={handleAssignProject}
               onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenSettings={() => setShowSettings(true)}
-              onAskAgent={handleAskAgent}
               onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
               onTroubleshootPrompt={(p) =>
                 void sendOrCopyPrompt(

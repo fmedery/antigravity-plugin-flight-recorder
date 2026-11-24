@@ -25,6 +25,11 @@ import { TrackerDatabase, type HookEventRow } from "../src/server/db.js";
 import { findProjectRootForPath, inferProjectFromPaths } from "../src/server/scanner.js";
 import type { ParsedTranscript } from "../src/server/transcriptParser.js";
 import { aggregateCosts, DEFAULT_PRICING_RULES } from "../src/shared/pricing.js";
+import {
+  computeLocalPresetSinceMs,
+  resolveTimeRangeBounds
+} from "../src/shared/timeRange.js";
+import { fmtDateSpan, formatTimeRangeSummary } from "../src/ui/format.js";
 
 test("analyzeConversation attributes tokens, cache carry, cache misses, parallel time, and user idle", () => {
   const t0 = Date.parse("2026-11-21T21:00:00Z");
@@ -1476,4 +1481,220 @@ test("aggregateSkillToolMetrics captures deduplicated errorSamples with counts a
   assert.ok(readMetric);
   assert.equal(readMetric.errors, 0);
   assert.equal(readMetric.errorSamples, undefined);
+});
+
+test("time-range helpers and dashboard/project filtering slice conversations accurately", () => {
+  // Choose a deterministic local reference instant: Nov 23, 2026 15:00 local time
+  const refNow = new Date(2026, 10, 23, 15, 0, 0, 0).getTime();
+  const midnightToday = new Date(2026, 10, 23, 0, 0, 0, 0).getTime();
+  const sevenDaysStart = new Date(2026, 10, 17, 0, 0, 0, 0).getTime();
+  const thirtyDaysStart = new Date(2026, 9, 25, 0, 0, 0, 0).getTime();
+
+  assert.equal(computeLocalPresetSinceMs("all", refNow), null);
+  assert.equal(computeLocalPresetSinceMs("today", refNow), midnightToday);
+  assert.equal(computeLocalPresetSinceMs("7d", refNow), sevenDaysStart);
+  assert.equal(computeLocalPresetSinceMs("30d", refNow), thirtyDaysStart);
+
+  const customSince = midnightToday - 3_600_000;
+  assert.deepEqual(
+    resolveTimeRangeBounds({ preset: "today", sinceMs: customSince, untilMs: refNow }),
+    { preset: "today", sinceMs: customSince, untilMs: refNow }
+  );
+  assert.deepEqual(
+    resolveTimeRangeBounds({ preset: "all", sinceMs: customSince, untilMs: refNow }),
+    { preset: "all", sinceMs: null, untilMs: refNow }
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-timerange-"));
+  const db = new TrackerDatabase(tmpDir);
+  try {
+    const insertConv = (
+      id: string,
+      title: string,
+      projectPath: string,
+      startedAtMs: number,
+      endedAtMs: number,
+      inputTokens: number
+    ) => {
+      db.upsertConversation({
+        conversationId: id,
+        title,
+        surface: "antigravity",
+        transcriptPath: `/tmp/${id}.jsonl`,
+        projectPath,
+        projectSource: "hook",
+        parentConversationId: null,
+        subagentRole: null,
+        subagentType: null,
+        startedAtMs,
+        endedAtMs,
+        terminationReason: "stop",
+        models: ["gemini-2.5-pro"],
+        slashCommands: [],
+        skillsUsed: [],
+        hasLiveHooks: false,
+        hasTokenTelemetry: true,
+        inputTokens,
+        cacheReadTokens: 0,
+        outputTokens: 100,
+        peakContextTokens: inputTokens,
+        activeMs: 5_000,
+        modelMs: 4_000,
+        toolWallMs: 1_000,
+        toolSumMs: 1_000,
+        userIdleMs: 0,
+        wallClockMs: endedAtMs - startedAtMs,
+        errorCount: 0,
+        turns: [],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: "gemini-2.5-pro",
+            createdAtMs: endedAtMs - 4_000,
+            completedAtMs: endedAtMs,
+            modelDurationMs: 4_000,
+            thinkingChars: 100,
+            contentChars: 100,
+            inputTokens,
+            cacheReadTokens: 0,
+            outputTokens: 100,
+            totalContextTokens: inputTokens,
+            cacheHitRatio: 0,
+            toolCallCount: 0,
+            status: "DONE",
+            attributedSummary: "Work",
+            isCacheMiss: false,
+            cacheMissCause: null
+          }
+        ],
+        toolCalls: [],
+        diagnostics: [],
+        filesTouched: [],
+        indexedAtMs: endedAtMs
+      });
+    };
+
+    // 1. Conversation strictly today
+    insertConv(
+      "conv-today",
+      "Today work",
+      "/proj/alpha",
+      midnightToday + 3_600_000,
+      midnightToday + 7_200_000,
+      1_000
+    );
+    // 2. Conversation spanning midnight (started yesterday, ended today -> counts in Today)
+    insertConv(
+      "conv-midnight",
+      "Overnight work",
+      "/proj/alpha",
+      midnightToday - 1_800_000,
+      midnightToday + 900_000,
+      2_000
+    );
+    // 3. Conversation 5 days ago
+    insertConv(
+      "conv-5d",
+      "Five days ago",
+      "/proj/beta",
+      midnightToday - 5 * 86_400_000 + 1_000,
+      midnightToday - 5 * 86_400_000 + 6_000,
+      4_000
+    );
+    // 4. Conversation 45 days ago
+    insertConv(
+      "conv-45d",
+      "Old work",
+      "/proj/gamma",
+      midnightToday - 45 * 86_400_000,
+      midnightToday - 45 * 86_400_000 + 6_000,
+      8_000
+    );
+
+    const dashAll = buildDashboardData(db, { preset: "all", untilMs: refNow });
+    assert.equal(dashAll.totals.projectCount, 3);
+    assert.equal(dashAll.totals.chatCount, 4);
+    assert.equal(dashAll.timeRange.preset, "all");
+    assert.equal(dashAll.timeRange.sinceMs, null);
+    assert.equal(dashAll.timeRange.firstActivityMs, midnightToday - 45 * 86_400_000);
+    assert.equal(dashAll.timeRange.lastActivityMs, midnightToday + 7_200_000);
+
+    const dashToday = buildDashboardData(db, {
+      preset: "today",
+      sinceMs: midnightToday,
+      untilMs: refNow
+    });
+    assert.equal(dashToday.totals.projectCount, 1);
+    assert.equal(dashToday.totals.chatCount, 2);
+    assert.equal(dashToday.totals.tokens.inputTokens, 3_000);
+    assert.equal(dashToday.recentChats.length, 2);
+    assert.equal(dashToday.timeRange.preset, "today");
+    assert.equal(dashToday.timeRange.sinceMs, midnightToday);
+
+    const dash7d = buildDashboardData(db, {
+      preset: "7d",
+      sinceMs: sevenDaysStart,
+      untilMs: refNow
+    });
+    assert.equal(dash7d.totals.projectCount, 2);
+    assert.equal(dash7d.totals.chatCount, 3);
+    assert.equal(dash7d.totals.tokens.inputTokens, 7_000);
+
+    const dash30d = buildDashboardData(db, {
+      preset: "30d",
+      sinceMs: thirtyDaysStart,
+      untilMs: refNow
+    });
+    assert.equal(dash30d.totals.projectCount, 2);
+    assert.equal(dash30d.totals.chatCount, 3);
+
+    // Project exists all-time (/proj/gamma) but has 0 chats in Today -> non-null empty ProjectDetail
+    const emptyProj = buildProjectDetail(db, "/proj/gamma", {
+      preset: "today",
+      sinceMs: midnightToday,
+      untilMs: refNow
+    });
+    assert.ok(emptyProj);
+    assert.equal(emptyProj.summary.chatCount, 0);
+    assert.equal(emptyProj.summary.tokens.estimatedCostUsd, 0);
+    assert.deepEqual(emptyProj.chats, []);
+    assert.equal(emptyProj.timeRange.preset, "today");
+
+    // Non-existent project still returns null
+    assert.equal(
+      buildProjectDetail(db, "/proj/does-not-exist", {
+        preset: "today",
+        sinceMs: midnightToday,
+        untilMs: refNow
+      }),
+      null
+    );
+
+    // Date-span formatting
+    const sameDaySpan = fmtDateSpan(
+      new Date(2026, 10, 23, 9, 0).getTime(),
+      new Date(2026, 10, 23, 18, 0).getTime(),
+      refNow
+    );
+    assert.ok(sameDaySpan.includes("23"));
+    assert.equal(sameDaySpan.includes("2026"), false);
+
+    const crossYearSpan = fmtDateSpan(
+      new Date(2025, 11, 20, 12, 0).getTime(),
+      new Date(2026, 0, 5, 12, 0).getTime(),
+      refNow
+    );
+    assert.ok(crossYearSpan.includes("2025"));
+    assert.ok(crossYearSpan.includes("2026"));
+
+    const emptyAllSummary = formatTimeRangeSummary(
+      { preset: "all", sinceMs: null, untilMs: refNow, firstActivityMs: 0, lastActivityMs: 0 },
+      false
+    );
+    assert.deepEqual(emptyAllSummary, { label: "All time", span: null });
+  } finally {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

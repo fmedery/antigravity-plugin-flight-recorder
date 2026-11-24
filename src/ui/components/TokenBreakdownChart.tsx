@@ -1,11 +1,10 @@
 import React, { useMemo, useState } from "react";
-import type { DiagnosticFinding, PlannerStepRecord } from "../../shared/types";
+import type { PlannerStepRecord } from "../../shared/types";
 import { fmtK, fmtPct, fmtUsd } from "../format";
 import { buildModelColorMap, getModelColor } from "../modelColors";
 
 interface Props {
   plannerSteps: PlannerStepRecord[];
-  diagnostics?: DiagnosticFinding[];
 }
 
 export const TokenBreakdownChart: React.FC<Props> = ({ plannerSteps }) => {

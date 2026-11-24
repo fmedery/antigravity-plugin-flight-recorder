@@ -37,6 +37,13 @@ export function fmtUsd(usd: number | null): string {
   return `$${usd.toFixed(2)} est.`;
 }
 
+export function fmtUsdCompact(usd: number | null): string {
+  if (usd === null || !Number.isFinite(usd)) return "Unpriced";
+  if (usd === 0) return "$0.00";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
 export function fmtDateShort(ms: number): string {
   if (!ms || ms <= 0) return "—";
   try {
@@ -51,13 +58,82 @@ export function fmtDateShort(ms: number): string {
   }
 }
 
+export function fmtDateSpan(
+  startMs: number,
+  endMs: number,
+  nowMs = Date.now()
+): string {
+  if ((!startMs || startMs <= 0) && (!endMs || endMs <= 0)) return "";
+  const a = startMs > 0 ? startMs : endMs;
+  const b = endMs > 0 ? endMs : startMs;
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+
+  try {
+    const dLo = new Date(lo);
+    const dHi = new Date(hi);
+    const curYear = new Date(nowMs).getFullYear();
+    const sameDay =
+      dLo.getFullYear() === dHi.getFullYear() &&
+      dLo.getMonth() === dHi.getMonth() &&
+      dLo.getDate() === dHi.getDate();
+    const showYear =
+      dLo.getFullYear() !== curYear || dHi.getFullYear() !== curYear;
+    const opts: Intl.DateTimeFormatOptions = showYear
+      ? { month: "short", day: "numeric", year: "numeric" }
+      : { month: "short", day: "numeric" };
+    const fmt = new Intl.DateTimeFormat(undefined, opts);
+    if (sameDay) {
+      return fmt.format(dLo);
+    }
+    if (typeof fmt.formatRange === "function") {
+      return fmt.formatRange(dLo, dHi);
+    }
+    return `${fmt.format(dLo)} – ${fmt.format(dHi)}`;
+  } catch {
+    return "";
+  }
+}
+
 import type {
   ConversationSummary,
-  DiagnosticFinding,
   PluginSkillChildKind,
   PluginSkillMetric,
+  TimeRangeWindow,
   ToolErrorSample
 } from "../shared/types.js";
+
+export function formatTimeRangeSummary(
+  tr: TimeRangeWindow,
+  hasActivity: boolean
+): { label: string; span: string | null } {
+  switch (tr.preset) {
+    case "today":
+      return {
+        label: "Today",
+        span: fmtDateSpan(tr.sinceMs ?? tr.untilMs, tr.untilMs, tr.untilMs) || null
+      };
+    case "7d":
+      return {
+        label: "Last 7 days",
+        span: fmtDateSpan(tr.sinceMs ?? tr.untilMs, tr.untilMs, tr.untilMs) || null
+      };
+    case "30d":
+      return {
+        label: "Last 30 days",
+        span: fmtDateSpan(tr.sinceMs ?? tr.untilMs, tr.untilMs, tr.untilMs) || null
+      };
+    case "all":
+    default:
+      return {
+        label: "All time",
+        span:
+          hasActivity && (tr.firstActivityMs > 0 || tr.lastActivityMs > 0)
+            ? fmtDateSpan(tr.firstActivityMs, tr.lastActivityMs, tr.untilMs) || null
+            : null
+      };
+  }
+}
 
 export type KpiHelpKey =
   | "projects"
@@ -251,192 +327,6 @@ export function groupProjectChats(
         b.lastActivityMs - a.lastActivityMs ||
         a.root.conversationId.localeCompare(b.root.conversationId)
     );
-}
-
-const SEVERITY_RANK: Record<DiagnosticFinding["severity"], number> = {
-  critical: 0,
-  warning: 1,
-  info: 2
-};
-
-export function selectTopDiagnostics(
-  diagnostics: DiagnosticFinding[],
-  limit = 3
-): DiagnosticFinding[] {
-  const cap = Math.max(0, limit);
-  if (cap === 0 || diagnostics.length === 0) return [];
-  return [...diagnostics]
-    .sort(
-      (a, b) =>
-        SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
-        (b.impactTokens ?? 0) - (a.impactTokens ?? 0) ||
-        (b.impactMs ?? 0) - (a.impactMs ?? 0)
-    )
-    .slice(0, cap);
-}
-
-export interface DiagnosticGuidance {
-  categoryLabel: string;
-  meaning: string;
-  remediation: string;
-}
-
-export function describeDiagnostic(
-  finding: DiagnosticFinding
-): DiagnosticGuidance {
-  switch (finding.category) {
-    case "compaction_cliff":
-      if (finding.severity === "critical" || /256k/i.test(finding.title)) {
-        return {
-          categoryLabel: "Context Ceiling",
-          meaning:
-            "Context passed the ~256k soft compaction ceiling, where earlier conversation history gets summarized or trimmed and the prompt cache prefix resets.",
-          remediation:
-            "Start a fresh chat or run /compact at a clean milestone, delegate broad codebase reads to subagents, and keep huge raw logs out of the main thread."
-        };
-      }
-      return {
-        categoryLabel: "Context Cliff",
-        meaning:
-          "Context crossed ~200k tokens, where recall softens, step latency rises, and forced compaction (~256k) approaches.",
-        remediation:
-          "Delegate multi-file exploration to research subagents, read targeted line ranges instead of whole files, and split unrelated follow-ups into a new chat."
-      };
-
-    case "cache_miss":
-      if (/idle gap/i.test(finding.detail)) {
-        return {
-          categoryLabel: "Cache Expired (Idle)",
-          meaning:
-            "A 4+ minute pause expired the prompt cache TTL, so prior context had to be re-processed at full uncached input rates.",
-          remediation:
-            "Expected after stepping away—no fix needed for normal breaks; batching quick follow-ups within a few minutes keeps the cache warm."
-        };
-      }
-      if (/model changed/i.test(finding.detail)) {
-        return {
-          categoryLabel: "Cache Miss (Model Switch)",
-          meaning:
-            "Switching models mid-conversation invalidated the previous model's prompt cache, forcing uncached input re-reads.",
-          remediation:
-            "Expected in intentional two-phase workflows (such as Plan to Execute); otherwise keep one model pinned across tightly coupled steps."
-        };
-      }
-      return {
-        categoryLabel: "Cache Reset",
-        meaning:
-          "A prompt prefix change (typically context compaction or an earlier prompt edit) invalidated the prompt cache and triggered full-rate uncached input reads.",
-        remediation:
-          "Keep chats focused under ~200k so compaction does not trigger mid-task, and open a fresh chat for separate workstreams."
-      };
-
-    case "token_driver":
-      return {
-        categoryLabel: "Heavy Context Carry",
-        meaning:
-          "A large tool output, file read, or skill doc stayed in history and was re-read from the prompt cache on every following step, multiplying total token volume.",
-        remediation:
-          "Read specific line ranges rather than full files, filter noisy command output (using head, grep, or quiet flags), or offload broad discovery to a subagent."
-      };
-
-    case "unused_skill":
-      if (/duplicate/i.test(finding.title)) {
-        return {
-          categoryLabel: "Duplicate Skill Read",
-          meaning:
-            "The same SKILL.md instruction file was read multiple times in one chat, adding redundant carried tokens on every subsequent step.",
-          remediation:
-            "If authoring this skill, remove instructions that tell the agent to re-read SKILL.md mid-chat; otherwise low priority unless it repeats often."
-        };
-      }
-      return {
-        categoryLabel: "Unused Skill Load",
-        meaning:
-          "A tool-backed SKILL.md stayed in context without any of its CLI or MCP tools being invoked, paying instruction carry with no tool work.",
-        remediation:
-          "If authoring this skill, narrow its YAML description trigger so it only loads when needed; for third-party plugins, disable ones you rarely use."
-      };
-
-    case "high_skill_overhead":
-      return {
-        categoryLabel: "Skill Markdown Overhead",
-        meaning:
-          "Over 75% of this plugin or skill's context footprint came from static SKILL.md or reference markdown carried in cache rather than tool execution.",
-        remediation:
-          "Move bulky tables and examples out of SKILL.md into on-demand references/ files, or click Optimize With Agent in Plugins & Skills."
-      };
-
-    case "tool_thrash":
-      return {
-        categoryLabel: "Retry Loop",
-        meaning:
-          "Repeated failures on the same tool or target burned extra turns, wall time, and carried error context across subsequent steps.",
-        remediation:
-          "Check the error preview for stale edit targets, missing auth/env, or flaky commands, then fix the underlying command or add a workspace rule."
-      };
-
-    case "subagent_candidate":
-      return {
-        categoryLabel: "Subagent Opportunity",
-        meaning:
-          "One main-chat turn ran many read-only file, search, or command lookups whose outputs remained in the parent prompt cache for every later step.",
-        remediation:
-          "Delegate broad codebase discovery to a research subagent so only a concise summary enters your main chat's context."
-      };
-
-    case "slow_step":
-      if (/long model step/i.test(finding.title)) {
-        return {
-          categoryLabel: "Slow Model Step",
-          meaning:
-            "A single model reasoning or generation call took an unusually long wall-clock stretch due to large context, extended thinking, or long output.",
-          remediation:
-            "Use a faster model tier for routine edits or lookups, trim accumulated context, or split large generation prompts into smaller steps."
-        };
-      }
-      return {
-        categoryLabel: "Slow Tool Call",
-        meaning:
-          "A single command, test/build run, or MCP call dominated active wall-clock time during this step.",
-        remediation:
-          "Run targeted tests or incremental builds while iterating, batch independent calls in parallel, or check stalled MCP/network servers."
-      };
-
-    case "repeated_read":
-      return {
-        categoryLabel: "Repeated File Read",
-        meaning:
-          "The same file was read 3 or more times in one conversation, re-injecting its contents into prompt history and adding context carry.",
-        remediation:
-          "Often benign during iterative multi-file edits; if frequent, keep chats shorter so earlier reads are not compacted out of context."
-      };
-
-    case "error_retry":
-      return {
-        categoryLabel: "Tool Execution Error",
-        meaning:
-          "A tool or shell command returned an execution error, adding failure output to context and requiring a recovery step.",
-        remediation:
-          "A one-off TDD test failure or self-recovered error needs no action; investigate only if the same failure recurs across chats (broken env, missing auth, or bad script)."
-      };
-
-    case "model_split":
-      if (finding.severity === "warning") {
-        return {
-          categoryLabel: "Model Switch (Cache Miss)",
-          meaning:
-            "Switching models mid-conversation caused at least one prompt cache miss, forcing uncached input re-reads.",
-          remediation:
-            "Expected for intentional Plan to Execute transitions; otherwise keep one model pinned during tightly coupled steps."
-        };
-      }
-      return {
-        categoryLabel: "Model Switch",
-        meaning:
-          "Multiple models ran during this chat while preserving prompt cache hits across transitions.",
-        remediation: "Informational only—no action needed."
-      };
-  }
 }
 
 export interface PluginWarningGuidance {

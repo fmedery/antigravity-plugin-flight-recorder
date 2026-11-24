@@ -1,10 +1,9 @@
 import React, { useEffect, useId, useMemo, useState } from "react";
 import type {
   ConversationDetail,
-  DiagnosticFinding,
   PluginSkillMetric
 } from "../../shared/types";
-import { fmtDuration, fmtK, fmtPct, fmtUsd } from "../format";
+import { fmtDateSpan, fmtDuration, fmtK, fmtPct, fmtUsdCompact } from "../format";
 import { KpiHelpTip } from "./KpiHelpTip";
 import { ModelBreakdownPanel } from "./ModelBreakdown";
 import { PluginSkillLeaderboard } from "./PluginSkillLeaderboard";
@@ -12,7 +11,6 @@ import { SkillToolMatrix } from "./SkillToolMatrix";
 import { TabStrip, type TabItem } from "./TabStrip";
 import { TimelineWaterfall } from "./TimelineWaterfall";
 import { TokenBreakdownChart } from "./TokenBreakdownChart";
-import { WhyPanel } from "./WhyPanel";
 
 interface Props {
   detail: ConversationDetail;
@@ -22,12 +20,11 @@ interface Props {
   onAssignProject: (conversationId: string, projectPath: string) => Promise<void>;
   onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenSettings: () => void;
-  onAskAgent: (finding: DiagnosticFinding) => void;
   onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
   onTroubleshootPrompt?: (prompt: string) => void;
 }
 
-type ChatTab = "timeline" | "issues" | "tokens" | "plugins";
+type ChatTab = "timeline" | "tokens" | "plugins";
 type PluginsToolsSubtab = "plugins" | "tools";
 
 export const ChatDetailView: React.FC<Props> = ({
@@ -38,7 +35,6 @@ export const ChatDetailView: React.FC<Props> = ({
   onAssignProject,
   onSelectChat,
   onOpenSettings,
-  onAskAgent,
   onOptimizeSkill,
   onTroubleshootPrompt
 }) => {
@@ -96,7 +92,6 @@ export const ChatDetailView: React.FC<Props> = ({
 
   const chatTabs: Array<TabItem<ChatTab>> = [
     { key: "timeline", label: "Timeline" },
-    { key: "issues", label: `Issues (${detail.diagnostics.length})` },
     { key: "tokens", label: "Tokens & Models" },
     { key: "plugins", label: "Plugins & Tools" }
   ];
@@ -202,6 +197,11 @@ export const ChatDetailView: React.FC<Props> = ({
             <span style={{ color: "var(--txt-tertiary)" }}>
               ID: {s.conversationId.slice(0, 8)}…
             </span>
+            {(s.startedAtMs > 0 || s.endedAtMs > 0) && (
+              <span className="tabular" style={{ color: "var(--txt-tertiary)" }}>
+                · {fmtDateSpan(s.startedAtMs, s.endedAtMs)}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -296,19 +296,18 @@ export const ChatDetailView: React.FC<Props> = ({
             <span>Est. Cost</span>
             <KpiHelpTip helpKey="estCost" />
           </div>
-          <div className="kpi-value">{fmtUsd(s.tokens.estimatedCostUsd)}</div>
+          <div className="kpi-value">{fmtUsdCompact(s.tokens.estimatedCostUsd)}</div>
           <div className="kpi-sub">
             {s.tokens.unpricedModels.length > 0 ? (
               <button
                 type="button"
-                className="btn btn-sm"
+                className="kpi-warning-btn"
                 onClick={onOpenSettings}
-                style={{ padding: "1px 6px" }}
               >
                 Add model rate
               </button>
             ) : (
-              `Saved ~${fmtUsd(s.tokens.cacheSavingsUsd)}`
+              `Saved ~${fmtUsdCompact(s.tokens.cacheSavingsUsd)}`
             )}
           </div>
         </div>
@@ -329,15 +328,6 @@ export const ChatDetailView: React.FC<Props> = ({
             plannerSteps={detail.plannerSteps}
             toolCalls={detail.toolCalls}
             highlightStepIndex={highlightStep}
-          />
-        )}
-
-        {tab === "issues" && (
-          <WhyPanel
-            findings={detail.diagnostics}
-            canSendMessage={canSendMessage}
-            onJumpToStep={jumpToTimelineStep}
-            onAskAgent={onAskAgent}
           />
         )}
 

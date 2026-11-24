@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from "react";
 import type { ModelSwitchEvent, ModelUsageMetric } from "../../shared/types";
-import { fmtDuration, fmtK, fmtPct, fmtUsd } from "../format";
+import { fmtDuration, fmtK, fmtPct } from "../format";
 import { buildModelColorMap, getModelColor } from "../modelColors";
+import { CostCell } from "./CostCell";
 
 export type ModelShareBasis = "tokens" | "steps" | "time";
 
@@ -402,7 +403,7 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                       </span>
                     </td>
                     <td className="text-right tabular">
-                      {fmtUsd(m.estimatedCostUsd)}
+                      <CostCell estimatedCostUsd={m.estimatedCostUsd} />
                     </td>
                   </tr>
                 );

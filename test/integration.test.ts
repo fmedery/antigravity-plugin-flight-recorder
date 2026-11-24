@@ -336,6 +336,60 @@ test("full scanner + parent/subagent linkage + MCP server tools/resources + CSP 
       `Expected merged single-chat totalActiveMs (${optChatSc.totalActiveMs}) < raw sum (${parentDetail.summary.time.activeMs + parentDetail.summary.time.subagentMs})`
     );
 
+    // Verify time-range filtering across app-only dashboard and project detail endpoints
+    const convEndedMs = parentDetail.summary.endedAtMs;
+    const matchDashRes = await client.callTool({
+      name: "app_get_dashboard_data",
+      arguments: {
+        timeRange: "today",
+        sinceMs: convEndedMs - 60_000,
+        skipScan: true
+      }
+    });
+    const matchDashSc = (matchDashRes.structuredContent ?? {}) as {
+      timeRange?: { preset?: string; sinceMs?: number | null };
+      totals?: { projectCount?: number; chatCount?: number };
+    };
+    assert.equal(matchDashSc.timeRange?.preset, "today");
+    assert.equal(matchDashSc.timeRange?.sinceMs, convEndedMs - 60_000);
+    assert.equal(matchDashSc.totals?.projectCount, 1);
+    assert.equal(matchDashSc.totals?.chatCount, 1);
+
+    const futureSinceMs = convEndedMs + 60_000;
+    const emptyDashRes = await client.callTool({
+      name: "app_get_dashboard_data",
+      arguments: {
+        timeRange: "today",
+        sinceMs: futureSinceMs,
+        skipScan: true
+      }
+    });
+    const emptyDashSc = (emptyDashRes.structuredContent ?? {}) as {
+      totals?: { projectCount?: number; chatCount?: number };
+      projects?: unknown[];
+    };
+    assert.equal(emptyDashSc.totals?.projectCount, 0);
+    assert.equal(emptyDashSc.totals?.chatCount, 0);
+    assert.deepEqual(emptyDashSc.projects, []);
+
+    const emptyProjRes = await client.callTool({
+      name: "app_get_project_detail",
+      arguments: {
+        projectPath: "/Users/dev/sample-project",
+        timeRange: "today",
+        sinceMs: futureSinceMs
+      }
+    });
+    assert.notEqual(emptyProjRes.isError, true);
+    const emptyProjSc = (emptyProjRes.structuredContent ?? {}) as {
+      summary?: { chatCount?: number };
+      chats?: unknown[];
+      timeRange?: { preset?: string };
+    };
+    assert.equal(emptyProjSc.summary?.chatCount, 0);
+    assert.deepEqual(emptyProjSc.chats, []);
+    assert.equal(emptyProjSc.timeRange?.preset, "today");
+
     await client.close();
     await mcpServer.close();
   } finally {

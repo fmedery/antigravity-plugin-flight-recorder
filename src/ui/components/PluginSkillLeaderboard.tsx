@@ -8,8 +8,9 @@ import {
   fmtDuration,
   fmtK,
   fmtPct,
-  fmtUsd
+  fmtUsdCompact
 } from "../format";
+import { CostCell } from "./CostCell";
 import { ErrorGuidanceBlock } from "./ErrorGuidanceBlock";
 
 interface Props {
@@ -397,7 +398,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                   textAlign: "right"
                                 }}
                               >
-                                {fmtUsd(m.drivenCostUsd)}
+                                {fmtUsdCompact(m.drivenCostUsd)}
                               </span>
                             </>
                           ) : (
@@ -585,7 +586,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                             </div>
                                           </td>
                                           <td className="text-right tabular">
-                                            {fmtUsd(ch.drivenCostUsd)}
+                                            <CostCell estimatedCostUsd={ch.drivenCostUsd} />
                                           </td>
                                           <td className="text-right tabular">
                                             {fmtDuration(ch.drivenActiveMs)}

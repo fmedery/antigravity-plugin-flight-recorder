@@ -316,6 +316,16 @@ export interface ProjectSummary {
   errorCount: number;
 }
 
+export type TimeRangePreset = "today" | "7d" | "30d" | "all";
+
+export interface TimeRangeWindow {
+  preset: TimeRangePreset;
+  sinceMs: number | null;
+  untilMs: number;
+  firstActivityMs: number;
+  lastActivityMs: number;
+}
+
 export interface ProjectDetail {
   summary: ProjectSummary;
   chats: ConversationSummary[];
@@ -323,10 +333,12 @@ export interface ProjectDetail {
   pluginSkillMetrics: PluginSkillMetric[];
   filesTouched: FileTouchRecord[];
   diagnostics: DiagnosticFinding[];
+  timeRange: TimeRangeWindow;
 }
 
 export interface DashboardData {
   generatedAtMs: number;
+  timeRange: TimeRangeWindow;
   totals: {
     projectCount: number;
     chatCount: number;

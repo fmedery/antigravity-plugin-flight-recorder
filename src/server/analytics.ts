@@ -6,6 +6,10 @@ import {
   estimateStepCost
 } from "../shared/pricing.js";
 import { pathBaseName } from "../shared/paths.js";
+import {
+  resolveTimeRangeBounds,
+  type TimeRangeQuery
+} from "../shared/timeRange.js";
 import type {
   ConversationDetail,
   ConversationSummary,
@@ -1685,13 +1689,92 @@ function mergeFileTouches(lists: FileTouchRecord[][]): FileTouchRecord[] {
   );
 }
 
+function rowActivityMs(row: StoredConversationRow): number {
+  return row.endedAtMs > 0 ? row.endedAtMs : row.startedAtMs;
+}
+
+function matchesTimeRange(
+  row: StoredConversationRow,
+  sinceMs: number | null
+): boolean {
+  return sinceMs === null ? true : rowActivityMs(row) >= sinceMs;
+}
+
+function emptyTokenSummary(): TokenSummary {
+  return {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    peakContextTokens: 0,
+    cacheHitRatio: 0,
+    hasTokenTelemetry: false,
+    estimatedCostUsd: 0,
+    cacheSavingsUsd: 0,
+    unpricedModels: []
+  };
+}
+
+function emptyTimeSummary(): TimeSummary {
+  return {
+    activeMs: 0,
+    modelMs: 0,
+    toolWallMs: 0,
+    toolSumMs: 0,
+    parallelismFactor: 1,
+    subagentMs: 0,
+    userIdleMs: 0,
+    wallClockMs: 0
+  };
+}
+
 export function buildProjectDetail(
   db: TrackerDatabase,
-  projectPath: string
+  projectPath: string,
+  options?: TimeRangeQuery
 ): ProjectDetail | null {
+  const bounds = resolveTimeRangeBounds(options);
   const allRows = db.getAllConversationRecords();
-  const projectRows = allRows.filter((r) => r.projectPath === projectPath);
-  if (projectRows.length === 0) return null;
+  const allProjectRows = allRows.filter((r) => r.projectPath === projectPath);
+  if (allProjectRows.length === 0) return null;
+
+  const projectRows = allProjectRows.filter((r) =>
+    matchesTimeRange(r, bounds.sinceMs)
+  );
+
+  if (projectRows.length === 0) {
+    return {
+      summary: {
+        projectPath,
+        projectName: projectDisplayName(projectPath),
+        chatCount: 0,
+        subagentCount: 0,
+        firstActivityMs: 0,
+        lastActivityMs: 0,
+        models: [],
+        modelBreakdown: [],
+        topSkills: [],
+        topPluginsSkills: [],
+        topTools: [],
+        mcpServers: [],
+        slashCommands: [],
+        tokens: emptyTokenSummary(),
+        time: emptyTimeSummary(),
+        errorCount: 0
+      },
+      chats: [],
+      skillToolMetrics: [],
+      pluginSkillMetrics: [],
+      filesTouched: [],
+      diagnostics: [],
+      timeRange: {
+        preset: bounds.preset,
+        sinceMs: bounds.sinceMs,
+        untilMs: bounds.untilMs,
+        firstActivityMs: 0,
+        lastActivityMs: 0
+      }
+    };
+  }
 
   const pricingRules = db.getPricingRules();
   const rowIds = new Set(projectRows.map((r) => r.conversationId));
@@ -1815,11 +1898,15 @@ export function buildProjectDetail(
     new Set(projectRows.flatMap((r) => r.slashCommands))
   ).sort();
 
-  const firstActivityMs = Math.min(
-    ...projectRows.map((r) => r.startedAtMs).filter((x) => x > 0),
-    Date.now()
+  const positiveStarts = projectRows
+    .map((r) => (r.startedAtMs > 0 ? r.startedAtMs : r.endedAtMs))
+    .filter((x) => x > 0);
+  const firstActivityMs =
+    positiveStarts.length > 0 ? Math.min(...positiveStarts) : 0;
+  const lastActivityMs = Math.max(
+    ...projectRows.map((r) => rowActivityMs(r)),
+    0
   );
-  const lastActivityMs = Math.max(...projectRows.map((r) => r.endedAtMs), 0);
 
   const modelMs = summaries.reduce((s, c) => s + c.time.modelMs, 0);
   const toolWallMs = summaries.reduce((s, c) => s + c.time.toolWallMs, 0);
@@ -1880,12 +1967,25 @@ export function buildProjectDetail(
     skillToolMetrics,
     pluginSkillMetrics,
     filesTouched: mergeFileTouches(projectRows.map((r) => r.filesTouched)),
-    diagnostics
+    diagnostics,
+    timeRange: {
+      preset: bounds.preset,
+      sinceMs: bounds.sinceMs,
+      untilMs: bounds.untilMs,
+      firstActivityMs,
+      lastActivityMs
+    }
   };
 }
 
-export function buildDashboardData(db: TrackerDatabase): DashboardData {
-  const allRows = db.getAllConversationRecords();
+export function buildDashboardData(
+  db: TrackerDatabase,
+  options?: TimeRangeQuery
+): DashboardData {
+  const bounds = resolveTimeRangeBounds(options);
+  const allRows = db
+    .getAllConversationRecords()
+    .filter((r) => matchesTimeRange(r, bounds.sinceMs));
   const pricingRules = db.getPricingRules();
 
   const byProject = new Map<string, StoredConversationRow[]>();
@@ -1897,14 +1997,27 @@ export function buildDashboardData(db: TrackerDatabase): DashboardData {
 
   const projectDetails: ProjectDetail[] = [];
   for (const projectPath of byProject.keys()) {
-    const detail = buildProjectDetail(db, projectPath);
-    if (detail) projectDetails.push(detail);
+    const detail = buildProjectDetail(db, projectPath, bounds);
+    if (detail && detail.chats.length > 0) projectDetails.push(detail);
   }
   const projects = projectDetails
     .map((d) => d.summary)
     .sort((a, b) => b.lastActivityMs - a.lastActivityMs);
 
-  const totalsTokens = mergeTokenSummaries(projects.map((p) => p.tokens));
+  const positiveFirsts = projects
+    .map((p) => p.firstActivityMs)
+    .filter((x) => x > 0);
+  const firstActivityMs =
+    positiveFirsts.length > 0 ? Math.min(...positiveFirsts) : 0;
+  const lastActivityMs = projects.reduce(
+    (max, p) => (p.lastActivityMs > max ? p.lastActivityMs : max),
+    0
+  );
+
+  const totalsTokens =
+    projects.length > 0
+      ? mergeTokenSummaries(projects.map((p) => p.tokens))
+      : emptyTokenSummary();
   const totalsModelBreakdown = mergeModelBreakdowns(
     projects.map((p) => p.modelBreakdown)
   );
@@ -1944,6 +2057,13 @@ export function buildDashboardData(db: TrackerDatabase): DashboardData {
 
   return {
     generatedAtMs: Date.now(),
+    timeRange: {
+      preset: bounds.preset,
+      sinceMs: bounds.sinceMs,
+      untilMs: bounds.untilMs,
+      firstActivityMs,
+      lastActivityMs
+    },
     totals: {
       projectCount: projects.length,
       chatCount: projects.reduce((s, p) => s + p.chatCount, 0),

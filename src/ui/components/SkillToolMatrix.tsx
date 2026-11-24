@@ -4,9 +4,9 @@ import {
   buildErrorTroubleshootingPrompt,
   describeErrorBadge,
   fmtDuration,
-  fmtK,
-  fmtUsd
+  fmtK
 } from "../format";
+import { CostCell } from "./CostCell";
 import { ErrorGuidanceBlock } from "./ErrorGuidanceBlock";
 
 interface Props {
@@ -272,7 +272,7 @@ export const SkillToolMatrix: React.FC<Props> = ({
                           </div>
                         </td>
                         <td className="text-right tabular">
-                          {fmtUsd(m.estimatedCostUsd)}
+                          <CostCell estimatedCostUsd={m.estimatedCostUsd} />
                         </td>
                       </tr>
                       {isErrOpen && m.errors > 0 && (

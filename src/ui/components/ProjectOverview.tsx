@@ -1,11 +1,13 @@
 import React, { useId, useMemo, useState } from "react";
+import { TIME_RANGE_PRESETS } from "../../shared/timeRange.js";
 import type {
   ConversationSummary,
   DashboardData,
-  DiagnosticFinding,
   PluginSkillMetric,
   ProjectDetail,
-  ProjectSummary
+  ProjectSummary,
+  TimeRangePreset,
+  TimeRangeWindow
 } from "../../shared/types";
 import {
   fmtBytes,
@@ -13,10 +15,11 @@ import {
   fmtDuration,
   fmtK,
   fmtPct,
-  fmtUsd,
+  fmtUsdCompact,
   groupProjectChats,
-  selectTopDiagnostics
+  type GroupedProjectChat
 } from "../format";
+import { CostCell } from "./CostCell";
 import { KpiHelpTip } from "./KpiHelpTip";
 import {
   ModelBreakdownPanel,
@@ -26,11 +29,42 @@ import {
 import { PluginSkillLeaderboard } from "./PluginSkillLeaderboard";
 import { SkillToolMatrix } from "./SkillToolMatrix";
 import { TabStrip, type TabItem } from "./TabStrip";
-import { WhyPanel } from "./WhyPanel";
+import { TimeRangeBar } from "./TimeRangeBar";
+
+function rangeLongLabel(preset: TimeRangePreset): string {
+  return TIME_RANGE_PRESETS.find((p) => p.key === preset)?.longLabel ?? "All time";
+}
+
+function fallbackDashboardTimeRange(dashboard: DashboardData): TimeRangeWindow {
+  if (dashboard.timeRange) return dashboard.timeRange;
+  const starts = dashboard.projects.map((p) => p.firstActivityMs).filter((x) => x > 0);
+  const ends = dashboard.projects.map((p) => p.lastActivityMs).filter((x) => x > 0);
+  return {
+    preset: "all",
+    sinceMs: null,
+    untilMs: dashboard.generatedAtMs || Date.now(),
+    firstActivityMs: starts.length > 0 ? Math.min(...starts) : 0,
+    lastActivityMs: ends.length > 0 ? Math.max(...ends) : 0
+  };
+}
+
+function fallbackProjectTimeRange(detail: ProjectDetail): TimeRangeWindow {
+  if (detail.timeRange) return detail.timeRange;
+  return {
+    preset: "all",
+    sinceMs: null,
+    untilMs: Date.now(),
+    firstActivityMs: detail.summary.firstActivityMs,
+    lastActivityMs: detail.summary.lastActivityMs
+  };
+}
 
 interface AllProjectsProps {
   dashboard: DashboardData;
   canSendMessage?: boolean;
+  timeRange?: TimeRangePreset;
+  updatingRange?: boolean;
+  onTimeRangeChange?: (preset: TimeRangePreset) => void;
   onSelectProject: (projectPath: string) => void;
   onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenSettings: () => void;
@@ -43,6 +77,9 @@ type ProjectSort = "lastActivityMs" | "cost" | "tokens" | "activeMs" | "chats";
 export const AllProjectsView: React.FC<AllProjectsProps> = ({
   dashboard,
   canSendMessage = false,
+  timeRange = "all",
+  updatingRange = false,
+  onTimeRangeChange,
   onSelectProject,
   onSelectChat,
   onOpenSettings,
@@ -93,6 +130,8 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
   const tot = dashboard.totals;
   const grandTokens =
     tot.tokens.inputTokens + tot.tokens.cacheReadTokens + tot.tokens.outputTokens;
+  const effectiveTimeRange = fallbackDashboardTimeRange(dashboard);
+  const activeRangeLabel = rangeLongLabel(timeRange);
 
   const homeTabs: Array<TabItem<HomeTab>> = [
     { key: "projects", label: `Projects (${dashboard.projects.length})` },
@@ -102,7 +141,19 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
 
   return (
     <div>
-      <div className="kpi-grid">
+      <TimeRangeBar
+        value={timeRange}
+        timeRange={effectiveTimeRange}
+        hasActivity={tot.chatCount + tot.subagentCount > 0}
+        loading={updatingRange}
+        onChange={(next) => onTimeRangeChange?.(next)}
+      />
+
+      <div
+        className={updatingRange ? "is-range-updating" : undefined}
+        aria-busy={updatingRange || undefined}
+      >
+        <div className="kpi-grid">
         <div className="kpi-card">
           <div className="kpi-label">
             <span>Projects</span>
@@ -140,19 +191,18 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
             <span>Est. Cost</span>
             <KpiHelpTip helpKey="estCost" />
           </div>
-          <div className="kpi-value">{fmtUsd(tot.tokens.estimatedCostUsd)}</div>
+          <div className="kpi-value">{fmtUsdCompact(tot.tokens.estimatedCostUsd)}</div>
           <div className="kpi-sub">
             {tot.tokens.unpricedModels.length > 0 ? (
               <button
                 type="button"
-                className="btn btn-sm"
+                className="kpi-warning-btn"
                 onClick={onOpenSettings}
-                style={{ padding: "1px 6px" }}
               >
                 {tot.tokens.unpricedModels.length} unpriced model(s)
               </button>
             ) : tot.tokens.cacheSavingsUsd !== null ? (
-              `Saved ~${fmtUsd(tot.tokens.cacheSavingsUsd)}`
+              `Saved ~${fmtUsdCompact(tot.tokens.cacheSavingsUsd)}`
             ) : (
               "All models priced"
             )}
@@ -173,7 +223,7 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
           <div className="panel">
             <div className="panel-header">
               <span className="panel-title">All Tracked Projects</span>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              <div className="panel-controls">
                 <input
                   type="text"
                   className="input-field input-field-sm"
@@ -212,7 +262,22 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                   {filteredProjects.length === 0 ? (
                     <tr>
                       <td colSpan={5} style={{ color: "var(--txt-tertiary)", padding: 14 }}>
-                        No matching projects found.
+                        {dashboard.projects.length === 0 && timeRange !== "all" ? (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span>No projects active in {activeRangeLabel.toLowerCase()}.</span>
+                            {onTimeRangeChange && (
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={() => onTimeRangeChange("all")}
+                              >
+                                Show all time
+                              </button>
+                            )}
+                          </span>
+                        ) : (
+                          "No matching projects found."
+                        )}
                       </td>
                     </tr>
                   ) : (
@@ -239,50 +304,33 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                             </div>
                           </td>
                           <td className="text-right tabular">
-                            {p.chatCount}
+                            <div className="metric-primary">{p.chatCount}</div>
                             {p.subagentCount > 0 && (
-                              <span style={{ color: "var(--txt-tertiary)" }}>
-                                {" "}
-                                (+{p.subagentCount})
-                              </span>
+                              <div className="cell-sub">+{p.subagentCount} sub</div>
                             )}
                           </td>
                           <td className="text-right tabular">
                             {p.tokens.hasTokenTelemetry ? (
                               <>
-                                <span>{fmtK(pTokens)}</span>{" "}
-                                <span
-                                  style={{
-                                    color: "var(--txt-success)",
-                                    fontWeight: 600
-                                  }}
-                                >
-                                  ({fmtPct(p.tokens.cacheHitRatio)})
-                                </span>
+                                <div className="metric-primary">{fmtK(pTokens)}</div>
+                                <div className="cell-sub metric-cache">
+                                  {fmtPct(p.tokens.cacheHitRatio)} cache
+                                </div>
                               </>
                             ) : (
-                              "N/A (legacy)"
+                              <span className="cell-muted">N/A (legacy)</span>
                             )}
                           </td>
                           <td className="text-right tabular">
-                            {fmtDuration(p.time.activeMs)}
+                            <div className="metric-primary">
+                              {fmtDuration(p.time.activeMs)}
+                            </div>
                           </td>
                           <td className="text-right tabular">
-                            {p.tokens.estimatedCostUsd === null ? (
-                              <span className="badge badge-warning">Unpriced</span>
-                            ) : (
-                              <span>
-                                {fmtUsd(p.tokens.estimatedCostUsd)}
-                                {p.tokens.unpricedModels.length > 0 && (
-                                  <span
-                                    className="badge badge-warning"
-                                    style={{ marginLeft: 4 }}
-                                  >
-                                    +unpriced
-                                  </span>
-                                )}
-                              </span>
-                            )}
+                            <CostCell
+                              estimatedCostUsd={p.tokens.estimatedCostUsd}
+                              unpricedModels={p.tokens.unpricedModels}
+                            />
                           </td>
                         </tr>
                       );
@@ -326,9 +374,29 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
               dashboard.pluginSkillMetrics.length === 0 && (
                 <div
                   className="panel"
-                  style={{ padding: 16, color: "var(--txt-tertiary)" }}
+                  style={{
+                    padding: 16,
+                    color: "var(--txt-tertiary)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    flexWrap: "wrap"
+                  }}
                 >
-                  No plugin, skill, or model telemetry recorded yet.
+                  <span>
+                    {timeRange !== "all"
+                      ? `No plugin, skill, or model telemetry recorded in ${activeRangeLabel.toLowerCase()}.`
+                      : "No plugin, skill, or model telemetry recorded yet."}
+                  </span>
+                  {timeRange !== "all" && onTimeRangeChange && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => onTimeRangeChange("all")}
+                    >
+                      Show all time
+                    </button>
+                  )}
                 </div>
               )}
           </div>
@@ -354,7 +422,22 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                   {dashboard.recentChats.length === 0 ? (
                     <tr>
                       <td colSpan={5} style={{ color: "var(--txt-tertiary)", padding: 14 }}>
-                        No chats recorded yet.
+                        {timeRange !== "all" ? (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span>No chats recorded in {activeRangeLabel.toLowerCase()}.</span>
+                            {onTimeRangeChange && (
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={() => onTimeRangeChange("all")}
+                              >
+                                Show all time
+                              </button>
+                            )}
+                          </span>
+                        ) : (
+                          "No chats recorded yet."
+                        )}
                       </td>
                     </tr>
                   ) : (
@@ -394,7 +477,10 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                             {fmtDuration(c.time.activeMs)}
                           </td>
                           <td className="text-right tabular">
-                            {fmtUsd(c.tokens.estimatedCostUsd)}
+                            <CostCell
+                              estimatedCostUsd={c.tokens.estimatedCostUsd}
+                              unpricedModels={c.tokens.unpricedModels}
+                            />
                           </td>
                           <td
                             className="text-right tabular"
@@ -412,6 +498,7 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
           </div>
         )}
       </div>
+      </div>
     </div>
   );
 };
@@ -419,15 +506,17 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
 interface ProjectDetailProps {
   detail: ProjectDetail;
   canSendMessage?: boolean;
+  timeRange?: TimeRangePreset;
+  updatingRange?: boolean;
+  onTimeRangeChange?: (preset: TimeRangePreset) => void;
   onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenFile?: (filePath: string) => void;
   onOpenSettings: () => void;
-  onAskAgent?: (finding: DiagnosticFinding) => void;
   onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
   onTroubleshootPrompt?: (prompt: string) => void;
 }
 
-type ProjectTab = "overview" | "issues" | "usage" | "chats";
+type ProjectTab = "overview" | "usage" | "chats";
 type UsageSubtab = "plugins" | "models" | "tools" | "files";
 
 interface ProjectChatRowProps {
@@ -511,30 +600,104 @@ const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
       <td className="text-right tabular">
         {chat.tokens.hasTokenTelemetry ? (
           <>
-            <span>{fmtK(cTok)}</span>{" "}
-            <span style={{ color: "var(--txt-success)", fontWeight: 600 }}>
-              ({fmtPct(chat.tokens.cacheHitRatio)})
-            </span>
+            <div className="metric-primary">{fmtK(cTok)}</div>
+            <div className="cell-sub metric-cache">
+              {fmtPct(chat.tokens.cacheHitRatio)} cache
+            </div>
           </>
         ) : (
-          "N/A (legacy)"
+          <span className="cell-muted">N/A (legacy)</span>
         )}
       </td>
-      <td className="text-right tabular">{fmtDuration(chat.time.activeMs)}</td>
       <td className="text-right tabular">
-        {fmtUsd(chat.tokens.estimatedCostUsd)}
+        <div className="metric-primary">{fmtDuration(chat.time.activeMs)}</div>
+      </td>
+      <td className="text-right tabular">
+        <CostCell
+          estimatedCostUsd={chat.tokens.estimatedCostUsd}
+          unpricedModels={chat.tokens.unpricedModels}
+        />
       </td>
     </tr>
   );
 };
 
+interface ProjectChatsTableProps {
+  groups: GroupedProjectChat[];
+  expandedChatIds: Set<string>;
+  onToggleGroup: (rootId: string) => void;
+  onSelectChat: (conversationId: string, stepIndex?: number) => void;
+}
+
+const ProjectChatsTable: React.FC<ProjectChatsTableProps> = ({
+  groups,
+  expandedChatIds,
+  onToggleGroup,
+  onSelectChat
+}) => (
+  <div className="table-wrap">
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Chat</th>
+          <th scope="col" className="text-right">Tokens &amp; Cache</th>
+          <th scope="col" className="text-right">Active Time</th>
+          <th scope="col" className="text-right">Est. Cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {groups.length === 0 ? (
+          <tr>
+            <td
+              colSpan={4}
+              style={{ color: "var(--txt-tertiary)", padding: 14 }}
+            >
+              No chats recorded for this project.
+            </td>
+          </tr>
+        ) : (
+          groups.map((g) => {
+            const isExpanded = expandedChatIds.has(g.root.conversationId);
+            return (
+              <React.Fragment key={g.root.conversationId}>
+                <ProjectChatRow
+                  chat={g.root}
+                  subagentCount={g.subagents.length}
+                  isExpanded={isExpanded}
+                  onToggleSubagents={
+                    g.subagents.length > 0
+                      ? () => onToggleGroup(g.root.conversationId)
+                      : undefined
+                  }
+                  onSelect={onSelectChat}
+                />
+                {isExpanded &&
+                  g.subagents.map((sub) => (
+                    <ProjectChatRow
+                      key={sub.conversationId}
+                      chat={sub}
+                      isSubagent
+                      onSelect={onSelectChat}
+                    />
+                  ))}
+              </React.Fragment>
+            );
+          })
+        )}
+      </tbody>
+    </table>
+  </div>
+);
+
 export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
   detail,
   canSendMessage = false,
+  timeRange = "all",
+  updatingRange = false,
+  onTimeRangeChange,
   onSelectChat,
   onOpenFile,
   onOpenSettings,
-  onAskAgent,
   onOptimizeSkill,
   onTroubleshootPrompt
 }) => {
@@ -549,26 +712,13 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
   const s = detail.summary;
   const totalTokens =
     s.tokens.inputTokens + s.tokens.cacheReadTokens + s.tokens.outputTokens;
+  const effectiveTimeRange = fallbackProjectTimeRange(detail);
+  const activeRangeLabel = rangeLongLabel(timeRange);
 
   const groupedChats = useMemo(
     () => groupProjectChats(detail.chats),
     [detail.chats]
   );
-  const topFindings = useMemo(
-    () => selectTopDiagnostics(detail.diagnostics, 3),
-    [detail.diagnostics]
-  );
-  const diagnosticCounts = useMemo(() => {
-    let critical = 0;
-    let warning = 0;
-    let info = 0;
-    for (const d of detail.diagnostics) {
-      if (d.severity === "critical") critical += 1;
-      else if (d.severity === "warning") warning += 1;
-      else info += 1;
-    }
-    return { critical, warning, info };
-  }, [detail.diagnostics]);
 
   const expandableIds = useMemo(
     () =>
@@ -600,7 +750,6 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
 
   const projectTabs: Array<TabItem<ProjectTab>> = [
     { key: "overview", label: "Overview" },
-    { key: "issues", label: `Issues (${detail.diagnostics.length})` },
     { key: "usage", label: "Usage" },
     { key: "chats", label: `Chats (${detail.chats.length})` }
   ];
@@ -614,7 +763,19 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
         </div>
       </div>
 
-      <div className="kpi-grid">
+      <TimeRangeBar
+        value={timeRange}
+        timeRange={effectiveTimeRange}
+        hasActivity={detail.chats.length > 0}
+        loading={updatingRange}
+        onChange={(next) => onTimeRangeChange?.(next)}
+      />
+
+      <div
+        className={updatingRange ? "is-range-updating" : undefined}
+        aria-busy={updatingRange || undefined}
+      >
+        <div className="kpi-grid">
         <div className="kpi-card">
           <div className="kpi-label">
             <span>Chats</span>
@@ -661,23 +822,39 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             <span>Est. Cost</span>
             <KpiHelpTip helpKey="estCost" />
           </div>
-          <div className="kpi-value">{fmtUsd(s.tokens.estimatedCostUsd)}</div>
+          <div className="kpi-value">{fmtUsdCompact(s.tokens.estimatedCostUsd)}</div>
           <div className="kpi-sub">
             {s.tokens.unpricedModels.length > 0 ? (
               <button
                 type="button"
-                className="btn btn-sm"
+                className="kpi-warning-btn"
                 onClick={onOpenSettings}
-                style={{ padding: "1px 6px" }}
               >
                 Set pricing
               </button>
             ) : (
-              `Saved ~${fmtUsd(s.tokens.cacheSavingsUsd)}`
+              `Saved ~${fmtUsdCompact(s.tokens.cacheSavingsUsd)}`
             )}
           </div>
         </div>
       </div>
+
+      {detail.chats.length === 0 && timeRange !== "all" && (
+        <div className="panel range-empty-notice">
+          <span>
+            No activity in <strong>{s.projectName}</strong> for {activeRangeLabel.toLowerCase()}.
+          </span>
+          {onTimeRangeChange && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => onTimeRangeChange("all")}
+            >
+              Show all time
+            </button>
+          )}
+        </div>
+      )}
 
       <TabStrip
         tabs={projectTabs}
@@ -713,47 +890,35 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
 
             <div className="panel">
               <div className="panel-header">
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                    gap: 6
-                  }}
-                >
-                  <span className="panel-title">Top Issues</span>
-                  {diagnosticCounts.critical > 0 && (
-                    <span className="badge badge-danger">
-                      {diagnosticCounts.critical} critical
-                    </span>
-                  )}
-                  {diagnosticCounts.warning > 0 && (
-                    <span className="badge badge-warning">
-                      {diagnosticCounts.warning} warning
-                    </span>
-                  )}
-                  {diagnosticCounts.info > 0 && (
-                    <span className="badge badge-info">
-                      {diagnosticCounts.info} info
+                <div>
+                  <span className="panel-title">Recent Chats</span>
+                  {groupedChats.length > 0 && (
+                    <span
+                      style={{
+                        marginLeft: 8,
+                        fontSize: 12,
+                        color: "var(--txt-tertiary)"
+                      }}
+                    >
+                      {groupedChats.length} root · {s.subagentCount} subagents
                     </span>
                   )}
                 </div>
-                {detail.diagnostics.length > 0 && (
+                {detail.chats.length > 0 && (
                   <button
                     type="button"
                     className="btn btn-sm"
-                    onClick={() => setTab("issues")}
+                    onClick={() => setTab("chats")}
                   >
-                    View all {detail.diagnostics.length} →
+                    View all ({detail.chats.length}) →
                   </button>
                 )}
               </div>
-              <WhyPanel
-                embedded
-                findings={topFindings}
-                canSendMessage={canSendMessage}
-                onAskAgent={onAskAgent}
-                emptyMessage="No notable token spikes, cache misses, or slow bottlenecks detected in this project."
+              <ProjectChatsTable
+                groups={groupedChats.slice(0, 5)}
+                expandedChatIds={expandedChatIds}
+                onToggleGroup={toggleChatGroup}
+                onSelectChat={onSelectChat}
               />
             </div>
 
@@ -774,14 +939,6 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
               />
             )}
           </div>
-        )}
-
-        {tab === "issues" && (
-          <WhyPanel
-            findings={detail.diagnostics}
-            canSendMessage={canSendMessage}
-            onAskAgent={onAskAgent}
-          />
         )}
 
         {tab === "usage" && (
@@ -949,62 +1106,15 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
                 </button>
               )}
             </div>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Chat</th>
-                    <th scope="col" className="text-right">Tokens &amp; Cache</th>
-                    <th scope="col" className="text-right">Active Time</th>
-                    <th scope="col" className="text-right">Est. Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groupedChats.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        style={{ color: "var(--txt-tertiary)", padding: 14 }}
-                      >
-                        No chats recorded for this project.
-                      </td>
-                    </tr>
-                  ) : (
-                    groupedChats.map((g) => {
-                      const isExpanded = expandedChatIds.has(
-                        g.root.conversationId
-                      );
-                      return (
-                        <React.Fragment key={g.root.conversationId}>
-                          <ProjectChatRow
-                            chat={g.root}
-                            subagentCount={g.subagents.length}
-                            isExpanded={isExpanded}
-                            onToggleSubagents={
-                              g.subagents.length > 0
-                                ? () => toggleChatGroup(g.root.conversationId)
-                                : undefined
-                            }
-                            onSelect={onSelectChat}
-                          />
-                          {isExpanded &&
-                            g.subagents.map((sub) => (
-                              <ProjectChatRow
-                                key={sub.conversationId}
-                                chat={sub}
-                                isSubagent
-                                onSelect={onSelectChat}
-                              />
-                            ))}
-                        </React.Fragment>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <ProjectChatsTable
+              groups={groupedChats}
+              expandedChatIds={expandedChatIds}
+              onToggleGroup={toggleChatGroup}
+              onSelectChat={onSelectChat}
+            />
           </div>
         )}
+      </div>
       </div>
     </div>
   );
