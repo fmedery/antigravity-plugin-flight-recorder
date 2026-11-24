@@ -82,10 +82,9 @@ agy plugin install https://github.com/fmedery/antigravity-plugin-flight-recorder
 
 ## Verify & Open
 
-Antigravity 2.x picks up newly added plugins **live — no restart required**.
-
-1. **Check it's enabled:** open **Left Sidebar → Skills & Customizations → Installed** and confirm **Flight Recorder** is **On**.
-2. **Open the dashboard** any of these ways:
+1. **Check it's enabled:** open **Left Sidebar → Customizations** and confirm **Flight Recorder** is listed and toggled **On**.
+2. **Restart Antigravity 2.x (Hub):** the plugin appears in the Customizations list right away, but its dashboard entry in the Left Sidebar and the chat `+` menu only shows up after you fully quit and reopen the app.
+3. **Open the dashboard** any of these ways:
    - **Full-page (all projects):** click **Flight Recorder** in the **Left Sidebar**.
    - **Side pane (inside a chat):** click the **`+`** button in the chat's auxiliary pane and select **Flight Recorder**.
    - **From chat:** ask *"Open Flight Recorder to inspect this project"*.
@@ -183,7 +182,7 @@ After pulling, toggle the `flight-recorder_recorder` server off/on in **Settings
 
 ### Uninstall
 
-- **In Antigravity 2.x:** open **Left Sidebar → Skills & Customizations → Installed → Flight Recorder** to disable or uninstall it.
+- **In Antigravity 2.x:** open **Left Sidebar → Customizations → Flight Recorder** to disable or uninstall it.
 - **Optional — remove the local index & hook log:** delete `~/.gemini/flight-recorder-data` (`%USERPROFILE%\.gemini\flight-recorder-data` on Windows) or your plugin's `${PLUGIN_DATA}` directory.
 
 ---
@@ -201,9 +200,10 @@ See [SECURITY.md](./SECURITY.md) for the full audit table.
 ## Troubleshooting
 
 - **Flight Recorder doesn't appear in the sidebar:**
-  1. Confirm `plugin.json` is directly at `.../plugins/flight-recorder/plugin.json` (not nested from a ZIP extract).
-  2. Run `node -v` and verify **Node.js `>= 22.15.0`**.
-  3. Check **Settings → MCP Servers** to confirm `flight-recorder_recorder` is running, or restart it.
+  1. If it's already listed under **Customizations**, fully quit and restart Antigravity 2.x (Hub). The dashboard entry only shows up after a restart.
+  2. Confirm `plugin.json` is directly at `.../plugins/flight-recorder/plugin.json` (not nested from a ZIP extract).
+  3. Run `node -v` and verify **Node.js `>= 22.15.0`**.
+  4. Check **Settings → MCP Servers** to confirm `flight-recorder_recorder` is running, or restart it.
 - **A recent chat is missing:** click **Rescan**, and check the time-range filter isn't hiding it.
 - **A chat is under the wrong project:** open the chat and use **Reassign**.
 - **Models show `Unpriced`:** click **Pricing** to add per-1M USD rates for those model families.
