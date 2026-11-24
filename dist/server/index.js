@@ -16851,6 +16851,22 @@ function resolveTimeRangeBounds(query, nowMs = Date.now()) {
   let explicitSince = query?.sinceMs, sinceMs = typeof explicitSince == "number" && Number.isFinite(explicitSince) && explicitSince > 0 ? explicitSince : computeLocalPresetSinceMs(preset, untilMs);
   return { preset, sinceMs, untilMs };
 }
+function computePriorTimeRangeBounds(bounds) {
+  if (bounds.preset === "all" || bounds.sinceMs === null)
+    return null;
+  let days, label;
+  bounds.preset === "today" ? (days = 1, label = "vs yesterday") : bounds.preset === "7d" ? (days = 7, label = "vs prior 7d") : (days = 30, label = "vs prior 30d");
+  let d2 = new Date(bounds.sinceMs);
+  return {
+    priorSinceMs: new Date(
+      d2.getFullYear(),
+      d2.getMonth(),
+      d2.getDate() - days
+    ).getTime(),
+    priorUntilMs: bounds.sinceMs,
+    label
+  };
+}
 
 // src/server/skillEfficiency.ts
 import fs2 from "node:fs";
@@ -18826,8 +18842,169 @@ function mergeFileTouches(lists) {
 function rowActivityMs(row) {
   return row.endedAtMs > 0 ? row.endedAtMs : row.startedAtMs;
 }
+var CONTEXT_CLIFF_TOKENS = 2e5, CONTEXT_COMPACTION_TOKENS = 256e3, COMPACTION_CACHE_MISS_CAUSE = "Context compaction or prefix reset";
+function emptyContextHealth() {
+  return {
+    measuredChatCount: 0,
+    avgPeakContextTokens: 0,
+    maxPeakContextTokens: 0,
+    under200kCount: 0,
+    under200kRatio: 0,
+    cliff200kChats: 0,
+    compaction256kChats: 0,
+    compactionEventCount: 0
+  };
+}
+function computeContextHealth(chats, compactionEventCount) {
+  let measured = chats.filter(
+    (c) => c.hasTokenTelemetry && c.peakContextTokens > 0
+  );
+  if (measured.length === 0)
+    return {
+      ...emptyContextHealth(),
+      compactionEventCount
+    };
+  let peakSum = 0, maxPeakContextTokens = 0, under200kCount = 0, cliff200kChats = 0, compaction256kChats = 0;
+  for (let chat of measured) {
+    let peak = chat.peakContextTokens;
+    peakSum += peak, peak > maxPeakContextTokens && (maxPeakContextTokens = peak), peak < CONTEXT_CLIFF_TOKENS ? under200kCount += 1 : (cliff200kChats += 1, peak >= CONTEXT_COMPACTION_TOKENS && (compaction256kChats += 1));
+  }
+  return {
+    measuredChatCount: measured.length,
+    avgPeakContextTokens: Math.round(peakSum / measured.length),
+    maxPeakContextTokens,
+    under200kCount,
+    under200kRatio: under200kCount / measured.length,
+    cliff200kChats,
+    compaction256kChats,
+    compactionEventCount
+  };
+}
+function countCompactionEvents(steps) {
+  let count = 0;
+  for (let ps of steps)
+    ps.isCacheMiss && ps.cacheMissCause === COMPACTION_CACHE_MISS_CAUSE && (count += 1);
+  return count;
+}
+function computeProjectActiveMs(steps, tools, fallbackTopActiveMsList) {
+  let activeIntervals = [];
+  for (let ps of steps)
+    if (ps.createdAtMs > 0 && ps.modelDurationMs > 0) {
+      let end = ps.completedAtMs && ps.completedAtMs >= ps.createdAtMs ? ps.completedAtMs : ps.createdAtMs + ps.modelDurationMs;
+      activeIntervals.push({ start: ps.createdAtMs, end });
+    }
+  for (let tc of tools)
+    if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
+      let end = Math.max(
+        tc.startedAtMs,
+        tc.completedAtMs ?? tc.startedAtMs + tc.durationMs
+      );
+      activeIntervals.push({ start: tc.startedAtMs, end });
+    }
+  let mergedProjectWallMs = mergeIntervalsWallMs(activeIntervals), fallbackTopActiveMs = fallbackTopActiveMsList.reduce((s, v2) => s + v2, 0);
+  return mergedProjectWallMs > 0 ? mergedProjectWallMs : fallbackTopActiveMs;
+}
 function matchesTimeRange(row, sinceMs) {
   return sinceMs === null ? !0 : rowActivityMs(row) >= sinceMs;
+}
+function matchesPriorTimeRange(row, priorSinceMs, priorUntilMs) {
+  let ts = rowActivityMs(row);
+  return ts >= priorSinceMs && ts < priorUntilMs;
+}
+function pctDelta(curr, prev) {
+  return !Number.isFinite(curr) || !Number.isFinite(prev) || prev <= 0 ? null : (curr - prev) / prev;
+}
+function computePriorProjectMetrics(db, projectRows, pricingRules) {
+  let rowIds = new Set(projectRows.map((r2) => r2.conversationId)), topLevel = projectRows.filter(
+    (r2) => !r2.parentConversationId || !rowIds.has(r2.parentConversationId)
+  ), subagents = projectRows.filter(
+    (r2) => !!(r2.parentConversationId && rowIds.has(r2.parentConversationId))
+  ), topTimeSource = topLevel.length > 0 ? topLevel : projectRows, allSteps = [], allTools = [], inputTokens = 0, cacheReadTokens = 0, outputTokens = 0, hasTokenTelemetry = !1;
+  for (let r2 of projectRows) {
+    let steps = db.getPlannerStepsForConversation(r2.conversationId), tools = db.getToolCallsForConversation(r2.conversationId);
+    allSteps.push(...steps), allTools.push(...tools), inputTokens += r2.inputTokens, cacheReadTokens += r2.cacheReadTokens, outputTokens += r2.outputTokens, r2.hasTokenTelemetry && (hasTokenTelemetry = !0);
+  }
+  let activeMs = computeProjectActiveMs(
+    allSteps,
+    allTools,
+    topTimeSource.map((r2) => r2.activeMs)
+  ), cost = aggregateCosts(allSteps, pricingRules);
+  return {
+    chatCount: topLevel.length,
+    subagentCount: subagents.length,
+    inputTokens,
+    cacheReadTokens,
+    outputTokens,
+    hasTokenTelemetry,
+    activeMs,
+    estimatedCostUsd: cost.estimatedCostUsd,
+    unpricedModels: cost.unpricedModels,
+    compactionEventCount: countCompactionEvents(allSteps)
+  };
+}
+function buildPeriodComparison(bounds, current, priorRowsByProject, db, pricingRules) {
+  let priorBounds = computePriorTimeRangeBounds(bounds);
+  if (!priorBounds) return null;
+  let allPriorRows = [];
+  for (let rows of priorRowsByProject.values())
+    allPriorRows.push(...rows);
+  if (allPriorRows.length === 0)
+    return {
+      label: priorBounds.label,
+      priorSinceMs: priorBounds.priorSinceMs,
+      priorUntilMs: priorBounds.priorUntilMs,
+      hasPriorActivity: !1,
+      priorChatCount: 0,
+      priorSubagentCount: 0,
+      priorTotalTokens: 0,
+      priorCacheHitRatio: 0,
+      priorActiveMs: 0,
+      priorEstimatedCostUsd: null,
+      priorAvgPeakContextTokens: 0,
+      priorMeasuredChatCount: 0,
+      chatsDeltaPct: null,
+      tokensDeltaPct: null,
+      cacheHitDeltaPp: null,
+      activeMsDeltaPct: null,
+      costDeltaPct: null,
+      avgPeakContextDeltaPct: null
+    };
+  let priorChatCount = 0, priorSubagentCount = 0, priorInputTokens = 0, priorCacheReadTokens = 0, priorOutputTokens = 0, priorHasTokenTelemetry = !1, priorActiveMs = 0, priorCostSum = 0, priorAnyPriced = !1, priorUnpricedSet = /* @__PURE__ */ new Set(), priorCompactionEvents = 0;
+  for (let rows of priorRowsByProject.values()) {
+    if (rows.length === 0) continue;
+    let pm = computePriorProjectMetrics(db, rows, pricingRules);
+    priorChatCount += pm.chatCount, priorSubagentCount += pm.subagentCount, priorInputTokens += pm.inputTokens, priorCacheReadTokens += pm.cacheReadTokens, priorOutputTokens += pm.outputTokens, pm.hasTokenTelemetry && (priorHasTokenTelemetry = !0), priorActiveMs += pm.activeMs, pm.estimatedCostUsd !== null && (priorAnyPriced = !0, priorCostSum += pm.estimatedCostUsd);
+    for (let m2 of pm.unpricedModels)
+      priorUnpricedSet.add(m2);
+    priorCompactionEvents += pm.compactionEventCount;
+  }
+  let priorTotalTokens = priorInputTokens + priorCacheReadTokens + priorOutputTokens, priorDenom = priorInputTokens + priorCacheReadTokens, priorCacheHitRatio = priorDenom > 0 ? priorCacheReadTokens / priorDenom : 0, priorEstimatedCostUsd = priorAnyPriced ? priorCostSum : null, priorUnpricedModels = Array.from(priorUnpricedSet).sort(), priorContextHealth = computeContextHealth(
+    allPriorRows,
+    priorCompactionEvents
+  ), chatsDeltaPct = pctDelta(current.chatCount, priorChatCount), tokensDeltaPct = (current.hasTokenTelemetry || current.chatCount === 0) && priorHasTokenTelemetry ? pctDelta(current.totalTokens, priorTotalTokens) : null, cacheHitDeltaPp = current.hasTokenTelemetry && priorHasTokenTelemetry ? Math.round((current.cacheHitRatio - priorCacheHitRatio) * 100) : null, activeMsDeltaPct = pctDelta(current.activeMs, priorActiveMs), costDeltaPct = current.estimatedCostUsd !== null && priorEstimatedCostUsd !== null && current.unpricedModels.length === 0 && priorUnpricedModels.length === 0 ? pctDelta(current.estimatedCostUsd, priorEstimatedCostUsd) : null, avgPeakContextDeltaPct = current.contextHealth.measuredChatCount > 0 && priorContextHealth.measuredChatCount > 0 ? pctDelta(
+    current.contextHealth.avgPeakContextTokens,
+    priorContextHealth.avgPeakContextTokens
+  ) : null;
+  return {
+    label: priorBounds.label,
+    priorSinceMs: priorBounds.priorSinceMs,
+    priorUntilMs: priorBounds.priorUntilMs,
+    hasPriorActivity: !0,
+    priorChatCount,
+    priorSubagentCount,
+    priorTotalTokens,
+    priorCacheHitRatio,
+    priorActiveMs,
+    priorEstimatedCostUsd,
+    priorAvgPeakContextTokens: priorContextHealth.avgPeakContextTokens,
+    priorMeasuredChatCount: priorContextHealth.measuredChatCount,
+    chatsDeltaPct,
+    tokensDeltaPct,
+    cacheHitDeltaPp,
+    activeMsDeltaPct,
+    costDeltaPct,
+    avgPeakContextDeltaPct
+  };
 }
 function emptyTokenSummary() {
   return {
@@ -18854,13 +19031,22 @@ function emptyTimeSummary() {
     wallClockMs: 0
   };
 }
-function buildProjectDetail(db, projectPath, options) {
-  let bounds = resolveTimeRangeBounds(options), allProjectRows = db.getAllConversationRecords().filter((r2) => r2.projectPath === projectPath);
+function buildProjectDetail(db, projectPath, options, internalOpts) {
+  let bounds = resolveTimeRangeBounds(options), allProjectRows = (internalOpts?.allRows ?? db.getAllConversationRecords()).filter((r2) => r2.projectPath === projectPath);
   if (allProjectRows.length === 0) return null;
   let projectRows = allProjectRows.filter(
     (r2) => matchesTimeRange(r2, bounds.sinceMs)
-  );
-  if (projectRows.length === 0)
+  ), pricingRules = db.getPricingRules(), includePeriodComparison = internalOpts?.includePeriodComparison !== !1, computeProjectPeriodComparison = (current) => {
+    if (!includePeriodComparison) return null;
+    let priorBounds = computePriorTimeRangeBounds(bounds);
+    if (!priorBounds) return null;
+    let priorRows = allProjectRows.filter(
+      (r2) => matchesPriorTimeRange(r2, priorBounds.priorSinceMs, priorBounds.priorUntilMs)
+    ), priorMap = /* @__PURE__ */ new Map();
+    return priorRows.length > 0 && priorMap.set(projectPath, priorRows), buildPeriodComparison(bounds, current, priorMap, db, pricingRules);
+  };
+  if (projectRows.length === 0) {
+    let emptyCtxHealth = emptyContextHealth(), emptyTokens = emptyTokenSummary();
     return {
       summary: {
         projectPath,
@@ -18876,8 +19062,9 @@ function buildProjectDetail(db, projectPath, options) {
         topTools: [],
         mcpServers: [],
         slashCommands: [],
-        tokens: emptyTokenSummary(),
+        tokens: emptyTokens,
         time: emptyTimeSummary(),
+        contextHealth: emptyCtxHealth,
         errorCount: 0
       },
       chats: [],
@@ -18891,9 +19078,20 @@ function buildProjectDetail(db, projectPath, options) {
         untilMs: bounds.untilMs,
         firstActivityMs: 0,
         lastActivityMs: 0
-      }
+      },
+      periodComparison: computeProjectPeriodComparison({
+        chatCount: 0,
+        totalTokens: 0,
+        cacheHitRatio: 0,
+        hasTokenTelemetry: !1,
+        activeMs: 0,
+        estimatedCostUsd: emptyTokens.estimatedCostUsd,
+        unpricedModels: emptyTokens.unpricedModels,
+        contextHealth: emptyCtxHealth
+      })
     };
-  let pricingRules = db.getPricingRules(), rowIds = new Set(projectRows.map((r2) => r2.conversationId)), summaries = [], effInputs = [], allSteps = [], allTools = [];
+  }
+  let rowIds = new Set(projectRows.map((r2) => r2.conversationId)), summaries = [], effInputs = [], allSteps = [], allTools = [];
   for (let r2 of projectRows) {
     let steps = db.getPlannerStepsForConversation(r2.conversationId), tools = db.getToolCallsForConversation(r2.conversationId), turns = db.getTurnsForConversation(r2.conversationId), children = projectRows.filter(
       (c) => c.parentConversationId === r2.conversationId
@@ -18923,21 +19121,11 @@ function buildProjectDetail(db, projectPath, options) {
     (s) => !s.parentConversationId || !rowIds.has(s.parentConversationId)
   ), subagents = summaries.filter(
     (s) => s.parentConversationId && rowIds.has(s.parentConversationId)
-  ), topTimeSource = topLevel.length > 0 ? topLevel : summaries, activeIntervals = [];
-  for (let ps of allSteps)
-    if (ps.createdAtMs > 0 && ps.modelDurationMs > 0) {
-      let end = ps.completedAtMs && ps.completedAtMs >= ps.createdAtMs ? ps.completedAtMs : ps.createdAtMs + ps.modelDurationMs;
-      activeIntervals.push({ start: ps.createdAtMs, end });
-    }
-  for (let tc of allTools)
-    if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
-      let end = Math.max(
-        tc.startedAtMs,
-        tc.completedAtMs ?? tc.startedAtMs + tc.durationMs
-      );
-      activeIntervals.push({ start: tc.startedAtMs, end });
-    }
-  let mergedProjectWallMs = mergeIntervalsWallMs(activeIntervals), fallbackTopActiveMs = topTimeSource.reduce((s, c) => s + c.time.activeMs, 0), activeMs = mergedProjectWallMs > 0 ? mergedProjectWallMs : fallbackTopActiveMs, skillToolMetrics = aggregateSkillToolMetrics(
+  ), topTimeSource = topLevel.length > 0 ? topLevel : summaries, activeMs = computeProjectActiveMs(
+    allSteps,
+    allTools,
+    topTimeSource.map((c) => c.time.activeMs)
+  ), skillToolMetrics = aggregateSkillToolMetrics(
     allTools,
     allSteps,
     pricingRules
@@ -18968,29 +19156,42 @@ function buildProjectDetail(db, projectPath, options) {
     subagentMs,
     userIdleMs,
     wallClockMs
-  }, tokens = mergeTokenSummaries(summaries.map((s) => s.tokens)), errorCount = summaries.reduce((s, c) => s + c.errorCount, 0), diagnostics = projectRows.flatMap((r2) => (projEff.diagnosticsByConv.get(r2.conversationId) ?? r2.diagnostics).map((d2) => ({
+  }, tokens = mergeTokenSummaries(summaries.map((s) => s.tokens)), errorCount = summaries.reduce((s, c) => s + c.errorCount, 0), compactionEventCount = countCompactionEvents(allSteps), contextHealth = computeContextHealth(
+    summaries.map((s) => s.tokens),
+    compactionEventCount
+  ), diagnostics = projectRows.flatMap((r2) => (projEff.diagnosticsByConv.get(r2.conversationId) ?? r2.diagnostics).map((d2) => ({
     ...d2,
     citation: `${r2.title.slice(0, 32)} \xB7 ${d2.citation}`
-  }))).sort((a, b) => (b.impactTokens ?? 0) - (a.impactTokens ?? 0)).slice(0, 12);
+  }))).sort((a, b) => (b.impactTokens ?? 0) - (a.impactTokens ?? 0)).slice(0, 12), summary = {
+    projectPath,
+    projectName: projectDisplayName(projectPath),
+    chatCount: topLevel.length,
+    subagentCount: subagents.length,
+    firstActivityMs,
+    lastActivityMs,
+    models,
+    modelBreakdown,
+    topSkills,
+    topPluginsSkills,
+    topTools,
+    mcpServers,
+    slashCommands,
+    tokens,
+    time: time3,
+    contextHealth,
+    errorCount
+  }, periodComparison = computeProjectPeriodComparison({
+    chatCount: topLevel.length,
+    totalTokens: tokens.inputTokens + tokens.cacheReadTokens + tokens.outputTokens,
+    cacheHitRatio: tokens.cacheHitRatio,
+    hasTokenTelemetry: tokens.hasTokenTelemetry,
+    activeMs,
+    estimatedCostUsd: tokens.estimatedCostUsd,
+    unpricedModels: tokens.unpricedModels,
+    contextHealth
+  });
   return {
-    summary: {
-      projectPath,
-      projectName: projectDisplayName(projectPath),
-      chatCount: topLevel.length,
-      subagentCount: subagents.length,
-      firstActivityMs,
-      lastActivityMs,
-      models,
-      modelBreakdown,
-      topSkills,
-      topPluginsSkills,
-      topTools,
-      mcpServers,
-      slashCommands,
-      tokens,
-      time: time3,
-      errorCount
-    },
+    summary,
     chats: summaries.sort((a, b) => b.endedAtMs - a.endedAtMs),
     skillToolMetrics,
     pluginSkillMetrics,
@@ -19002,18 +19203,22 @@ function buildProjectDetail(db, projectPath, options) {
       untilMs: bounds.untilMs,
       firstActivityMs,
       lastActivityMs
-    }
+    },
+    periodComparison
   };
 }
 function buildDashboardData(db, options) {
-  let bounds = resolveTimeRangeBounds(options), allRows = db.getAllConversationRecords().filter((r2) => matchesTimeRange(r2, bounds.sinceMs)), pricingRules = db.getPricingRules(), byProject = /* @__PURE__ */ new Map();
+  let bounds = resolveTimeRangeBounds(options), allDbRows = db.getAllConversationRecords(), allRows = allDbRows.filter((r2) => matchesTimeRange(r2, bounds.sinceMs)), pricingRules = db.getPricingRules(), byProject = /* @__PURE__ */ new Map();
   for (let r2 of allRows) {
     let arr = byProject.get(r2.projectPath) ?? [];
     arr.push(r2), byProject.set(r2.projectPath, arr);
   }
   let projectDetails = [];
   for (let projectPath of byProject.keys()) {
-    let detail = buildProjectDetail(db, projectPath, bounds);
+    let detail = buildProjectDetail(db, projectPath, bounds, {
+      includePeriodComparison: !1,
+      allRows: allDbRows
+    });
     detail && detail.chats.length > 0 && projectDetails.push(detail);
   }
   let projects = projectDetails.map((d2) => d2.summary).sort((a, b) => b.lastActivityMs - a.lastActivityMs), positiveFirsts = projects.map((p2) => p2.firstActivityMs).filter((x) => x > 0), firstActivityMs = positiveFirsts.length > 0 ? Math.min(...positiveFirsts) : 0, lastActivityMs = projects.reduce(
@@ -19021,7 +19226,42 @@ function buildDashboardData(db, options) {
     0
   ), totalsTokens = projects.length > 0 ? mergeTokenSummaries(projects.map((p2) => p2.tokens)) : emptyTokenSummary(), totalsModelBreakdown = mergeModelBreakdowns(
     projects.map((p2) => p2.modelBreakdown)
-  ), totalActiveMs = projects.reduce((s, p2) => s + p2.time.activeMs, 0), pluginSkillMetrics = mergePluginSkillMetrics(
+  ), totalActiveMs = projects.reduce((s, p2) => s + p2.time.activeMs, 0), totalChatCount = projects.reduce((s, p2) => s + p2.chatCount, 0), totalSubagentCount = projects.reduce((s, p2) => s + p2.subagentCount, 0), totalCompactionEvents = projects.reduce(
+    (sum, p2) => sum + p2.contextHealth.compactionEventCount,
+    0
+  ), totalsContextHealth = computeContextHealth(
+    projectDetails.flatMap((d2) => d2.chats.map((c) => c.tokens)),
+    totalCompactionEvents
+  ), priorBounds = computePriorTimeRangeBounds(bounds), periodComparison = null;
+  if (priorBounds) {
+    let priorRowsByProject = /* @__PURE__ */ new Map();
+    for (let r2 of allDbRows)
+      if (matchesPriorTimeRange(
+        r2,
+        priorBounds.priorSinceMs,
+        priorBounds.priorUntilMs
+      )) {
+        let arr = priorRowsByProject.get(r2.projectPath) ?? [];
+        arr.push(r2), priorRowsByProject.set(r2.projectPath, arr);
+      }
+    periodComparison = buildPeriodComparison(
+      bounds,
+      {
+        chatCount: totalChatCount,
+        totalTokens: totalsTokens.inputTokens + totalsTokens.cacheReadTokens + totalsTokens.outputTokens,
+        cacheHitRatio: totalsTokens.cacheHitRatio,
+        hasTokenTelemetry: totalsTokens.hasTokenTelemetry,
+        activeMs: totalActiveMs,
+        estimatedCostUsd: totalsTokens.estimatedCostUsd,
+        unpricedModels: totalsTokens.unpricedModels,
+        contextHealth: totalsContextHealth
+      },
+      priorRowsByProject,
+      db,
+      pricingRules
+    );
+  }
+  let pluginSkillMetrics = mergePluginSkillMetrics(
     projectDetails.map((d2) => ({
       projectPath: d2.summary.projectPath,
       metrics: d2.pluginSkillMetrics
@@ -19053,13 +19293,14 @@ function buildDashboardData(db, options) {
       firstActivityMs,
       lastActivityMs
     },
+    periodComparison,
     totals: {
       projectCount: projects.length,
-      chatCount: projects.reduce((s, p2) => s + p2.chatCount, 0),
-      subagentCount: projects.reduce((s, p2) => s + p2.subagentCount, 0),
+      chatCount: totalChatCount,
+      subagentCount: totalSubagentCount,
       tokens: totalsTokens,
       time: {
-        activeMs: projects.reduce((s, p2) => s + p2.time.activeMs, 0),
+        activeMs: totalActiveMs,
         modelMs: projects.reduce((s, p2) => s + p2.time.modelMs, 0),
         toolWallMs: totalToolWall,
         toolSumMs: totalToolSum,
@@ -19068,6 +19309,7 @@ function buildDashboardData(db, options) {
         userIdleMs: projects.reduce((s, p2) => s + p2.time.userIdleMs, 0),
         wallClockMs: projects.reduce((s, p2) => s + p2.time.wallClockMs, 0)
       },
+      contextHealth: totalsContextHealth,
       errorCount: projects.reduce((s, p2) => s + p2.errorCount, 0),
       modelBreakdown: totalsModelBreakdown
     },
@@ -26023,6 +26265,32 @@ function fmtCost(usd, unpriced) {
   let base = `$${usd.toFixed(usd < 0.1 ? 4 : 2)} est.`;
   return unpriced.length > 0 ? `${base} (+ ${unpriced.length} unpriced model)` : base;
 }
+function fmtContextHealth(ch) {
+  if (ch.measuredChatCount === 0) return null;
+  let underPct = Math.round(ch.under200kRatio * 100);
+  return ch.cliff200kChats === 0 && ch.compactionEventCount === 0 ? `${fmtK(ch.avgPeakContextTokens)} avg peak (${underPct}% <200k, max ${fmtK(ch.maxPeakContextTokens)})` : `${fmtK(ch.avgPeakContextTokens)} avg peak (${underPct}% <200k, ${ch.cliff200kChats} \u2265200k, ${ch.compaction256kChats} \u2265256k, ${ch.compactionEventCount} reset${ch.compactionEventCount === 1 ? "" : "s"})`;
+}
+function fmtSignedPct(ratio) {
+  if (ratio === null || !Number.isFinite(ratio)) return null;
+  let pct = Math.round(ratio * 100);
+  return pct > 999 ? ">+999%" : pct < -999 ? "<-999%" : pct > 0 ? `+${pct}%` : `${pct}%`;
+}
+function fmtPeriodComparison(cmp) {
+  if (!cmp || !cmp.hasPriorActivity) return null;
+  let parts = [], chats = fmtSignedPct(cmp.chatsDeltaPct);
+  chats && parts.push(`${chats} chats`);
+  let tokens = fmtSignedPct(cmp.tokensDeltaPct);
+  if (tokens && parts.push(`${tokens} tokens`), cmp.cacheHitDeltaPp !== null && Math.round(cmp.cacheHitDeltaPp) !== 0) {
+    let pp = Math.round(cmp.cacheHitDeltaPp);
+    parts.push(`${pp > 0 ? "+" : ""}${pp}pp cache`);
+  }
+  let active = fmtSignedPct(cmp.activeMsDeltaPct);
+  active && parts.push(`${active} active`);
+  let cost = fmtSignedPct(cmp.costDeltaPct);
+  cost && parts.push(`${cost} cost`);
+  let avgPeak = fmtSignedPct(cmp.avgPeakContextDeltaPct);
+  return avgPeak && parts.push(`${avgPeak} avg peak`), parts.length > 0 ? `${cmp.label}: ${parts.join(", ")}` : null;
+}
 function fmtModelMix(breakdown, maxItems = 4) {
   if (breakdown.length === 0) return "unknown";
   let hasTokens = breakdown.some((m2) => m2.totalTokens > 0), sorted = [...breakdown].sort(
@@ -26151,9 +26419,9 @@ function createTrackerMcpServer(ctx) {
           projects: slimProjects,
           recentChats: dashboard.recentChats.slice(0, 20)
         }
-      }, globalMix = dashboard.totals.modelBreakdown.length > 0 ? `, model mix: ${fmtModelMix(dashboard.totals.modelBreakdown, 4)}` : "";
+      }, globalMix = dashboard.totals.modelBreakdown.length > 0 ? `, model mix: ${fmtModelMix(dashboard.totals.modelBreakdown, 4)}` : "", ctxSummary = fmtContextHealth(dashboard.totals.contextHealth), cmpSummary = fmtPeriodComparison(dashboard.periodComparison);
       return {
-        content: [{ type: "text", text: `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${globalMix}.` }],
+        content: [{ type: "text", text: `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.` }],
         structuredContent: structured
       };
     }
@@ -26175,18 +26443,24 @@ function createTrackerMcpServer(ctx) {
 
 Most Token-Hungry Plugins & Skills (All Projects):
 ${fmtPluginSkillLines(dash.pluginSkillMetrics, !0).join(`
+`)}` : "", ctxSummary = fmtContextHealth(dash.totals.contextHealth), cmpSummary = fmtPeriodComparison(dash.periodComparison), metaSummary = [
+        ...ctxSummary ? [`Context Health: ${ctxSummary}`] : [],
+        ...cmpSummary ? [`Period Trend: ${cmpSummary}`] : []
+      ], metaHeader = metaSummary.length > 0 ? `
+${metaSummary.join(`
 `)}` : "";
       return {
         content: [
           {
             type: "text",
-            text: list.length > 0 ? `Tracked Projects (${dash.projects.length} total):
+            text: list.length > 0 ? `Tracked Projects (${dash.projects.length} total):${metaHeader}
 ${lines.join(`
 `)}${pluginSection}` : "No projects found in Antigravity transcripts yet."
           }
         ],
         structuredContent: {
           totals: dash.totals,
+          periodComparison: dash.periodComparison,
           projects: list,
           pluginSkillMetrics: dash.pluginSkillMetrics
         }
@@ -26221,7 +26495,7 @@ ${lines.join(`
         (m2) => `  - ${m2.category} \`${m2.name}\`: ${m2.calls} calls, ${fmtDur(m2.totalDurationMs)}, +${fmtK(m2.directTokens)} direct / +${fmtK(m2.compoundedCacheTokens)} cache carry`
       ), topChats = detail.chats.slice(0, 10).map(
         (c) => `  - \`${c.conversationId}\` "${c.title}": ${c.tokens.hasTokenTelemetry ? `${fmtK(c.tokens.inputTokens + c.tokens.cacheReadTokens + c.tokens.outputTokens)} tok (${Math.round(c.tokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"}, ${fmtDur(c.time.activeMs)} active`
-      );
+      ), ctxSummary = fmtContextHealth(s.contextHealth), cmpSummary = fmtPeriodComparison(detail.periodComparison);
       return {
         content: [{ type: "text", text: [
           `# Project: ${s.projectName} (\`${s.projectPath}\`)`,
@@ -26230,6 +26504,8 @@ ${lines.join(`
           "- **Model Breakdown**:",
           ...fmtModelBreakdownLines(s.modelBreakdown, !0),
           `- **Tokens**: ${s.tokens.hasTokenTelemetry ? `${fmtK(totalTok)} total (${fmtK(s.tokens.inputTokens)} new input, ${fmtK(s.tokens.cacheReadTokens)} cache read [${Math.round(s.tokens.cacheHitRatio * 100)}% hit], ${fmtK(s.tokens.outputTokens)} output), peak context ${fmtK(s.tokens.peakContextTokens)}` : "N/A (legacy transcripts without token counters)"}`,
+          ...ctxSummary ? [`- **Context Health**: ${ctxSummary}`] : [],
+          ...cmpSummary ? [`- **Period Trend**: ${cmpSummary}`] : [],
           `- **Estimated Cost**: ${fmtCost(s.tokens.estimatedCostUsd, s.tokens.unpricedModels)}`,
           `- **Time**: ${fmtDur(s.time.activeMs)} active (${fmtDur(s.time.modelMs)} model, ${fmtDur(s.time.toolWallMs)} tools @ ${s.time.parallelismFactor}x parallel, ${fmtDur(s.time.subagentMs)} subagents), ${fmtDur(s.time.userIdleMs)} user idle excluded`,
           ...detail.pluginSkillMetrics.length > 0 ? [
@@ -26245,6 +26521,7 @@ ${lines.join(`
 `) }],
         structuredContent: {
           summary: detail.summary,
+          periodComparison: detail.periodComparison,
           chats: detail.chats.slice(0, 25),
           pluginSkillMetrics: detail.pluginSkillMetrics,
           skillToolMetrics: detail.skillToolMetrics.slice(0, 25),

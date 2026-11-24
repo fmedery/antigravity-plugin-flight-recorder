@@ -297,6 +297,38 @@ export interface ConversationDetail {
   scopeActiveMs?: number;
 }
 
+export interface ContextHealthSummary {
+  measuredChatCount: number;
+  avgPeakContextTokens: number;
+  maxPeakContextTokens: number;
+  under200kCount: number;
+  under200kRatio: number;
+  cliff200kChats: number;
+  compaction256kChats: number;
+  compactionEventCount: number;
+}
+
+export interface PeriodComparison {
+  label: string;
+  priorSinceMs: number;
+  priorUntilMs: number;
+  hasPriorActivity: boolean;
+  priorChatCount: number;
+  priorSubagentCount: number;
+  priorTotalTokens: number;
+  priorCacheHitRatio: number;
+  priorActiveMs: number;
+  priorEstimatedCostUsd: number | null;
+  priorAvgPeakContextTokens: number;
+  priorMeasuredChatCount: number;
+  chatsDeltaPct: number | null;
+  tokensDeltaPct: number | null;
+  cacheHitDeltaPp: number | null;
+  activeMsDeltaPct: number | null;
+  costDeltaPct: number | null;
+  avgPeakContextDeltaPct: number | null;
+}
+
 export interface ProjectSummary {
   projectPath: string;
   projectName: string;
@@ -313,6 +345,7 @@ export interface ProjectSummary {
   slashCommands: string[];
   tokens: TokenSummary;
   time: TimeSummary;
+  contextHealth: ContextHealthSummary;
   errorCount: number;
 }
 
@@ -334,17 +367,20 @@ export interface ProjectDetail {
   filesTouched: FileTouchRecord[];
   diagnostics: DiagnosticFinding[];
   timeRange: TimeRangeWindow;
+  periodComparison: PeriodComparison | null;
 }
 
 export interface DashboardData {
   generatedAtMs: number;
   timeRange: TimeRangeWindow;
+  periodComparison: PeriodComparison | null;
   totals: {
     projectCount: number;
     chatCount: number;
     subagentCount: number;
     tokens: TokenSummary;
     time: TimeSummary;
+    contextHealth: ContextHealthSummary;
     errorCount: number;
     modelBreakdown: ModelUsageMetric[];
   };

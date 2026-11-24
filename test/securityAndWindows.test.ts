@@ -128,6 +128,7 @@ test("Windows AGY project inference, transcript path extraction, .exe/.cmd plugi
     "tokensAndCache",
     "activeAgentTime",
     "userWaitIdle",
+    "contextHealth",
     "estCost"
   ] as const) {
     assert.ok(KPI_HELP_COPY[key].meaning.length > 20, `Missing meaning for ${key}`);
@@ -139,6 +140,8 @@ test("Windows AGY project inference, transcript path extraction, .exe/.cmd plugi
   assert.match(KPI_HELP_COPY.cacheHitRatio.meaning, /output.*excluded/i);
   assert.match(KPI_HELP_COPY.cacheHitRatio.impact, /75[–-]90%/);
   assert.match(KPI_HELP_COPY.cacheHitRatio.impact, /TTL|compaction/i);
+  assert.match(KPI_HELP_COPY.contextHealth.meaning, /200k/i);
+  assert.match(KPI_HELP_COPY.contextHealth.impact, /compaction/i);
 
   // Windows plugin CLI (.exe / .cmd) + multi-dir builtin discovery + Windows transcript paths
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fr-win-test-"));

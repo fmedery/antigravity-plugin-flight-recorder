@@ -9,9 +9,11 @@ import path from "node:path";
 import { z } from "zod";
 import { pathBaseName, sameLocalPath, unwrapFileUri } from "../shared/paths.js";
 import type {
+  ContextHealthSummary,
   DiagnosticFinding,
   ModelPricingRule,
   ModelUsageMetric,
+  PeriodComparison,
   PluginSkillMetric
 } from "../shared/types.js";
 import {
@@ -72,6 +74,43 @@ function fmtCost(usd: number | null, unpriced: string[]): string {
   }
   const base = `$${usd.toFixed(usd < 0.1 ? 4 : 2)} est.`;
   return unpriced.length > 0 ? `${base} (+ ${unpriced.length} unpriced model)` : base;
+}
+
+function fmtContextHealth(ch: ContextHealthSummary): string | null {
+  if (ch.measuredChatCount === 0) return null;
+  const underPct = Math.round(ch.under200kRatio * 100);
+  if (ch.cliff200kChats === 0 && ch.compactionEventCount === 0) {
+    return `${fmtK(ch.avgPeakContextTokens)} avg peak (${underPct}% <200k, max ${fmtK(ch.maxPeakContextTokens)})`;
+  }
+  return `${fmtK(ch.avgPeakContextTokens)} avg peak (${underPct}% <200k, ${ch.cliff200kChats} ≥200k, ${ch.compaction256kChats} ≥256k, ${ch.compactionEventCount} reset${ch.compactionEventCount === 1 ? "" : "s"})`;
+}
+
+function fmtSignedPct(ratio: number | null): string | null {
+  if (ratio === null || !Number.isFinite(ratio)) return null;
+  const pct = Math.round(ratio * 100);
+  if (pct > 999) return ">+999%";
+  if (pct < -999) return "<-999%";
+  return pct > 0 ? `+${pct}%` : `${pct}%`;
+}
+
+function fmtPeriodComparison(cmp: PeriodComparison | null): string | null {
+  if (!cmp || !cmp.hasPriorActivity) return null;
+  const parts: string[] = [];
+  const chats = fmtSignedPct(cmp.chatsDeltaPct);
+  if (chats) parts.push(`${chats} chats`);
+  const tokens = fmtSignedPct(cmp.tokensDeltaPct);
+  if (tokens) parts.push(`${tokens} tokens`);
+  if (cmp.cacheHitDeltaPp !== null && Math.round(cmp.cacheHitDeltaPp) !== 0) {
+    const pp = Math.round(cmp.cacheHitDeltaPp);
+    parts.push(`${pp > 0 ? "+" : ""}${pp}pp cache`);
+  }
+  const active = fmtSignedPct(cmp.activeMsDeltaPct);
+  if (active) parts.push(`${active} active`);
+  const cost = fmtSignedPct(cmp.costDeltaPct);
+  if (cost) parts.push(`${cost} cost`);
+  const avgPeak = fmtSignedPct(cmp.avgPeakContextDeltaPct);
+  if (avgPeak) parts.push(`${avgPeak} avg peak`);
+  return parts.length > 0 ? `${cmp.label}: ${parts.join(", ")}` : null;
 }
 
 function fmtModelMix(breakdown: ModelUsageMetric[], maxItems = 4): string {
@@ -289,7 +328,9 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         dashboard.totals.modelBreakdown.length > 0
           ? `, model mix: ${fmtModelMix(dashboard.totals.modelBreakdown, 4)}`
           : "";
-      const summaryText = `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${globalMix}.`;
+      const ctxSummary = fmtContextHealth(dashboard.totals.contextHealth);
+      const cmpSummary = fmtPeriodComparison(dashboard.periodComparison);
+      const summaryText = `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.`;
 
       return {
         content: [{ type: "text", text: summaryText }],
@@ -324,6 +365,13 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         dash.pluginSkillMetrics.length > 0
           ? `\n\nMost Token-Hungry Plugins & Skills (All Projects):\n${fmtPluginSkillLines(dash.pluginSkillMetrics, true).join("\n")}`
           : "";
+      const ctxSummary = fmtContextHealth(dash.totals.contextHealth);
+      const cmpSummary = fmtPeriodComparison(dash.periodComparison);
+      const metaSummary = [
+        ...(ctxSummary ? [`Context Health: ${ctxSummary}`] : []),
+        ...(cmpSummary ? [`Period Trend: ${cmpSummary}`] : [])
+      ];
+      const metaHeader = metaSummary.length > 0 ? `\n${metaSummary.join("\n")}` : "";
 
       return {
         content: [
@@ -331,12 +379,13 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
             type: "text",
             text:
               list.length > 0
-                ? `Tracked Projects (${dash.projects.length} total):\n${lines.join("\n")}${pluginSection}`
+                ? `Tracked Projects (${dash.projects.length} total):${metaHeader}\n${lines.join("\n")}${pluginSection}`
                 : "No projects found in Antigravity transcripts yet."
           }
         ],
         structuredContent: {
           totals: dash.totals,
+          periodComparison: dash.periodComparison,
           projects: list,
           pluginSkillMetrics: dash.pluginSkillMetrics
         }
@@ -386,6 +435,8 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           `  - \`${c.conversationId}\` "${c.title}": ${c.tokens.hasTokenTelemetry ? `${fmtK(c.tokens.inputTokens + c.tokens.cacheReadTokens + c.tokens.outputTokens)} tok (${Math.round(c.tokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"}, ${fmtDur(c.time.activeMs)} active`
       );
 
+      const ctxSummary = fmtContextHealth(s.contextHealth);
+      const cmpSummary = fmtPeriodComparison(detail.periodComparison);
       const text = [
         `# Project: ${s.projectName} (\`${s.projectPath}\`)`,
         `- **Chats**: ${s.chatCount} top-level, ${s.subagentCount} subagents`,
@@ -393,6 +444,8 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         `- **Model Breakdown**:`,
         ...fmtModelBreakdownLines(s.modelBreakdown, true),
         `- **Tokens**: ${s.tokens.hasTokenTelemetry ? `${fmtK(totalTok)} total (${fmtK(s.tokens.inputTokens)} new input, ${fmtK(s.tokens.cacheReadTokens)} cache read [${Math.round(s.tokens.cacheHitRatio * 100)}% hit], ${fmtK(s.tokens.outputTokens)} output), peak context ${fmtK(s.tokens.peakContextTokens)}` : "N/A (legacy transcripts without token counters)"}`,
+        ...(ctxSummary ? [`- **Context Health**: ${ctxSummary}`] : []),
+        ...(cmpSummary ? [`- **Period Trend**: ${cmpSummary}`] : []),
         `- **Estimated Cost**: ${fmtCost(s.tokens.estimatedCostUsd, s.tokens.unpricedModels)}`,
         `- **Time**: ${fmtDur(s.time.activeMs)} active (${fmtDur(s.time.modelMs)} model, ${fmtDur(s.time.toolWallMs)} tools @ ${s.time.parallelismFactor}x parallel, ${fmtDur(s.time.subagentMs)} subagents), ${fmtDur(s.time.userIdleMs)} user idle excluded`,
         ...(detail.pluginSkillMetrics.length > 0
@@ -412,6 +465,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         content: [{ type: "text", text }],
         structuredContent: {
           summary: detail.summary,
+          periodComparison: detail.periodComparison,
           chats: detail.chats.slice(0, 25),
           pluginSkillMetrics: detail.pluginSkillMetrics,
           skillToolMetrics: detail.skillToolMetrics.slice(0, 25),

@@ -7,10 +7,12 @@ import {
 } from "../shared/pricing.js";
 import { pathBaseName } from "../shared/paths.js";
 import {
+  computePriorTimeRangeBounds,
   resolveTimeRangeBounds,
   type TimeRangeQuery
 } from "../shared/timeRange.js";
 import type {
+  ContextHealthSummary,
   ConversationDetail,
   ConversationSummary,
   DiagnosticFinding,
@@ -18,6 +20,7 @@ import type {
   ModelPricingRule,
   ModelSwitchEvent,
   ModelUsageMetric,
+  PeriodComparison,
   PlannerStepRecord,
   PluginSkillMetric,
   ProjectDetail,
@@ -1693,11 +1696,349 @@ function rowActivityMs(row: StoredConversationRow): number {
   return row.endedAtMs > 0 ? row.endedAtMs : row.startedAtMs;
 }
 
+export const CONTEXT_CLIFF_TOKENS = 200_000;
+export const CONTEXT_COMPACTION_TOKENS = 256_000;
+const COMPACTION_CACHE_MISS_CAUSE = "Context compaction or prefix reset";
+
+export function emptyContextHealth(): ContextHealthSummary {
+  return {
+    measuredChatCount: 0,
+    avgPeakContextTokens: 0,
+    maxPeakContextTokens: 0,
+    under200kCount: 0,
+    under200kRatio: 0,
+    cliff200kChats: 0,
+    compaction256kChats: 0,
+    compactionEventCount: 0
+  };
+}
+
+export function computeContextHealth(
+  chats: Array<{ hasTokenTelemetry: boolean; peakContextTokens: number }>,
+  compactionEventCount: number
+): ContextHealthSummary {
+  const measured = chats.filter(
+    (c) => c.hasTokenTelemetry && c.peakContextTokens > 0
+  );
+  if (measured.length === 0) {
+    return {
+      ...emptyContextHealth(),
+      compactionEventCount
+    };
+  }
+
+  let peakSum = 0;
+  let maxPeakContextTokens = 0;
+  let under200kCount = 0;
+  let cliff200kChats = 0;
+  let compaction256kChats = 0;
+
+  for (const chat of measured) {
+    const peak = chat.peakContextTokens;
+    peakSum += peak;
+    if (peak > maxPeakContextTokens) {
+      maxPeakContextTokens = peak;
+    }
+    if (peak < CONTEXT_CLIFF_TOKENS) {
+      under200kCount += 1;
+    } else {
+      cliff200kChats += 1;
+      if (peak >= CONTEXT_COMPACTION_TOKENS) {
+        compaction256kChats += 1;
+      }
+    }
+  }
+
+  return {
+    measuredChatCount: measured.length,
+    avgPeakContextTokens: Math.round(peakSum / measured.length),
+    maxPeakContextTokens,
+    under200kCount,
+    under200kRatio: under200kCount / measured.length,
+    cliff200kChats,
+    compaction256kChats,
+    compactionEventCount
+  };
+}
+
+function countCompactionEvents(
+  steps: Array<Pick<PlannerStepRecord, "isCacheMiss" | "cacheMissCause">>
+): number {
+  let count = 0;
+  for (const ps of steps) {
+    if (ps.isCacheMiss && ps.cacheMissCause === COMPACTION_CACHE_MISS_CAUSE) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function computeProjectActiveMs(
+  steps: Array<Pick<PlannerStepRecord, "createdAtMs" | "completedAtMs" | "modelDurationMs">>,
+  tools: Array<Pick<ToolCallRecord, "startedAtMs" | "completedAtMs" | "durationMs">>,
+  fallbackTopActiveMsList: number[]
+): number {
+  const activeIntervals: Interval[] = [];
+  for (const ps of steps) {
+    if (ps.createdAtMs > 0 && ps.modelDurationMs > 0) {
+      const end =
+        ps.completedAtMs && ps.completedAtMs >= ps.createdAtMs
+          ? ps.completedAtMs
+          : ps.createdAtMs + ps.modelDurationMs;
+      activeIntervals.push({ start: ps.createdAtMs, end });
+    }
+  }
+  for (const tc of tools) {
+    if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
+      const end = Math.max(
+        tc.startedAtMs,
+        tc.completedAtMs ?? tc.startedAtMs + tc.durationMs
+      );
+      activeIntervals.push({ start: tc.startedAtMs, end });
+    }
+  }
+  const mergedProjectWallMs = mergeIntervalsWallMs(activeIntervals);
+  const fallbackTopActiveMs = fallbackTopActiveMsList.reduce((s, v) => s + v, 0);
+  return mergedProjectWallMs > 0 ? mergedProjectWallMs : fallbackTopActiveMs;
+}
+
 function matchesTimeRange(
   row: StoredConversationRow,
   sinceMs: number | null
 ): boolean {
   return sinceMs === null ? true : rowActivityMs(row) >= sinceMs;
+}
+
+function matchesPriorTimeRange(
+  row: StoredConversationRow,
+  priorSinceMs: number,
+  priorUntilMs: number
+): boolean {
+  const ts = rowActivityMs(row);
+  return ts >= priorSinceMs && ts < priorUntilMs;
+}
+
+function pctDelta(curr: number, prev: number): number | null {
+  if (!Number.isFinite(curr) || !Number.isFinite(prev) || prev <= 0) {
+    return null;
+  }
+  return (curr - prev) / prev;
+}
+
+interface PriorProjectMetrics {
+  chatCount: number;
+  subagentCount: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  hasTokenTelemetry: boolean;
+  activeMs: number;
+  estimatedCostUsd: number | null;
+  unpricedModels: string[];
+  compactionEventCount: number;
+}
+
+function computePriorProjectMetrics(
+  db: TrackerDatabase,
+  projectRows: StoredConversationRow[],
+  pricingRules: ModelPricingRule[]
+): PriorProjectMetrics {
+  const rowIds = new Set(projectRows.map((r) => r.conversationId));
+  const topLevel = projectRows.filter(
+    (r) => !r.parentConversationId || !rowIds.has(r.parentConversationId)
+  );
+  const subagents = projectRows.filter(
+    (r) => Boolean(r.parentConversationId && rowIds.has(r.parentConversationId))
+  );
+  const topTimeSource = topLevel.length > 0 ? topLevel : projectRows;
+
+  const allSteps: Array<Omit<PlannerStepRecord, "estimatedCostUsd">> = [];
+  const allTools: ToolCallRecord[] = [];
+  let inputTokens = 0;
+  let cacheReadTokens = 0;
+  let outputTokens = 0;
+  let hasTokenTelemetry = false;
+
+  for (const r of projectRows) {
+    const steps = db.getPlannerStepsForConversation(r.conversationId);
+    const tools = db.getToolCallsForConversation(r.conversationId);
+    allSteps.push(...steps);
+    allTools.push(...tools);
+    inputTokens += r.inputTokens;
+    cacheReadTokens += r.cacheReadTokens;
+    outputTokens += r.outputTokens;
+    if (r.hasTokenTelemetry) {
+      hasTokenTelemetry = true;
+    }
+  }
+
+  const activeMs = computeProjectActiveMs(
+    allSteps,
+    allTools,
+    topTimeSource.map((r) => r.activeMs)
+  );
+  const cost = aggregateCosts(allSteps, pricingRules);
+
+  return {
+    chatCount: topLevel.length,
+    subagentCount: subagents.length,
+    inputTokens,
+    cacheReadTokens,
+    outputTokens,
+    hasTokenTelemetry,
+    activeMs,
+    estimatedCostUsd: cost.estimatedCostUsd,
+    unpricedModels: cost.unpricedModels,
+    compactionEventCount: countCompactionEvents(allSteps)
+  };
+}
+
+interface CurrentComparisonInputs {
+  chatCount: number;
+  totalTokens: number;
+  cacheHitRatio: number;
+  hasTokenTelemetry: boolean;
+  activeMs: number;
+  estimatedCostUsd: number | null;
+  unpricedModels: string[];
+  contextHealth: ContextHealthSummary;
+}
+
+function buildPeriodComparison(
+  bounds: {
+    preset: "today" | "7d" | "30d" | "all";
+    sinceMs: number | null;
+    untilMs: number;
+  },
+  current: CurrentComparisonInputs,
+  priorRowsByProject: Map<string, StoredConversationRow[]>,
+  db: TrackerDatabase,
+  pricingRules: ModelPricingRule[]
+): PeriodComparison | null {
+  const priorBounds = computePriorTimeRangeBounds(bounds);
+  if (!priorBounds) return null;
+
+  const allPriorRows: StoredConversationRow[] = [];
+  for (const rows of priorRowsByProject.values()) {
+    allPriorRows.push(...rows);
+  }
+
+  if (allPriorRows.length === 0) {
+    return {
+      label: priorBounds.label,
+      priorSinceMs: priorBounds.priorSinceMs,
+      priorUntilMs: priorBounds.priorUntilMs,
+      hasPriorActivity: false,
+      priorChatCount: 0,
+      priorSubagentCount: 0,
+      priorTotalTokens: 0,
+      priorCacheHitRatio: 0,
+      priorActiveMs: 0,
+      priorEstimatedCostUsd: null,
+      priorAvgPeakContextTokens: 0,
+      priorMeasuredChatCount: 0,
+      chatsDeltaPct: null,
+      tokensDeltaPct: null,
+      cacheHitDeltaPp: null,
+      activeMsDeltaPct: null,
+      costDeltaPct: null,
+      avgPeakContextDeltaPct: null
+    };
+  }
+
+  let priorChatCount = 0;
+  let priorSubagentCount = 0;
+  let priorInputTokens = 0;
+  let priorCacheReadTokens = 0;
+  let priorOutputTokens = 0;
+  let priorHasTokenTelemetry = false;
+  let priorActiveMs = 0;
+  let priorCostSum = 0;
+  let priorAnyPriced = false;
+  const priorUnpricedSet = new Set<string>();
+  let priorCompactionEvents = 0;
+
+  for (const rows of priorRowsByProject.values()) {
+    if (rows.length === 0) continue;
+    const pm = computePriorProjectMetrics(db, rows, pricingRules);
+    priorChatCount += pm.chatCount;
+    priorSubagentCount += pm.subagentCount;
+    priorInputTokens += pm.inputTokens;
+    priorCacheReadTokens += pm.cacheReadTokens;
+    priorOutputTokens += pm.outputTokens;
+    if (pm.hasTokenTelemetry) {
+      priorHasTokenTelemetry = true;
+    }
+    priorActiveMs += pm.activeMs;
+    if (pm.estimatedCostUsd !== null) {
+      priorAnyPriced = true;
+      priorCostSum += pm.estimatedCostUsd;
+    }
+    for (const m of pm.unpricedModels) {
+      priorUnpricedSet.add(m);
+    }
+    priorCompactionEvents += pm.compactionEventCount;
+  }
+
+  const priorTotalTokens =
+    priorInputTokens + priorCacheReadTokens + priorOutputTokens;
+  const priorDenom = priorInputTokens + priorCacheReadTokens;
+  const priorCacheHitRatio =
+    priorDenom > 0 ? priorCacheReadTokens / priorDenom : 0;
+  const priorEstimatedCostUsd = priorAnyPriced ? priorCostSum : null;
+  const priorUnpricedModels = Array.from(priorUnpricedSet).sort();
+  const priorContextHealth = computeContextHealth(
+    allPriorRows,
+    priorCompactionEvents
+  );
+
+  const chatsDeltaPct = pctDelta(current.chatCount, priorChatCount);
+  const tokensDeltaPct =
+    (current.hasTokenTelemetry || current.chatCount === 0) &&
+    priorHasTokenTelemetry
+      ? pctDelta(current.totalTokens, priorTotalTokens)
+      : null;
+  const cacheHitDeltaPp =
+    current.hasTokenTelemetry && priorHasTokenTelemetry
+      ? Math.round((current.cacheHitRatio - priorCacheHitRatio) * 100)
+      : null;
+  const activeMsDeltaPct = pctDelta(current.activeMs, priorActiveMs);
+  const costDeltaPct =
+    current.estimatedCostUsd !== null &&
+    priorEstimatedCostUsd !== null &&
+    current.unpricedModels.length === 0 &&
+    priorUnpricedModels.length === 0
+      ? pctDelta(current.estimatedCostUsd, priorEstimatedCostUsd)
+      : null;
+  const avgPeakContextDeltaPct =
+    current.contextHealth.measuredChatCount > 0 &&
+    priorContextHealth.measuredChatCount > 0
+      ? pctDelta(
+          current.contextHealth.avgPeakContextTokens,
+          priorContextHealth.avgPeakContextTokens
+        )
+      : null;
+
+  return {
+    label: priorBounds.label,
+    priorSinceMs: priorBounds.priorSinceMs,
+    priorUntilMs: priorBounds.priorUntilMs,
+    hasPriorActivity: true,
+    priorChatCount,
+    priorSubagentCount,
+    priorTotalTokens,
+    priorCacheHitRatio,
+    priorActiveMs,
+    priorEstimatedCostUsd,
+    priorAvgPeakContextTokens: priorContextHealth.avgPeakContextTokens,
+    priorMeasuredChatCount: priorContextHealth.measuredChatCount,
+    chatsDeltaPct,
+    tokensDeltaPct,
+    cacheHitDeltaPp,
+    activeMsDeltaPct,
+    costDeltaPct,
+    avgPeakContextDeltaPct
+  };
 }
 
 function emptyTokenSummary(): TokenSummary {
@@ -1730,18 +2071,42 @@ function emptyTimeSummary(): TimeSummary {
 export function buildProjectDetail(
   db: TrackerDatabase,
   projectPath: string,
-  options?: TimeRangeQuery
+  options?: TimeRangeQuery,
+  internalOpts?: {
+    includePeriodComparison?: boolean;
+    allRows?: StoredConversationRow[];
+  }
 ): ProjectDetail | null {
   const bounds = resolveTimeRangeBounds(options);
-  const allRows = db.getAllConversationRecords();
+  const allRows = internalOpts?.allRows ?? db.getAllConversationRecords();
   const allProjectRows = allRows.filter((r) => r.projectPath === projectPath);
   if (allProjectRows.length === 0) return null;
 
   const projectRows = allProjectRows.filter((r) =>
     matchesTimeRange(r, bounds.sinceMs)
   );
+  const pricingRules = db.getPricingRules();
+  const includePeriodComparison = internalOpts?.includePeriodComparison !== false;
+
+  const computeProjectPeriodComparison = (
+    current: CurrentComparisonInputs
+  ): PeriodComparison | null => {
+    if (!includePeriodComparison) return null;
+    const priorBounds = computePriorTimeRangeBounds(bounds);
+    if (!priorBounds) return null;
+    const priorRows = allProjectRows.filter((r) =>
+      matchesPriorTimeRange(r, priorBounds.priorSinceMs, priorBounds.priorUntilMs)
+    );
+    const priorMap = new Map<string, StoredConversationRow[]>();
+    if (priorRows.length > 0) {
+      priorMap.set(projectPath, priorRows);
+    }
+    return buildPeriodComparison(bounds, current, priorMap, db, pricingRules);
+  };
 
   if (projectRows.length === 0) {
+    const emptyCtxHealth = emptyContextHealth();
+    const emptyTokens = emptyTokenSummary();
     return {
       summary: {
         projectPath,
@@ -1757,8 +2122,9 @@ export function buildProjectDetail(
         topTools: [],
         mcpServers: [],
         slashCommands: [],
-        tokens: emptyTokenSummary(),
+        tokens: emptyTokens,
         time: emptyTimeSummary(),
+        contextHealth: emptyCtxHealth,
         errorCount: 0
       },
       chats: [],
@@ -1772,11 +2138,20 @@ export function buildProjectDetail(
         untilMs: bounds.untilMs,
         firstActivityMs: 0,
         lastActivityMs: 0
-      }
+      },
+      periodComparison: computeProjectPeriodComparison({
+        chatCount: 0,
+        totalTokens: 0,
+        cacheHitRatio: 0,
+        hasTokenTelemetry: false,
+        activeMs: 0,
+        estimatedCostUsd: emptyTokens.estimatedCostUsd,
+        unpricedModels: emptyTokens.unpricedModels,
+        contextHealth: emptyCtxHealth
+      })
     };
   }
 
-  const pricingRules = db.getPricingRules();
   const rowIds = new Set(projectRows.map((r) => r.conversationId));
 
   const summaries: ConversationSummary[] = [];
@@ -1828,28 +2203,11 @@ export function buildProjectDetail(
   );
 
   const topTimeSource = topLevel.length > 0 ? topLevel : summaries;
-  const activeIntervals: Interval[] = [];
-  for (const ps of allSteps) {
-    if (ps.createdAtMs > 0 && ps.modelDurationMs > 0) {
-      const end =
-        ps.completedAtMs && ps.completedAtMs >= ps.createdAtMs
-          ? ps.completedAtMs
-          : ps.createdAtMs + ps.modelDurationMs;
-      activeIntervals.push({ start: ps.createdAtMs, end });
-    }
-  }
-  for (const tc of allTools) {
-    if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
-      const end = Math.max(
-        tc.startedAtMs,
-        tc.completedAtMs ?? tc.startedAtMs + tc.durationMs
-      );
-      activeIntervals.push({ start: tc.startedAtMs, end });
-    }
-  }
-  const mergedProjectWallMs = mergeIntervalsWallMs(activeIntervals);
-  const fallbackTopActiveMs = topTimeSource.reduce((s, c) => s + c.time.activeMs, 0);
-  const activeMs = mergedProjectWallMs > 0 ? mergedProjectWallMs : fallbackTopActiveMs;
+  const activeMs = computeProjectActiveMs(
+    allSteps,
+    allTools,
+    topTimeSource.map((c) => c.time.activeMs)
+  );
 
   const skillToolMetrics = aggregateSkillToolMetrics(
     allTools,
@@ -1930,6 +2288,11 @@ export function buildProjectDetail(
 
   const tokens = mergeTokenSummaries(summaries.map((s) => s.tokens));
   const errorCount = summaries.reduce((s, c) => s + c.errorCount, 0);
+  const compactionEventCount = countCompactionEvents(allSteps);
+  const contextHealth = computeContextHealth(
+    summaries.map((s) => s.tokens),
+    compactionEventCount
+  );
 
   const diagnostics = projectRows
     .flatMap((r) => {
@@ -1958,8 +2321,20 @@ export function buildProjectDetail(
     slashCommands,
     tokens,
     time,
+    contextHealth,
     errorCount
   };
+
+  const periodComparison = computeProjectPeriodComparison({
+    chatCount: topLevel.length,
+    totalTokens: tokens.inputTokens + tokens.cacheReadTokens + tokens.outputTokens,
+    cacheHitRatio: tokens.cacheHitRatio,
+    hasTokenTelemetry: tokens.hasTokenTelemetry,
+    activeMs,
+    estimatedCostUsd: tokens.estimatedCostUsd,
+    unpricedModels: tokens.unpricedModels,
+    contextHealth
+  });
 
   return {
     summary,
@@ -1974,7 +2349,8 @@ export function buildProjectDetail(
       untilMs: bounds.untilMs,
       firstActivityMs,
       lastActivityMs
-    }
+    },
+    periodComparison
   };
 }
 
@@ -1983,9 +2359,8 @@ export function buildDashboardData(
   options?: TimeRangeQuery
 ): DashboardData {
   const bounds = resolveTimeRangeBounds(options);
-  const allRows = db
-    .getAllConversationRecords()
-    .filter((r) => matchesTimeRange(r, bounds.sinceMs));
+  const allDbRows = db.getAllConversationRecords();
+  const allRows = allDbRows.filter((r) => matchesTimeRange(r, bounds.sinceMs));
   const pricingRules = db.getPricingRules();
 
   const byProject = new Map<string, StoredConversationRow[]>();
@@ -1997,7 +2372,10 @@ export function buildDashboardData(
 
   const projectDetails: ProjectDetail[] = [];
   for (const projectPath of byProject.keys()) {
-    const detail = buildProjectDetail(db, projectPath, bounds);
+    const detail = buildProjectDetail(db, projectPath, bounds, {
+      includePeriodComparison: false,
+      allRows: allDbRows
+    });
     if (detail && detail.chats.length > 0) projectDetails.push(detail);
   }
   const projects = projectDetails
@@ -2022,6 +2400,54 @@ export function buildDashboardData(
     projects.map((p) => p.modelBreakdown)
   );
   const totalActiveMs = projects.reduce((s, p) => s + p.time.activeMs, 0);
+  const totalChatCount = projects.reduce((s, p) => s + p.chatCount, 0);
+  const totalSubagentCount = projects.reduce((s, p) => s + p.subagentCount, 0);
+  const totalCompactionEvents = projects.reduce(
+    (sum, p) => sum + p.contextHealth.compactionEventCount,
+    0
+  );
+  const totalsContextHealth = computeContextHealth(
+    projectDetails.flatMap((d) => d.chats.map((c) => c.tokens)),
+    totalCompactionEvents
+  );
+
+  const priorBounds = computePriorTimeRangeBounds(bounds);
+  let periodComparison: PeriodComparison | null = null;
+  if (priorBounds) {
+    const priorRowsByProject = new Map<string, StoredConversationRow[]>();
+    for (const r of allDbRows) {
+      if (
+        matchesPriorTimeRange(
+          r,
+          priorBounds.priorSinceMs,
+          priorBounds.priorUntilMs
+        )
+      ) {
+        const arr = priorRowsByProject.get(r.projectPath) ?? [];
+        arr.push(r);
+        priorRowsByProject.set(r.projectPath, arr);
+      }
+    }
+    periodComparison = buildPeriodComparison(
+      bounds,
+      {
+        chatCount: totalChatCount,
+        totalTokens:
+          totalsTokens.inputTokens +
+          totalsTokens.cacheReadTokens +
+          totalsTokens.outputTokens,
+        cacheHitRatio: totalsTokens.cacheHitRatio,
+        hasTokenTelemetry: totalsTokens.hasTokenTelemetry,
+        activeMs: totalActiveMs,
+        estimatedCostUsd: totalsTokens.estimatedCostUsd,
+        unpricedModels: totalsTokens.unpricedModels,
+        contextHealth: totalsContextHealth
+      },
+      priorRowsByProject,
+      db,
+      pricingRules
+    );
+  }
 
   const pluginSkillMetrics = mergePluginSkillMetrics(
     projectDetails.map((d) => ({
@@ -2064,13 +2490,14 @@ export function buildDashboardData(
       firstActivityMs,
       lastActivityMs
     },
+    periodComparison,
     totals: {
       projectCount: projects.length,
-      chatCount: projects.reduce((s, p) => s + p.chatCount, 0),
-      subagentCount: projects.reduce((s, p) => s + p.subagentCount, 0),
+      chatCount: totalChatCount,
+      subagentCount: totalSubagentCount,
       tokens: totalsTokens,
       time: {
-        activeMs: projects.reduce((s, p) => s + p.time.activeMs, 0),
+        activeMs: totalActiveMs,
         modelMs: projects.reduce((s, p) => s + p.time.modelMs, 0),
         toolWallMs: totalToolWall,
         toolSumMs: totalToolSum,
@@ -2082,6 +2509,7 @@ export function buildDashboardData(
         userIdleMs: projects.reduce((s, p) => s + p.time.userIdleMs, 0),
         wallClockMs: projects.reduce((s, p) => s + p.time.wallClockMs, 0)
       },
+      contextHealth: totalsContextHealth,
       errorCount: projects.reduce((s, p) => s + p.errorCount, 0),
       modelBreakdown: totalsModelBreakdown
     },

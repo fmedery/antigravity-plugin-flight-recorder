@@ -30,6 +30,42 @@ export function fmtPct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
 }
 
+export type DeltaPolarity = "lower-is-better" | "higher-is-better" | "neutral";
+
+export function fmtDeltaPct(ratio: number | null): string | null {
+  if (ratio === null || !Number.isFinite(ratio)) return null;
+  const pct = Math.round(ratio * 100);
+  if (pct > 999) return ">+999%";
+  if (pct < -999) return "<-999%";
+  if (pct === 0) return "0%";
+  return pct > 0 ? `+${pct}%` : `${pct}%`;
+}
+
+export function fmtDeltaPp(pp: number | null): string | null {
+  if (pp === null || !Number.isFinite(pp)) return null;
+  const rounded = Math.round(pp);
+  if (rounded === 0) return null;
+  return rounded > 0 ? `+${rounded}pp` : `${rounded}pp`;
+}
+
+export function deltaBadgeTone(
+  delta: number | null,
+  direction: DeltaPolarity
+): "success" | "warning" | "neutral" {
+  if (
+    delta === null ||
+    !Number.isFinite(delta) ||
+    direction === "neutral" ||
+    Math.abs(delta) < 0.005
+  ) {
+    return "neutral";
+  }
+  if (direction === "lower-is-better") {
+    return delta < 0 ? "success" : "warning";
+  }
+  return delta > 0 ? "success" : "warning";
+}
+
 export function fmtUsd(usd: number | null): string {
   if (usd === null || !Number.isFinite(usd)) return "Unpriced";
   if (usd === 0) return "$0.00";
@@ -143,6 +179,7 @@ export type KpiHelpKey =
   | "tokensAndCache"
   | "activeAgentTime"
   | "userWaitIdle"
+  | "contextHealth"
   | "estCost";
 
 export interface KpiHelpEntry {
@@ -200,6 +237,13 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
       "Elapsed time between turns or during permission/review pauses when no model step or tool was actively running.",
     impact:
       "Kept separate from Active Agent Time so your pauses never skew agent speed metrics, though idle gaps longer than ~4–5 minutes can expire the prompt cache and cause a cache miss on your next message."
+  },
+  contextHealth: {
+    title: "Context & Compaction Health",
+    meaning:
+      "Average peak single-step context size across sessions with token telemetry, the percentage staying under the 200k cliff, counts of sessions crossing 200k or 256k, and compaction or prefix-reset cache misses.",
+    impact:
+      "Keeping peak context below 200k preserves model recall and avoids forced compaction and full-rate cache re-reads. High peak context points to noisy skills, large file reads, or long threads that should be trimmed or delegated to subagents."
   },
   estCost: {
     title: "Estimated API Equivalent Cost",

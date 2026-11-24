@@ -14,6 +14,7 @@ import {
   buildProjectDetail,
   clearInstalledPluginsCache,
   clearProjectNameCache,
+  computeContextHealth,
   discoverInstalledPlugins,
   extractModelSwitches,
   formatDurationShort,
@@ -27,9 +28,16 @@ import type { ParsedTranscript } from "../src/server/transcriptParser.js";
 import { aggregateCosts, DEFAULT_PRICING_RULES } from "../src/shared/pricing.js";
 import {
   computeLocalPresetSinceMs,
+  computePriorTimeRangeBounds,
   resolveTimeRangeBounds
 } from "../src/shared/timeRange.js";
-import { fmtDateSpan, formatTimeRangeSummary } from "../src/ui/format.js";
+import {
+  deltaBadgeTone,
+  fmtDateSpan,
+  fmtDeltaPct,
+  fmtDeltaPp,
+  formatTimeRangeSummary
+} from "../src/ui/format.js";
 
 test("analyzeConversation attributes tokens, cache carry, cache misses, parallel time, and user idle", () => {
   const t0 = Date.parse("2026-11-21T21:00:00Z");
@@ -1693,6 +1701,496 @@ test("time-range helpers and dashboard/project filtering slice conversations acc
       false
     );
     assert.deepEqual(emptyAllSummary, { label: "All time", span: null });
+  } finally {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("computeContextHealth and ContextHealthSummary aggregate 200k cliffs, 256k compactions, resets, and legacy chats", () => {
+  const unitHealth = computeContextHealth(
+    [
+      { hasTokenTelemetry: true, peakContextTokens: 80_000 },
+      { hasTokenTelemetry: true, peakContextTokens: 210_000 },
+      { hasTokenTelemetry: true, peakContextTokens: 270_000 },
+      { hasTokenTelemetry: false, peakContextTokens: 999_000 },
+      { hasTokenTelemetry: true, peakContextTokens: 0 }
+    ],
+    2
+  );
+  assert.equal(unitHealth.measuredChatCount, 3);
+  assert.equal(unitHealth.avgPeakContextTokens, Math.round((80_000 + 210_000 + 270_000) / 3));
+  assert.equal(unitHealth.maxPeakContextTokens, 270_000);
+  assert.equal(unitHealth.under200kCount, 1);
+  assert.ok(Math.abs(unitHealth.under200kRatio - 1 / 3) < 1e-9);
+  assert.equal(unitHealth.cliff200kChats, 2);
+  assert.equal(unitHealth.compaction256kChats, 1);
+  assert.equal(unitHealth.compactionEventCount, 2);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr-ctx-health-"));
+  try {
+    const db = new TrackerDatabase(tmpDir);
+    const t0 = Date.parse("2026-11-23T10:00:00Z");
+
+    const addConv = (opts: {
+      id: string;
+      projectPath: string;
+      hasTokenTelemetry: boolean;
+      peakContextTokens: number;
+      compactionResets?: number;
+      ttlMisses?: number;
+    }) => {
+      const steps = [] as Array<{
+        stepIndex: number;
+        turnIndex: number;
+        model: string;
+        createdAtMs: number;
+        completedAtMs: number;
+        modelDurationMs: number;
+        thinkingChars: number;
+        contentChars: number;
+        inputTokens: number;
+        cacheReadTokens: number;
+        outputTokens: number;
+        totalContextTokens: number;
+        cacheHitRatio: number;
+        toolCallCount: number;
+        status: string;
+        attributedSummary: string;
+        isCacheMiss: boolean;
+        cacheMissCause: string | null;
+      }>;
+      let stepIdx = 1;
+      for (let i = 0; i < (opts.compactionResets ?? 0); i++) {
+        steps.push({
+          stepIndex: stepIdx++,
+          turnIndex: 0,
+          model: "gemini-2.5-pro",
+          createdAtMs: t0 + stepIdx * 1_000,
+          completedAtMs: t0 + stepIdx * 1_000 + 500,
+          modelDurationMs: 500,
+          thinkingChars: 10,
+          contentChars: 10,
+          inputTokens: opts.peakContextTokens,
+          cacheReadTokens: 0,
+          outputTokens: 50,
+          totalContextTokens: opts.peakContextTokens,
+          cacheHitRatio: 0,
+          toolCallCount: 0,
+          status: "DONE",
+          attributedSummary: "Compaction",
+          isCacheMiss: true,
+          cacheMissCause: "Context compaction or prefix reset"
+        });
+      }
+      for (let i = 0; i < (opts.ttlMisses ?? 0); i++) {
+        steps.push({
+          stepIndex: stepIdx++,
+          turnIndex: 1,
+          model: "gemini-2.5-pro",
+          createdAtMs: t0 + stepIdx * 1_000,
+          completedAtMs: t0 + stepIdx * 1_000 + 500,
+          modelDurationMs: 500,
+          thinkingChars: 10,
+          contentChars: 10,
+          inputTokens: 1_000,
+          cacheReadTokens: 0,
+          outputTokens: 50,
+          totalContextTokens: opts.peakContextTokens,
+          cacheHitRatio: 0,
+          toolCallCount: 0,
+          status: "DONE",
+          attributedSummary: "TTL",
+          isCacheMiss: true,
+          cacheMissCause: "Idle gap expired prompt cache TTL"
+        });
+      }
+      if (steps.length === 0) {
+        steps.push({
+          stepIndex: 1,
+          turnIndex: 0,
+          model: "gemini-2.5-pro",
+          createdAtMs: t0,
+          completedAtMs: t0 + 1_000,
+          modelDurationMs: 1_000,
+          thinkingChars: 10,
+          contentChars: 10,
+          inputTokens: opts.hasTokenTelemetry ? opts.peakContextTokens : 0,
+          cacheReadTokens: 0,
+          outputTokens: 50,
+          totalContextTokens: opts.hasTokenTelemetry ? opts.peakContextTokens : 0,
+          cacheHitRatio: 0,
+          toolCallCount: 0,
+          status: "DONE",
+          attributedSummary: "Work",
+          isCacheMiss: false,
+          cacheMissCause: null
+        });
+      }
+
+      db.upsertConversation({
+        conversationId: opts.id,
+        title: opts.id,
+        surface: "antigravity",
+        transcriptPath: `/tmp/${opts.id}.jsonl`,
+        projectPath: opts.projectPath,
+        projectSource: "hook",
+        parentConversationId: null,
+        subagentRole: null,
+        subagentType: null,
+        startedAtMs: t0,
+        endedAtMs: t0 + 5_000,
+        terminationReason: "stop",
+        models: ["gemini-2.5-pro"],
+        slashCommands: [],
+        skillsUsed: [],
+        hasLiveHooks: false,
+        hasTokenTelemetry: opts.hasTokenTelemetry,
+        inputTokens: opts.hasTokenTelemetry ? opts.peakContextTokens : 0,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        peakContextTokens: opts.peakContextTokens,
+        activeMs: 1_000,
+        modelMs: 1_000,
+        toolWallMs: 0,
+        toolSumMs: 0,
+        userIdleMs: 0,
+        wallClockMs: 5_000,
+        errorCount: 0,
+        turns: [],
+        plannerSteps: steps,
+        toolCalls: [],
+        diagnostics: [],
+        filesTouched: [],
+        indexedAtMs: t0 + 5_000
+      });
+    };
+
+    // Proj A: 1 healthy (<200k), 1 >=200k + 1 compaction reset + 1 TTL miss
+    addConv({
+      id: "ctx-a1",
+      projectPath: "/proj/ctx-a",
+      hasTokenTelemetry: true,
+      peakContextTokens: 100_000
+    });
+    addConv({
+      id: "ctx-a2",
+      projectPath: "/proj/ctx-a",
+      hasTokenTelemetry: true,
+      peakContextTokens: 220_000,
+      compactionResets: 1,
+      ttlMisses: 1
+    });
+    // Legacy chat should be excluded from measuredChatCount and avg
+    addConv({
+      id: "ctx-a-legacy",
+      projectPath: "/proj/ctx-a",
+      hasTokenTelemetry: false,
+      peakContextTokens: 0
+    });
+
+    // Proj B: 1 >=256k with 2 compaction resets
+    addConv({
+      id: "ctx-b1",
+      projectPath: "/proj/ctx-b",
+      hasTokenTelemetry: true,
+      peakContextTokens: 280_000,
+      compactionResets: 2
+    });
+
+    const projA = buildProjectDetail(db, "/proj/ctx-a");
+    assert.ok(projA);
+    assert.equal(projA.summary.contextHealth.measuredChatCount, 2);
+    assert.equal(projA.summary.contextHealth.avgPeakContextTokens, 160_000);
+    assert.equal(projA.summary.contextHealth.maxPeakContextTokens, 220_000);
+    assert.equal(projA.summary.contextHealth.under200kCount, 1);
+    assert.equal(projA.summary.contextHealth.under200kRatio, 0.5);
+    assert.equal(projA.summary.contextHealth.cliff200kChats, 1);
+    assert.equal(projA.summary.contextHealth.compaction256kChats, 0);
+    assert.equal(projA.summary.contextHealth.compactionEventCount, 1);
+
+    // Global totals should average across all 3 measured chats directly: (100k + 220k + 280k) / 3 = 200k
+    const dash = buildDashboardData(db);
+    assert.equal(dash.totals.contextHealth.measuredChatCount, 3);
+    assert.equal(dash.totals.contextHealth.avgPeakContextTokens, 200_000);
+    assert.equal(dash.totals.contextHealth.maxPeakContextTokens, 280_000);
+    assert.equal(dash.totals.contextHealth.under200kCount, 1);
+    assert.equal(dash.totals.contextHealth.cliff200kChats, 2);
+    assert.equal(dash.totals.contextHealth.compaction256kChats, 1);
+    assert.equal(dash.totals.contextHealth.compactionEventCount, 3);
+
+    db.close();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("computePriorTimeRangeBounds, buildDashboardData/buildProjectDetail periodComparison, and delta formatters handle window boundaries and edge cases", () => {
+  const refNow = new Date(2026, 10, 24, 15, 0, 0).getTime();
+  const todaySince = computeLocalPresetSinceMs("today", refNow)!;
+  const sevenSince = computeLocalPresetSinceMs("7d", refNow)!;
+  const thirtySince = computeLocalPresetSinceMs("30d", refNow)!;
+
+  assert.equal(
+    computePriorTimeRangeBounds({ preset: "all", sinceMs: null, untilMs: refNow }),
+    null
+  );
+
+  const priorToday = computePriorTimeRangeBounds({
+    preset: "today",
+    sinceMs: todaySince,
+    untilMs: refNow
+  });
+  assert.ok(priorToday);
+  assert.equal(priorToday.label, "vs yesterday");
+  assert.equal(priorToday.priorUntilMs, todaySince);
+  assert.equal(
+    priorToday.priorSinceMs,
+    new Date(2026, 10, 23, 0, 0, 0).getTime()
+  );
+
+  const prior7d = computePriorTimeRangeBounds({
+    preset: "7d",
+    sinceMs: sevenSince,
+    untilMs: refNow
+  });
+  assert.ok(prior7d);
+  assert.equal(prior7d.label, "vs prior 7d");
+  assert.equal(prior7d.priorUntilMs, sevenSince);
+
+  const prior30d = computePriorTimeRangeBounds({
+    preset: "30d",
+    sinceMs: thirtySince,
+    untilMs: refNow
+  });
+  assert.ok(prior30d);
+  assert.equal(prior30d.label, "vs prior 30d");
+  assert.equal(prior30d.priorUntilMs, thirtySince);
+
+  // UI delta formatter edge cases
+  assert.equal(fmtDeltaPct(null), null);
+  assert.equal(fmtDeltaPct(Number.NaN), null);
+  assert.equal(fmtDeltaPct(0), "0%");
+  assert.equal(fmtDeltaPct(0.134), "+13%");
+  assert.equal(fmtDeltaPct(-0.256), "-26%");
+  assert.equal(fmtDeltaPct(12.5), ">+999%");
+  assert.equal(fmtDeltaPct(-12.5), "<-999%");
+
+  assert.equal(fmtDeltaPp(null), null);
+  assert.equal(fmtDeltaPp(0.2), null);
+  assert.equal(fmtDeltaPp(6.4), "+6pp");
+  assert.equal(fmtDeltaPp(-4.6), "-5pp");
+
+  assert.equal(deltaBadgeTone(-0.1, "lower-is-better"), "success");
+  assert.equal(deltaBadgeTone(0.1, "lower-is-better"), "warning");
+  assert.equal(deltaBadgeTone(0.1, "higher-is-better"), "success");
+  assert.equal(deltaBadgeTone(-0.1, "higher-is-better"), "warning");
+  assert.equal(deltaBadgeTone(0.002, "lower-is-better"), "neutral");
+  assert.equal(deltaBadgeTone(0.5, "neutral"), "neutral");
+  assert.equal(deltaBadgeTone(null, "lower-is-better"), "neutral");
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr-period-cmp-"));
+  const db = new TrackerDatabase(tmpDir);
+  try {
+    const insertConv = (opts: {
+      id: string;
+      projectPath: string;
+      endedAtMs: number;
+      model: string;
+      inputTokens: number;
+      cacheReadTokens: number;
+      outputTokens: number;
+      peakContextTokens: number;
+      activeMs: number;
+    }) => {
+      const startMs = opts.endedAtMs - opts.activeMs;
+      const denom = opts.inputTokens + opts.cacheReadTokens;
+      db.upsertConversation({
+        conversationId: opts.id,
+        title: opts.id,
+        surface: "antigravity",
+        transcriptPath: `/tmp/${opts.id}.jsonl`,
+        projectPath: opts.projectPath,
+        projectSource: "hook",
+        parentConversationId: null,
+        subagentRole: null,
+        subagentType: null,
+        startedAtMs: startMs,
+        endedAtMs: opts.endedAtMs,
+        terminationReason: "stop",
+        models: [opts.model],
+        slashCommands: [],
+        skillsUsed: [],
+        hasLiveHooks: false,
+        hasTokenTelemetry: true,
+        inputTokens: opts.inputTokens,
+        cacheReadTokens: opts.cacheReadTokens,
+        outputTokens: opts.outputTokens,
+        peakContextTokens: opts.peakContextTokens,
+        activeMs: opts.activeMs,
+        modelMs: opts.activeMs,
+        toolWallMs: 0,
+        toolSumMs: 0,
+        userIdleMs: 0,
+        wallClockMs: opts.activeMs,
+        errorCount: 0,
+        turns: [],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: opts.model,
+            createdAtMs: startMs,
+            completedAtMs: opts.endedAtMs,
+            modelDurationMs: opts.activeMs,
+            thinkingChars: 100,
+            contentChars: 100,
+            inputTokens: opts.inputTokens,
+            cacheReadTokens: opts.cacheReadTokens,
+            outputTokens: opts.outputTokens,
+            totalContextTokens: opts.peakContextTokens,
+            cacheHitRatio: denom > 0 ? opts.cacheReadTokens / denom : 0,
+            toolCallCount: 0,
+            status: "DONE",
+            attributedSummary: "Work",
+            isCacheMiss: false,
+            cacheMissCause: null
+          }
+        ],
+        toolCalls: [],
+        diagnostics: [],
+        filesTouched: [],
+        indexedAtMs: opts.endedAtMs
+      });
+    };
+
+    // Boundary check: ends EXACTLY at todaySince -> belongs only to Today, NOT yesterday
+    insertConv({
+      id: "curr-boundary",
+      projectPath: "/proj/cmp-a",
+      endedAtMs: todaySince,
+      model: "gemini-2.5-pro",
+      inputTokens: 20_000,
+      cacheReadTokens: 80_000, // 80% cache hit
+      outputTokens: 1_000,
+      peakContextTokens: 100_000,
+      activeMs: 5_000
+    });
+    // Yesterday conversation in /proj/cmp-a
+    insertConv({
+      id: "prev-1",
+      projectPath: "/proj/cmp-a",
+      endedAtMs: todaySince - 3_600_000,
+      model: "gemini-2.5-pro",
+      inputTokens: 50_000,
+      cacheReadTokens: 150_000, // 75% cache hit
+      outputTokens: 2_000,
+      peakContextTokens: 200_000,
+      activeMs: 10_000
+    });
+    // /proj/cmp-b was active yesterday ONLY (dropped to 0 today -> -100% in ProjectDetail)
+    insertConv({
+      id: "prev-b-only",
+      projectPath: "/proj/cmp-b",
+      endedAtMs: todaySince - 7_200_000,
+      model: "gemini-2.5-pro",
+      inputTokens: 10_000,
+      cacheReadTokens: 10_000,
+      outputTokens: 500,
+      peakContextTokens: 50_000,
+      activeMs: 4_000
+    });
+    // /proj/cmp-unpriced has an unpriced model in prior window -> suppresses costDeltaPct
+    insertConv({
+      id: "curr-u",
+      projectPath: "/proj/cmp-unpriced",
+      endedAtMs: todaySince + 3_600_000,
+      model: "gemini-2.5-pro",
+      inputTokens: 10_000,
+      cacheReadTokens: 0,
+      outputTokens: 100,
+      peakContextTokens: 10_000,
+      activeMs: 2_000
+    });
+    insertConv({
+      id: "prev-u",
+      projectPath: "/proj/cmp-unpriced",
+      endedAtMs: todaySince - 1_000,
+      model: "custom-unknown-model-xyz",
+      inputTokens: 10_000,
+      cacheReadTokens: 0,
+      outputTokens: 100,
+      peakContextTokens: 10_000,
+      activeMs: 2_000
+    });
+
+    // 1. "all" preset returns null periodComparison
+    assert.equal(buildDashboardData(db, { preset: "all", untilMs: refNow }).periodComparison, null);
+    const projAll = buildProjectDetail(db, "/proj/cmp-a", { preset: "all", untilMs: refNow });
+    assert.ok(projAll);
+    assert.equal(projAll.periodComparison, null);
+
+    // 2. Project /proj/cmp-a Today vs yesterday (boundary not double-counted)
+    const projAToday = buildProjectDetail(db, "/proj/cmp-a", {
+      preset: "today",
+      sinceMs: todaySince,
+      untilMs: refNow
+    });
+    assert.ok(projAToday);
+    assert.ok(projAToday.periodComparison);
+    assert.equal(projAToday.periodComparison.hasPriorActivity, true);
+    assert.equal(projAToday.periodComparison.label, "vs yesterday");
+    assert.equal(projAToday.periodComparison.priorChatCount, 1);
+    assert.equal(projAToday.periodComparison.priorTotalTokens, 202_000);
+    assert.equal(projAToday.periodComparison.priorActiveMs, 10_000);
+    assert.equal(projAToday.periodComparison.priorAvgPeakContextTokens, 200_000);
+    assert.equal(projAToday.periodComparison.chatsDeltaPct, 0);
+    assert.ok(
+      Math.abs((projAToday.periodComparison.tokensDeltaPct ?? 0) - -0.5) < 1e-9
+    );
+    assert.equal(projAToday.periodComparison.cacheHitDeltaPp, 5); // 80% vs 75%
+    assert.ok(
+      Math.abs((projAToday.periodComparison.activeMsDeltaPct ?? 0) - -0.5) < 1e-9
+    );
+    assert.ok(
+      Math.abs((projAToday.periodComparison.avgPeakContextDeltaPct ?? 0) - -0.5) < 1e-9
+    );
+    assert.ok(projAToday.periodComparison.costDeltaPct !== null && projAToday.periodComparison.costDeltaPct < 0);
+
+    // 3. Project /proj/cmp-b Today: 0 chats today vs 1 yesterday -> -100% (-1)
+    const projBToday = buildProjectDetail(db, "/proj/cmp-b", {
+      preset: "today",
+      sinceMs: todaySince,
+      untilMs: refNow
+    });
+    assert.ok(projBToday?.periodComparison);
+    assert.equal(projBToday.periodComparison.hasPriorActivity, true);
+    assert.equal(projBToday.periodComparison.chatsDeltaPct, -1);
+    assert.equal(projBToday.periodComparison.tokensDeltaPct, -1);
+    assert.equal(projBToday.periodComparison.activeMsDeltaPct, -1);
+    assert.equal(projBToday.periodComparison.costDeltaPct, -1);
+    assert.equal(projBToday.periodComparison.cacheHitDeltaPp, null);
+    assert.equal(projBToday.periodComparison.avgPeakContextDeltaPct, null);
+
+    // 4. Unpriced model in prior suppresses costDeltaPct
+    const projUToday = buildProjectDetail(db, "/proj/cmp-unpriced", {
+      preset: "today",
+      sinceMs: todaySince,
+      untilMs: refNow
+    });
+    assert.ok(projUToday?.periodComparison);
+    assert.equal(projUToday.periodComparison.costDeltaPct, null);
+
+    // 5. Global dashboard periodComparison for 30d when prior 30d has no activity -> hasPriorActivity: false
+    const dash30d = buildDashboardData(db, {
+      preset: "30d",
+      sinceMs: thirtySince,
+      untilMs: refNow
+    });
+    assert.ok(dash30d.periodComparison);
+    assert.equal(dash30d.periodComparison.label, "vs prior 30d");
+    assert.equal(dash30d.periodComparison.hasPriorActivity, false);
+    assert.equal(dash30d.periodComparison.tokensDeltaPct, null);
   } finally {
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });

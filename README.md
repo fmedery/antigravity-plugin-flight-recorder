@@ -95,14 +95,14 @@ agy plugin install https://github.com/fmedery/antigravity-plugin-flight-recorder
 
 Navigate with the breadcrumb at the top (**All Projects / *project* / *chat***). Two global controls are always available:
 
-- **Time range** — `Today`, `7d`, `30d`, or `All time`; every view, KPI, and leaderboard is filtered to the selected window.
+- **Time range** — `Today`, `7d`, `30d`, or `All time`; every view, KPI, and leaderboard is filtered to the selected window, and `Today` / `7d` / `30d` display period-over-period delta pills (`vs yesterday`, `vs prior 7d`, `vs prior 30d`).
 - **Top-right buttons** — **Rescan** re-indexes transcripts and hook events on demand; **Pricing** opens per-model USD rates.
 
 Every KPI card has a **`?`** tip explaining what the metric means and why it matters.
 
 ### 1. All Projects (home)
 
-KPIs: **Projects**, **Total Tokens**, **Active Time**, **Est. Cost**.
+KPIs: **Projects**, **Total Tokens**, **Active Time**, **Context Health** (avg peak context, `% <200k`, `200k` cliff / `256k` compaction hits, and resets), **Est. Cost**.
 
 | Tab | What you get |
 |---|---|
@@ -112,7 +112,7 @@ KPIs: **Projects**, **Total Tokens**, **Active Time**, **Est. Cost**.
 
 ### 2. Project view
 
-KPIs: **Chats** (incl. subagents), **Total Tokens**, **Active Time**, **Est. Cost**.
+KPIs: **Chats** (incl. subagents), **Total Tokens**, **Active Time**, **Context Health**, **Est. Cost**.
 
 | Tab | What you get |
 |---|---|

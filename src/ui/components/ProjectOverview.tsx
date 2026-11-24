@@ -1,8 +1,10 @@
 import React, { useId, useMemo, useState } from "react";
 import { TIME_RANGE_PRESETS } from "../../shared/timeRange.js";
 import type {
+  ContextHealthSummary,
   ConversationSummary,
   DashboardData,
+  PeriodComparison,
   PluginSkillMetric,
   ProjectDetail,
   ProjectSummary,
@@ -10,8 +12,11 @@ import type {
   TimeRangeWindow
 } from "../../shared/types";
 import {
+  deltaBadgeTone,
   fmtBytes,
   fmtDateShort,
+  fmtDeltaPct,
+  fmtDeltaPp,
   fmtDuration,
   fmtK,
   fmtPct,
@@ -56,6 +61,195 @@ function fallbackProjectTimeRange(detail: ProjectDetail): TimeRangeWindow {
     untilMs: Date.now(),
     firstActivityMs: detail.summary.firstActivityMs,
     lastActivityMs: detail.summary.lastActivityMs
+  };
+}
+
+const EMPTY_CONTEXT_HEALTH: ContextHealthSummary = {
+  measuredChatCount: 0,
+  avgPeakContextTokens: 0,
+  maxPeakContextTokens: 0,
+  under200kCount: 0,
+  under200kRatio: 0,
+  cliff200kChats: 0,
+  compaction256kChats: 0,
+  compactionEventCount: 0
+};
+
+interface DeltaPillProps {
+  text: string | null;
+  tone: "success" | "warning" | "neutral";
+  tooltip?: string;
+}
+
+const DeltaPill: React.FC<DeltaPillProps> = ({ text, tone, tooltip }) => {
+  if (!text) return null;
+  return (
+    <span
+      className={`badge badge-${tone} kpi-delta-pill`}
+      title={tooltip}
+      aria-label={tooltip}
+    >
+      {text}
+    </span>
+  );
+};
+
+interface ContextHealthCardProps {
+  contextHealth?: ContextHealthSummary;
+  hasAnyChats: boolean;
+  periodComparison?: PeriodComparison | null;
+}
+
+const ContextHealthCard: React.FC<ContextHealthCardProps> = ({
+  contextHealth,
+  hasAnyChats,
+  periodComparison
+}) => {
+  const ch = contextHealth ?? EMPTY_CONTEXT_HEALTH;
+  const cmp = periodComparison?.hasPriorActivity ? periodComparison : null;
+  const deltaText = cmp ? fmtDeltaPct(cmp.avgPeakContextDeltaPct) : null;
+  const deltaTone = cmp
+    ? deltaBadgeTone(cmp.avgPeakContextDeltaPct, "lower-is-better")
+    : "neutral";
+  const deltaTooltip =
+    cmp && deltaText
+      ? `${deltaText} avg peak context ${cmp.label} (${fmtK(ch.avgPeakContextTokens)} vs ${fmtK(cmp.priorAvgPeakContextTokens)})`
+      : undefined;
+
+  let targetTone: "success" | "warning" | "danger" = "success";
+  if (ch.compaction256kChats > 0 || ch.under200kRatio < 0.6) {
+    targetTone = "danger";
+  } else if (
+    ch.cliff200kChats > 0 ||
+    ch.compactionEventCount > 0 ||
+    ch.under200kRatio < 0.85
+  ) {
+    targetTone = "warning";
+  }
+
+  let subDetail = "";
+  if (ch.measuredChatCount > 0) {
+    if (ch.cliff200kChats === 0 && ch.compactionEventCount === 0) {
+      subDetail = `Max ${fmtK(ch.maxPeakContextTokens)}`;
+    } else {
+      const parts: string[] = [];
+      if (ch.cliff200kChats > 0) parts.push(`${ch.cliff200kChats} ≥200k`);
+      if (ch.compaction256kChats > 0) parts.push(`${ch.compaction256kChats} ≥256k`);
+      if (ch.compactionEventCount > 0) {
+        parts.push(
+          `${ch.compactionEventCount} reset${ch.compactionEventCount === 1 ? "" : "s"}`
+        );
+      }
+      subDetail = parts.join(" · ");
+    }
+  }
+
+  return (
+    <div className="kpi-card">
+      <div className="kpi-label">
+        <span>Context Health</span>
+        <KpiHelpTip helpKey="contextHealth" />
+      </div>
+      <div className="kpi-value">
+        {ch.measuredChatCount > 0 ? (
+          <>
+            <span>{fmtK(ch.avgPeakContextTokens)}</span>
+            <span className="kpi-unit">avg peak</span>
+            <DeltaPill text={deltaText} tone={deltaTone} tooltip={deltaTooltip} />
+          </>
+        ) : (
+          <span>{hasAnyChats ? "N/A (legacy)" : "—"}</span>
+        )}
+      </div>
+      <div className="kpi-sub">
+        {ch.measuredChatCount > 0 ? (
+          <>
+            <span className={`badge badge-${targetTone} kpi-health-pill`}>
+              {fmtPct(ch.under200kRatio)} &lt;200k
+            </span>
+            <span>{subDetail}</span>
+          </>
+        ) : (
+          <span>
+            {hasAnyChats
+              ? "Legacy transcripts without context size"
+              : "No sessions in range"}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+function buildKpiDeltas(
+  periodComparison: PeriodComparison | null | undefined,
+  curr: {
+    chatCount: number;
+    totalTokens: number;
+    hasTokenTelemetry: boolean;
+    cacheHitRatio: number;
+    activeMs: number;
+    estimatedCostUsd: number | null;
+  }
+) {
+  const cmp = periodComparison?.hasPriorActivity ? periodComparison : null;
+  const chatsText = cmp ? fmtDeltaPct(cmp.chatsDeltaPct) : null;
+  const tokensText = cmp ? fmtDeltaPct(cmp.tokensDeltaPct) : null;
+  const cacheHitText =
+    cmp && curr.hasTokenTelemetry ? fmtDeltaPp(cmp.cacheHitDeltaPp) : null;
+  const activeText = cmp ? fmtDeltaPct(cmp.activeMsDeltaPct) : null;
+  const costText = cmp ? fmtDeltaPct(cmp.costDeltaPct) : null;
+
+  return {
+    chats: {
+      text: chatsText,
+      tone: "neutral" as const,
+      tooltip:
+        cmp && chatsText
+          ? `${chatsText} chats ${cmp.label} (${curr.chatCount} vs ${cmp.priorChatCount})`
+          : undefined
+    },
+    tokens: {
+      text: tokensText,
+      tone: cmp
+        ? deltaBadgeTone(cmp.tokensDeltaPct, "lower-is-better")
+        : ("neutral" as const),
+      tooltip:
+        cmp && tokensText
+          ? `${tokensText} tokens ${cmp.label} (${fmtK(curr.totalTokens)} vs ${fmtK(cmp.priorTotalTokens)})`
+          : undefined
+    },
+    cacheHit: {
+      text: cacheHitText,
+      tone:
+        cmp && cmp.cacheHitDeltaPp !== null
+          ? deltaBadgeTone(cmp.cacheHitDeltaPp / 100, "higher-is-better")
+          : ("neutral" as const),
+      tooltip:
+        cmp && cacheHitText
+          ? `${cacheHitText} cache hit ${cmp.label} (${fmtPct(curr.cacheHitRatio)} vs ${fmtPct(cmp.priorCacheHitRatio)})`
+          : undefined
+    },
+    active: {
+      text: activeText,
+      tone: cmp
+        ? deltaBadgeTone(cmp.activeMsDeltaPct, "lower-is-better")
+        : ("neutral" as const),
+      tooltip:
+        cmp && activeText
+          ? `${activeText} active time ${cmp.label} (${fmtDuration(curr.activeMs)} vs ${fmtDuration(cmp.priorActiveMs)})`
+          : undefined
+    },
+    cost: {
+      text: costText,
+      tone: cmp
+        ? deltaBadgeTone(cmp.costDeltaPct, "lower-is-better")
+        : ("neutral" as const),
+      tooltip:
+        cmp && costText
+          ? `${costText} est. cost ${cmp.label} (${fmtUsdCompact(curr.estimatedCostUsd)} vs ${fmtUsdCompact(cmp.priorEstimatedCostUsd)})`
+          : undefined
+    }
   };
 }
 
@@ -132,6 +326,15 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
     tot.tokens.inputTokens + tot.tokens.cacheReadTokens + tot.tokens.outputTokens;
   const effectiveTimeRange = fallbackDashboardTimeRange(dashboard);
   const activeRangeLabel = rangeLongLabel(timeRange);
+  const periodComparison = dashboard.periodComparison ?? null;
+  const deltas = buildKpiDeltas(periodComparison, {
+    chatCount: tot.chatCount,
+    totalTokens: grandTokens,
+    hasTokenTelemetry: tot.tokens.hasTokenTelemetry,
+    cacheHitRatio: tot.tokens.cacheHitRatio,
+    activeMs: tot.time.activeMs,
+    estimatedCostUsd: tot.tokens.estimatedCostUsd
+  });
 
   const homeTabs: Array<TabItem<HomeTab>> = [
     { key: "projects", label: `Projects (${dashboard.projects.length})` },
@@ -161,7 +364,14 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
           </div>
           <div className="kpi-value">{tot.projectCount}</div>
           <div className="kpi-sub">
-            {tot.chatCount} chats (+{tot.subagentCount} sub)
+            <span>
+              {tot.chatCount} chats (+{tot.subagentCount} sub)
+            </span>
+            <DeltaPill
+              text={deltas.chats.text}
+              tone={deltas.chats.tone}
+              tooltip={deltas.chats.tooltip}
+            />
           </div>
         </div>
         <div className="kpi-card">
@@ -169,11 +379,23 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
             <span>Total Tokens</span>
             <KpiHelpTip helpKey="totalTokens" />
           </div>
-          <div className="kpi-value">{fmtK(grandTokens)}</div>
+          <div className="kpi-value">
+            <span>{fmtK(grandTokens)}</span>
+            <DeltaPill
+              text={deltas.tokens.text}
+              tone={deltas.tokens.tone}
+              tooltip={deltas.tokens.tooltip}
+            />
+          </div>
           <div className="kpi-sub">
             <span style={{ color: "var(--txt-success)", fontWeight: 600 }}>
               {fmtPct(tot.tokens.cacheHitRatio)} cache hit
             </span>
+            <DeltaPill
+              text={deltas.cacheHit.text}
+              tone={deltas.cacheHit.tone}
+              tooltip={deltas.cacheHit.tooltip}
+            />
           </div>
         </div>
         <div className="kpi-card">
@@ -181,17 +403,36 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
             <span>Active Time</span>
             <KpiHelpTip helpKey="activeAgentTime" />
           </div>
-          <div className="kpi-value">{fmtDuration(tot.time.activeMs)}</div>
+          <div className="kpi-value">
+            <span>{fmtDuration(tot.time.activeMs)}</span>
+            <DeltaPill
+              text={deltas.active.text}
+              tone={deltas.active.tone}
+              tooltip={deltas.active.tooltip}
+            />
+          </div>
           <div className="kpi-sub">
             {fmtDuration(tot.time.modelMs)} model · {fmtDuration(tot.time.toolWallMs)} tools
           </div>
         </div>
+        <ContextHealthCard
+          contextHealth={tot.contextHealth}
+          hasAnyChats={tot.chatCount + tot.subagentCount > 0}
+          periodComparison={periodComparison}
+        />
         <div className="kpi-card">
           <div className="kpi-label">
             <span>Est. Cost</span>
             <KpiHelpTip helpKey="estCost" />
           </div>
-          <div className="kpi-value">{fmtUsdCompact(tot.tokens.estimatedCostUsd)}</div>
+          <div className="kpi-value">
+            <span>{fmtUsdCompact(tot.tokens.estimatedCostUsd)}</span>
+            <DeltaPill
+              text={deltas.cost.text}
+              tone={deltas.cost.tone}
+              tooltip={deltas.cost.tooltip}
+            />
+          </div>
           <div className="kpi-sub">
             {tot.tokens.unpricedModels.length > 0 ? (
               <button
@@ -714,6 +955,15 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
     s.tokens.inputTokens + s.tokens.cacheReadTokens + s.tokens.outputTokens;
   const effectiveTimeRange = fallbackProjectTimeRange(detail);
   const activeRangeLabel = rangeLongLabel(timeRange);
+  const periodComparison = detail.periodComparison ?? null;
+  const deltas = buildKpiDeltas(periodComparison, {
+    chatCount: s.chatCount,
+    totalTokens,
+    hasTokenTelemetry: s.tokens.hasTokenTelemetry,
+    cacheHitRatio: s.tokens.cacheHitRatio,
+    activeMs: s.time.activeMs,
+    estimatedCostUsd: s.tokens.estimatedCostUsd
+  });
 
   const groupedChats = useMemo(
     () => groupProjectChats(detail.chats),
@@ -782,10 +1032,13 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             <KpiHelpTip helpKey="chatsSubagents" />
           </div>
           <div className="kpi-value">
-            {s.chatCount}{" "}
-            <span style={{ fontSize: 13, fontWeight: 500, color: "var(--txt-secondary)" }}>
-              (+{s.subagentCount} sub)
-            </span>
+            <span>{s.chatCount}</span>
+            <span className="kpi-unit">(+{s.subagentCount} sub)</span>
+            <DeltaPill
+              text={deltas.chats.text}
+              tone={deltas.chats.tone}
+              tooltip={deltas.chats.tooltip}
+            />
           </div>
           <div className="kpi-sub">
             {s.errorCount > 0
@@ -799,12 +1052,28 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             <KpiHelpTip helpKey="totalTokens" />
           </div>
           <div className="kpi-value">
-            {s.tokens.hasTokenTelemetry ? fmtK(totalTokens) : "N/A (legacy)"}
+            <span>{s.tokens.hasTokenTelemetry ? fmtK(totalTokens) : "N/A (legacy)"}</span>
+            <DeltaPill
+              text={deltas.tokens.text}
+              tone={deltas.tokens.tone}
+              tooltip={deltas.tokens.tooltip}
+            />
           </div>
           <div className="kpi-sub">
-            {s.tokens.hasTokenTelemetry
-              ? `${fmtPct(s.tokens.cacheHitRatio)} cache · Peak ${fmtK(s.tokens.peakContextTokens)}`
-              : "Legacy transcripts without token counters"}
+            {s.tokens.hasTokenTelemetry ? (
+              <>
+                <span style={{ color: "var(--txt-success)", fontWeight: 600 }}>
+                  {fmtPct(s.tokens.cacheHitRatio)} cache hit
+                </span>
+                <DeltaPill
+                  text={deltas.cacheHit.text}
+                  tone={deltas.cacheHit.tone}
+                  tooltip={deltas.cacheHit.tooltip}
+                />
+              </>
+            ) : (
+              "Legacy transcripts without token counters"
+            )}
           </div>
         </div>
         <div className="kpi-card">
@@ -812,17 +1081,36 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             <span>Active Time</span>
             <KpiHelpTip helpKey="activeAgentTime" />
           </div>
-          <div className="kpi-value">{fmtDuration(s.time.activeMs)}</div>
+          <div className="kpi-value">
+            <span>{fmtDuration(s.time.activeMs)}</span>
+            <DeltaPill
+              text={deltas.active.text}
+              tone={deltas.active.tone}
+              tooltip={deltas.active.tooltip}
+            />
+          </div>
           <div className="kpi-sub">
             {fmtDuration(s.time.userIdleMs)} idle excluded
           </div>
         </div>
+        <ContextHealthCard
+          contextHealth={s.contextHealth}
+          hasAnyChats={detail.chats.length > 0}
+          periodComparison={periodComparison}
+        />
         <div className="kpi-card">
           <div className="kpi-label">
             <span>Est. Cost</span>
             <KpiHelpTip helpKey="estCost" />
           </div>
-          <div className="kpi-value">{fmtUsdCompact(s.tokens.estimatedCostUsd)}</div>
+          <div className="kpi-value">
+            <span>{fmtUsdCompact(s.tokens.estimatedCostUsd)}</span>
+            <DeltaPill
+              text={deltas.cost.text}
+              tone={deltas.cost.tone}
+              tooltip={deltas.cost.tooltip}
+            />
+          </div>
           <div className="kpi-sub">
             {s.tokens.unpricedModels.length > 0 ? (
               <button

@@ -186,7 +186,7 @@ select {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px;
   margin: 10px 0 12px;
 }
@@ -358,9 +358,28 @@ select {
 }
 
 .kpi-value {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
   font-size: 18px;
   line-height: 1.25;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-unit {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--txt-secondary);
+}
+
+.kpi-delta-pill,
+.kpi-health-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  line-height: 1.35;
   font-variant-numeric: tabular-nums;
 }
 

@@ -82,3 +82,49 @@ export function buildClientTimeRangeArgs(
   const sinceMs = computeLocalPresetSinceMs(preset, nowMs);
   return sinceMs !== null ? { timeRange: preset, sinceMs } : { timeRange: preset };
 }
+
+export interface PriorTimeRangeBounds {
+  priorSinceMs: number;
+  priorUntilMs: number;
+  label: string;
+}
+
+/**
+ * Computes the preceding comparison window `[priorSinceMs, priorUntilMs)`
+ * matching the current preset's calendar span, or `null` for `"all"`.
+ */
+export function computePriorTimeRangeBounds(bounds: {
+  preset: TimeRangePreset;
+  sinceMs: number | null;
+  untilMs: number;
+}): PriorTimeRangeBounds | null {
+  if (bounds.preset === "all" || bounds.sinceMs === null) {
+    return null;
+  }
+
+  let days: number;
+  let label: string;
+  if (bounds.preset === "today") {
+    days = 1;
+    label = "vs yesterday";
+  } else if (bounds.preset === "7d") {
+    days = 7;
+    label = "vs prior 7d";
+  } else {
+    days = 30;
+    label = "vs prior 30d";
+  }
+
+  const d = new Date(bounds.sinceMs);
+  const priorSinceMs = new Date(
+    d.getFullYear(),
+    d.getMonth(),
+    d.getDate() - days
+  ).getTime();
+
+  return {
+    priorSinceMs,
+    priorUntilMs: bounds.sinceMs,
+    label
+  };
+}
