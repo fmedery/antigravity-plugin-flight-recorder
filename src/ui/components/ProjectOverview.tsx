@@ -5,7 +5,6 @@ import type {
   ConversationSummary,
   DashboardData,
   PeriodComparison,
-  PluginSkillMetric,
   ProjectDetail,
   ProjectSummary,
   TimeRangePreset,
@@ -262,7 +261,7 @@ interface AllProjectsProps {
   onSelectProject: (projectPath: string) => void;
   onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenSettings: () => void;
-  onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
+  onTroubleshootPrompt?: (prompt: string) => void;
 }
 
 type HomeTab = "projects" | "plugins" | "chats";
@@ -277,7 +276,7 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
   onSelectProject,
   onSelectChat,
   onOpenSettings,
-  onOptimizeSkill
+  onTroubleshootPrompt
 }) => {
   const [tab, setTab] = useState<HomeTab>("projects");
   const [query, setQuery] = useState("");
@@ -607,7 +606,7 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                 scopeLabel="all tracked projects"
                 canSendMessage={canSendMessage}
                 onSelectChat={onSelectChat}
-                onOptimizeSkill={onOptimizeSkill}
+                onTroubleshootPrompt={onTroubleshootPrompt}
               />
             )}
 
@@ -753,7 +752,6 @@ interface ProjectDetailProps {
   onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenFile?: (filePath: string) => void;
   onOpenSettings: () => void;
-  onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
   onTroubleshootPrompt?: (prompt: string) => void;
 }
 
@@ -939,7 +937,6 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
   onSelectChat,
   onOpenFile,
   onOpenSettings,
-  onOptimizeSkill,
   onTroubleshootPrompt
 }) => {
   const [tab, setTab] = useState<ProjectTab>("overview");
@@ -1218,7 +1215,7 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
                 scopeLabel={`project "${s.projectName}"`}
                 canSendMessage={canSendMessage}
                 onSelectChat={onSelectChat}
-                onOptimizeSkill={onOptimizeSkill}
+                onTroubleshootPrompt={onTroubleshootPrompt}
                 onViewAll={() => {
                   setUsageSubtab("plugins");
                   setTab("usage");
@@ -1269,7 +1266,7 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
                 scopeLabel={`project "${s.projectName}"`}
                 canSendMessage={canSendMessage}
                 onSelectChat={onSelectChat}
-                onOptimizeSkill={onOptimizeSkill}
+                onTroubleshootPrompt={onTroubleshootPrompt}
               />
             )}
 

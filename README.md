@@ -4,7 +4,7 @@
 
 Flight Recorder is a local-only **Antigravity plugin with an interactive MCP App dashboard**. It works with **Antigravity 2.x (Hub)**, the **Antigravity IDE**, and the **Antigravity CLI (`agy`)** on **Windows, macOS, and Linux**.
 
-[How It Works](#how-it-works) · [Dashboard](#using-the-dashboard) · [Asking in Chat](#asking-in-chat) · [Install](#installation--setup) · [Privacy](#privacy--security) · [Troubleshooting](#troubleshooting)
+[How It Works](#how-it-works) · [Dashboard](#using-the-dashboard) · [Asking in Chat](#asking-in-chat) · [Install](#installation--setup) · [Updating](#updating--uninstalling) · [Privacy](#privacy--security) · [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -32,7 +32,7 @@ flowchart LR
 Navigate with the breadcrumb at the top (**All Projects / *project* / *chat***). Two global controls are always available:
 
 - **Time range** — `Today`, `7d`, `30d`, or `All time`; every view, KPI, and leaderboard is filtered to the selected window, and `Today` / `7d` / `30d` display period-over-period delta pills (`vs yesterday`, `vs prior 7d`, `vs prior 30d`).
-- **Top-right buttons** — **Rescan** re-indexes transcripts and hook events on demand; **Pricing** opens per-model USD rates.
+- **Top-right buttons** — **Rescan** re-indexes transcripts and hook events on demand; **Pricing** opens per-model USD rates; **Updates** checks GitHub for a newer version on demand (never runs automatically in the background).
 
 Every KPI card has a **`?`** tip explaining what the metric means and why it matters.
 
@@ -58,9 +58,8 @@ Available globally on the **Plugins & Models** tab as well as per-project and pe
   - **Unused load** — a tool-backed `SKILL.md` sat in context, but the chat never called its CLI or MCP tools.
   - **N× read** — the same `SKILL.md` was read multiple times.
   - Red **err** badges — click to open a guidance drawer with error samples, what it means, and how to fix it.
-- **Optimize With Agent** — sends a prompt to your agent to propose concrete `SKILL.md` / workflow improvements (or **Copy Optimization Prompt** where sending isn't available).
 
-![Plugins and Skills leaderboard with annotated model mix, waste badges, expanded breakdown drawer, and Optimize With Agent](./docs/screenshots/plugins-leaderboard.png)
+![Plugins and Skills leaderboard with annotated model mix, waste badges, and expanded breakdown drawer](./docs/screenshots/plugins-leaderboard.png)
 
 ### 3. Project view
 
@@ -185,7 +184,7 @@ agy plugin install https://github.com/fmedery/antigravity-plugin-flight-recorder
 
 ## Privacy & Security
 
-- **100% local, zero network:** no telemetry, analytics, or external requests (`default-src 'none'` iframe CSP).
+- **Zero background network, zero telemetry:** no analytics, crash reporting, or automatic requests (`default-src 'none'` iframe CSP). The only optional outbound request is fetching GitHub's `plugin.json` when you manually click **Updates**.
 - **Passive-only hooks:** uses only `SessionStart`, `PreInvocation`, `PostToolUse`, `PostInvocation`, and `Stop` — never `PreToolUse` — and fails open (`{}`) on any error, so it can never block your agent.
 - **Redacted & owner-private storage:** API keys, Bearer tokens, JWTs, URL credentials, and ANSI/OSC escape sequences are scrubbed from previews before indexing. Data files use `0700`/`0600` owner-only permissions on macOS/Linux and private `%USERPROFILE%` ACLs on Windows.
 
@@ -208,18 +207,70 @@ See [SECURITY.md](./SECURITY.md) for the full audit table.
 
 ## Updating & Uninstalling
 
-### Update (Git installs)
+> **Your data is safe across upgrades:** Indexed history, custom model pricing rules, and project reassignments live outside the plugin folder in `${PLUGIN_DATA}` (`~/.gemini/flight-recorder-data` on macOS/Linux, `%USERPROFILE%\.gemini\flight-recorder-data` on Windows). Pulling, resetting Git, or replacing the plugin folder never deletes your data.
 
-- **macOS / Linux:**
-  ```bash
-  git -C ~/.gemini/config/plugins/flight-recorder pull
-  ```
-- **Windows (PowerShell):**
-  ```powershell
-  git -C "$HOME\.gemini\config\plugins\flight-recorder" pull
-  ```
+You can check whether a newer version is available anytime by clicking **Updates** in the top-right of the Flight Recorder dashboard (manual check only; for Git installs, it also gives you a copyable `git -C ... pull` command for your exact folder).
 
-After pulling, toggle the `flight-recorder_recorder` server off/on in **Settings → MCP Servers** so the running Node process loads the new bundle.
+### Upgrade an existing Git install (Recommended)
+
+Because prebuilt `dist/` bundles are committed to the repository, **no `npm install` or build step is needed** after pulling.
+
+1. **Pull the latest changes:**
+   - **macOS / Linux (Terminal):**
+     ```bash
+     git -C ~/.gemini/config/plugins/flight-recorder pull --ff-only
+     ```
+   - **Windows (PowerShell):**
+     ```powershell
+     git -C "$HOME\.gemini\config\plugins\flight-recorder" pull --ff-only
+     ```
+   - **Windows (Command Prompt / `cmd.exe`):**
+     ```cmd
+     git -C "%USERPROFILE%\.gemini\config\plugins\flight-recorder" pull --ff-only
+     ```
+
+   <details>
+   <summary>If <code>git pull</code> fails due to local changes or line-ending conflicts</summary>
+
+   If a previous update or local edit left modified files in the deployed plugin folder, reset it cleanly to `origin/main` (your SQLite index and pricing settings are stored elsewhere and won't be touched):
+
+   - **macOS / Linux:**
+     ```bash
+     git -C ~/.gemini/config/plugins/flight-recorder fetch origin && git -C ~/.gemini/config/plugins/flight-recorder reset --hard origin/main
+     ```
+   - **Windows (PowerShell):**
+     ```powershell
+     git -C "$HOME\.gemini\config\plugins\flight-recorder" fetch origin; git -C "$HOME\.gemini\config\plugins\flight-recorder" reset --hard origin/main
+     ```
+
+   </details>
+
+2. **Reload the plugin in Antigravity:**
+   - Open **Settings → MCP Servers** and toggle `flight-recorder_recorder` **off and back on** so the running Node process loads the updated server and UI bundle.
+   - If the update changed `plugin.json`, `hooks.json`, or `skills/`, fully **quit and reopen Antigravity** so the host picks up the new manifest and hooks.
+3. **Verify:** Open the dashboard and click **Updates** to confirm you are on the latest version (and optionally **Rescan**).
+
+### Upgrade an existing ZIP install (no `.git` folder)
+
+If you originally installed via ZIP (clicking **Updates** shows ZIP instructions because there is no `.git` folder):
+
+- **Option A — Switch to Git once (makes future updates one command):**
+  Delete your existing `flight-recorder` plugins folder and clone fresh (your indexed data and pricing remain intact):
+  - **macOS / Linux:**
+    ```bash
+    rm -rf ~/.gemini/config/plugins/flight-recorder && git clone https://github.com/fmedery/antigravity-plugin-flight-recorder ~/.gemini/config/plugins/flight-recorder
+    ```
+  - **Windows (PowerShell):**
+    ```powershell
+    Remove-Item -Recurse -Force "$HOME\.gemini\config\plugins\flight-recorder"; git clone https://github.com/fmedery/antigravity-plugin-flight-recorder "$HOME\.gemini\config\plugins\flight-recorder"
+    ```
+- **Option B — Replace with a new ZIP:**
+  Download the latest ZIP from GitHub (**Code → Download ZIP**), replace your `flight-recorder` plugins folder so `plugin.json` sits directly at `.../plugins/flight-recorder/plugin.json`, and restart Antigravity (or toggle `flight-recorder_recorder` off/on in **Settings → MCP Servers**).
+
+### Upgrade `agy` CLI or local dev symlink installs
+
+- **Antigravity CLI (`agy`):** re-run `agy plugin install https://github.com/fmedery/antigravity-plugin-flight-recorder`, then reload the MCP server or restart Antigravity.
+- **Local checkout linked with `npm run install-plugin`:** run `git pull` in your repo checkout (plus `npm run build` if you are editing TypeScript/React source), then toggle `flight-recorder_recorder` off/on in **Settings → MCP Servers**.
 
 ### Uninstall
 

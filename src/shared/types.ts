@@ -390,3 +390,15 @@ export interface DashboardData {
   pricingRules: ModelPricingRule[];
   unpricedModels: string[];
 }
+
+export interface UpdateCheckResult {
+  status: "up_to_date" | "update_available" | "error";
+  currentVersion: string;
+  latestVersion: string | null;
+  installMethod: "git" | "zip";
+  pluginRoot: string | null;
+  updateCommand: string | null;
+  repoUrl: string;
+  checkedAtMs: number;
+  message?: string;
+}

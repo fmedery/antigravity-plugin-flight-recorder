@@ -24,13 +24,15 @@ async function main(): Promise<void> {
   const dataDir = parseDataDirArg(process.argv.slice(2));
   const db = new TrackerDatabase(dataDir);
 
-  // dist/server/index.js -> dist/ui/index.html
+  // dist/server/index.js -> dist/ui/index.html and plugin root
   const uiHtmlPath = path.resolve(import.meta.dirname, "..", "ui", "index.html");
+  const pluginRoot = path.resolve(import.meta.dirname, "..", "..");
 
   const server = createTrackerMcpServer({
     db,
     dataDir,
-    uiHtmlPath
+    uiHtmlPath,
+    pluginRoot
   });
 
   const transport = new StdioServerTransport();

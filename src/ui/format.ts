@@ -134,7 +134,6 @@ export function fmtDateSpan(
 import type {
   ConversationSummary,
   PluginSkillChildKind,
-  PluginSkillMetric,
   TimeRangeWindow,
   ToolErrorSample
 } from "../shared/types.js";
@@ -254,62 +253,6 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
   }
 };
 
-export function buildSkillOptimizationPrompt(
-  metric: PluginSkillMetric,
-  scopeLabel: string
-): string {
-  const spendPart =
-    metric.drivenCostUsd !== null
-      ? `${metric.costShare !== null ? `${fmtPct(metric.costShare)} of total spend (` : ""}${fmtUsd(metric.drivenCostUsd)}${metric.costShare !== null ? ")" : ""}`
-      : `${fmtPct(metric.timeShare)} of active time (models unpriced)`;
-  const instrPct =
-    metric.totalTokens > 0
-      ? Math.round((metric.instructionTokens / metric.totalTokens) * 100)
-      : 0;
-  const execPct = metric.totalTokens > 0 ? 100 - instrPct : 0;
-
-  const childSummary = metric.children
-    .slice(0, 8)
-    .map((ch) => {
-      const flags = [
-        ch.isUnusedLoad ? "unused load" : "",
-        ch.duplicateReads > 0 ? `${ch.duplicateReads}x duplicate read` : "",
-        ch.errors > 0 ? `${ch.errors} errors` : ""
-      ]
-        .filter(Boolean)
-        .join(", ");
-      const costStr = ch.drivenCostUsd !== null ? `, ${fmtUsd(ch.drivenCostUsd)}` : "";
-      return `- [${ch.kind}] ${ch.name}: ${fmtDuration(ch.drivenActiveMs)}${costStr}, +${fmtK(ch.instructionTokens)} instr / +${fmtK(ch.executionTokens)} exec, ${ch.calls} call(s)${flags ? ` (${flags})` : ""}`;
-    })
-    .join("\n");
-
-  const pathsLine =
-    metric.targetPaths.length > 0
-      ? `\nRelevant files: ${metric.targetPaths.slice(0, 5).join(", ")}`
-      : "";
-  const rxLine = metric.prescription
-    ? `\nDetected issue: ${metric.prescription}`
-    : "";
-  const errLines =
-    metric.errors > 0 && metric.errorSamples && metric.errorSamples.length > 0
-      ? [
-          `Recorded errors (${metric.errors}):`,
-          ...metric.errorSamples.slice(0, 3).map(
-            (s) =>
-              `- [${s.toolName}]${s.target ? ` (${s.target})` : ""}${s.count > 1 ? ` (${s.count}x)` : ""}: ${s.message}`
-          )
-        ]
-      : [];
-
-  return [
-    `In ${scopeLabel}, help me optimize how we use ${metric.kind.toLowerCase()} "${metric.name}".`,
-    `Impact: ${spendPart}, ${fmtPct(metric.timeShare)} of active time (${fmtDuration(metric.drivenActiveMs)}), +${fmtK(metric.totalTokens)} context footprint (${instrPct}% instruction markdown / ${execPct}% tool execution).${pathsLine}${rxLine}`,
-    ...(childSummary ? ["Breakdown:", childSummary] : []),
-    ...errLines,
-    "Please inspect the relevant SKILL.md / rules / tool usage and propose concrete ways to reduce wasted tokens, cache carry, and active time while preserving quality."
-  ].join("\n");
-}
-
 export interface GroupedProjectChat {
   root: ConversationSummary;
   subagents: ConversationSummary[];
@@ -381,21 +324,21 @@ export interface PluginWarningGuidance {
 const PLUGIN_WARNING_GUIDANCE: Record<string, PluginWarningGuidance> = {
   "Unused load": {
     meaning:
-      "A tool-backed SKILL.md stayed in context without invoking its CLI or MCP tools in that chat.",
+      "A tool-backed skill stayed in context without invoking its CLI or MCP tools in that chat.",
     remediation:
-      "Tighten the skill's YAML description trigger (if authoring) or disable unused plugins so they do not auto-load."
+      "Disable this plugin in Plugins Manager if you do not need it on this project, or tighten its trigger if you authored the skill."
   },
   "Duplicate read": {
     meaning:
-      "The same SKILL.md was read multiple times in a single conversation, carrying redundant instruction tokens.",
+      "The same skill instructions were loaded multiple times in a single conversation, carrying redundant tokens.",
     remediation:
-      "Avoid re-reading SKILL.md mid-chat when authoring skills; expand the row to see which sub-skill repeated."
+      "This often happens in long sessions or after context compaction; starting a fresh chat avoids paying to carry them again."
   },
   "High markdown carry": {
     meaning:
       "Over 75% of this plugin or skill's token footprint came from static instruction markdown rather than tool outputs.",
     remediation:
-      "Move large reference tables or examples out of SKILL.md into on-demand references/ files, or click Optimize With Agent."
+      "Worth disabling when not actively used on a project, or keeping chats shorter so instructions are not carried across as many turns."
   }
 };
 
@@ -404,7 +347,7 @@ export function describePluginWarning(warning: string): PluginWarningGuidance {
     PLUGIN_WARNING_GUIDANCE[warning] ?? {
       meaning: `Flight Recorder flagged "${warning}" while analyzing this plugin or skill's context carry.`,
       remediation:
-        "Expand this row to inspect sub-skills and tools, or click Optimize With Agent for tailored suggestions."
+        "Expand this row to inspect which sub-skills and tools drove context carry."
     }
   );
 }

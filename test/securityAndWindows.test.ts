@@ -533,6 +533,13 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(uiHtml, /err-sample-list/);
     assert.match(uiHtml, /What to do:/);
     assert.match(uiHtml, /Troubleshoot/);
+    assert.match(uiHtml, /app_check_update/);
+    assert.match(uiHtml, /app-version/);
+    assert.ok(
+      uiHtml.includes(String(pluginJson.version)),
+      `Expected UI bundle to include version ${pluginJson.version}`
+    );
+    assert.doesNotMatch(uiHtml, /Copy Optimization Prompt|Optimize With Agent/);
     assert.match(uiHtml, /time-range-toolbar/);
     assert.match(uiHtml, /aria-pressed/);
     assert.match(uiHtml, /focusgroup/);

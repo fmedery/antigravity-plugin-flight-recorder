@@ -1,8 +1,5 @@
 import React, { useEffect, useId, useMemo, useState } from "react";
-import type {
-  ConversationDetail,
-  PluginSkillMetric
-} from "../../shared/types";
+import type { ConversationDetail } from "../../shared/types";
 import { fmtDateSpan, fmtDuration, fmtK, fmtPct, fmtUsdCompact } from "../format";
 import { KpiHelpTip } from "./KpiHelpTip";
 import { ModelBreakdownPanel } from "./ModelBreakdown";
@@ -20,7 +17,6 @@ interface Props {
   onAssignProject: (conversationId: string, projectPath: string) => Promise<void>;
   onSelectChat: (conversationId: string, stepIndex?: number) => void;
   onOpenSettings: () => void;
-  onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
   onTroubleshootPrompt?: (prompt: string) => void;
 }
 
@@ -35,7 +31,6 @@ export const ChatDetailView: React.FC<Props> = ({
   onAssignProject,
   onSelectChat,
   onOpenSettings,
-  onOptimizeSkill,
   onTroubleshootPrompt
 }) => {
   const [tab, setTab] = useState<ChatTab>("timeline");
@@ -380,7 +375,7 @@ export const ChatDetailView: React.FC<Props> = ({
                 canSendMessage={canSendMessage}
                 onSelectChat={onSelectChat}
                 onJumpToStep={jumpToTimelineStep}
-                onOptimizeSkill={onOptimizeSkill}
+                onTroubleshootPrompt={onTroubleshootPrompt}
               />
             ) : (
               <SkillToolMatrix

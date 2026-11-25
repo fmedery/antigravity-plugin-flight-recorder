@@ -732,7 +732,7 @@ interface ParentAccumulator {
 
 function buildPrescription(
   name: string,
-  kind: "Plugin" | "Skill",
+  _kind: "Plugin" | "Skill",
   instructionTokens: number,
   totalTokens: number,
   unusedChildren: string[],
@@ -741,17 +741,19 @@ function buildPrescription(
   const parts: string[] = [];
   if (unusedChildren.length > 0) {
     parts.push(
-      `Loaded ${unusedChildren.join(", ")} without invoking its CLI/MCP tools—tighten the skill description trigger so it only loads when needed.`
+      `Loaded ${unusedChildren.join(", ")} without invoking its CLI/MCP tools — disable this plugin in Plugins Manager when you do not need it on this project.`
     );
   }
   if (dupChildren.length > 0) {
     const dupDesc = dupChildren.map((d) => `${d.name} (+${d.dup}× extra)`).join(", ");
-    parts.push(`Avoid re-reading SKILL.md within the same chat: ${dupDesc}.`);
+    parts.push(
+      `Re-loaded the same instructions multiple times in one chat (${dupDesc}) — starting a fresh chat avoids carrying them again.`
+    );
   }
   const instrShare = totalTokens > 0 ? instructionTokens / totalTokens : 0;
   if (instructionTokens >= 25_000 && instrShare >= 0.75) {
     parts.push(
-      `${Math.round(instrShare * 100)}% (+${fmtShortTok(instructionTokens)} tok) of ${name}'s context footprint is instruction markdown carried across steps—move reference tables and examples out of SKILL.md into on-demand references/ files.`
+      `${Math.round(instrShare * 100)}% (+${fmtShortTok(instructionTokens)} tok) of ${name}'s context footprint came from static instructions carried across steps — disable it when unused or keep chats shorter.`
     );
   }
   return parts.length > 0 ? parts.join(" ") : null;

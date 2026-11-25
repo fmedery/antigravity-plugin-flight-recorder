@@ -4,9 +4,10 @@ This document describes exactly what **Flight Recorder** (`flight-recorder`) rea
 
 ---
 
-## 1. Zero Network & Zero Telemetry
+## 1. Zero Background Network & Zero Telemetry
 
-- **100% local execution:** Neither the MCP server (`dist/server/index.js`), the passive lifecycle hook (`hooks/record-event.mjs`), nor the interactive UI (`dist/ui/index.html`) makes any outbound HTTP, WebSocket, DNS, or crash-reporting requests.
+- **Zero background network & zero telemetry:** Neither the MCP server (`dist/server/index.js`), the passive lifecycle hook (`hooks/record-event.mjs`), nor the interactive UI (`dist/ui/index.html`) sends telemetry, analytics, crash reports, or automatic/startup network requests.
+- **Explicit, user-triggered update check only:** The only outbound request Flight Recorder can make is when you explicitly click **Updates** in the dashboard, which issues a single server-side `GET https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json` (with a generic `User-Agent: flight-recorder` header and no OS, machine, or usage identifiers) to compare your installed `version`.
 - **Strict iframe Content Security Policy:** The MCP App UI runs inside Antigravity's isolated `text/html;profile=mcp-app` sandbox under the default `default-src 'none'` CSP—no external scripts, stylesheets, fonts, or analytics beacons are loaded.
 - **No install-time lifecycle scripts:** `package.json` defines zero `preinstall`, `install`, or `postinstall` hooks, and end users installing the plugin do not need to run `npm install`.
 

@@ -12,9 +12,9 @@ import type {
   ConversationDetail,
   DashboardData,
   ModelPricingRule,
-  PluginSkillMetric,
   ProjectDetail,
-  TimeRangePreset
+  TimeRangePreset,
+  UpdateCheckResult
 } from "../shared/types";
 import { ChatDetailView } from "./components/ChatDetail";
 import {
@@ -22,6 +22,13 @@ import {
   ProjectDetailView
 } from "./components/ProjectOverview";
 import { SettingsModal } from "./components/SettingsModal";
+
+declare const __FLIGHT_RECORDER_VERSION__: string | undefined;
+
+const APP_VERSION =
+  typeof __FLIGHT_RECORDER_VERSION__ !== "undefined"
+    ? __FLIGHT_RECORDER_VERSION__
+    : "0.2.0";
 
 type ViewMode = "projects" | "project" | "chat";
 
@@ -64,6 +71,8 @@ export const AppRoot: React.FC = () => {
   const timeRangeRef = useRef<TimeRangePreset>("all");
   const [updatingRange, setUpdatingRange] = useState(false);
   const rangeReqIdRef = useRef(0);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
 
   const callAppTool = useCallback(
     async <T,>(name: string, args: Record<string, unknown> = {}): Promise<T> => {
@@ -148,7 +157,7 @@ export const AppRoot: React.FC = () => {
   );
 
   useEffect(() => {
-    const app = new App({ name: "Flight Recorder", version: "0.1.0" }, {});
+    const app = new App({ name: "Flight Recorder", version: APP_VERSION }, {});
     appRef.current = app;
 
     const applyTheme = (ctx?: McpUiHostContext) => {
@@ -363,8 +372,8 @@ export const AppRoot: React.FC = () => {
 
   const sendOrCopyPrompt = async (
     prompt: string,
-    sentNotice = "Sent optimization request to agent.",
-    copiedNotice = "Copied optimization prompt to clipboard."
+    sentNotice = "Sent troubleshooting request to agent.",
+    copiedNotice = "Copied troubleshooting prompt to clipboard."
   ) => {
     const app = appRef.current;
     if (app && canMessage) {
@@ -394,15 +403,69 @@ export const AppRoot: React.FC = () => {
     }
   };
 
-  const handleOptimizeSkill = async (
-    _metric: PluginSkillMetric,
-    prompt: string
-  ) => {
-    await sendOrCopyPrompt(
-      prompt,
-      "Sent optimization request to agent.",
-      "Copied optimization prompt to clipboard."
-    );
+  const handleTroubleshootPrompt = (prompt: string) => {
+    void sendOrCopyPrompt(prompt);
+  };
+
+  const handleCopyText = async (text: string, notice: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        setStatusNotice(notice);
+        setTimeout(() => setStatusNotice(null), 3500);
+        return;
+      }
+    } catch {
+      // Fall through to status notice
+    }
+    setStatusNotice("Unable to copy automatically.");
+    setTimeout(() => setStatusNotice(null), 3500);
+  };
+
+  const handleOpenRepoLink = async (url: string) => {
+    const app = appRef.current;
+    if (app) {
+      try {
+        const res = await app.openLink({ url });
+        if (!res?.isError) return;
+      } catch {
+        // Fall back to clipboard copy below
+      }
+    }
+    await handleCopyText(url, "Copied GitHub link to clipboard.");
+  };
+
+  const handleCheckUpdate = async () => {
+    try {
+      setCheckingUpdate(true);
+      const res = await callAppTool<UpdateCheckResult>("app_check_update", {});
+      if (res.status === "update_available") {
+        setUpdateResult(res);
+      } else if (res.status === "up_to_date") {
+        setUpdateResult(null);
+        setStatusNotice(`Flight Recorder v${res.currentVersion} is up to date.`);
+        setTimeout(() => setStatusNotice(null), 4000);
+      } else {
+        setUpdateResult(null);
+        setStatusNotice(
+          `Update check failed: ${res.message ?? "Could not reach GitHub."}`
+        );
+        setTimeout(() => setStatusNotice(null), 5000);
+      }
+    } catch (err) {
+      setUpdateResult(null);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (/app_check_update.*not found|not found.*app_check_update/i.test(errMsg)) {
+        setStatusNotice(
+          "Flight Recorder's MCP server needs a reload — toggle Flight Recorder off/on in Customizations (or restart Antigravity) and try again."
+        );
+      } else {
+        setStatusNotice(`Update check failed: ${errMsg}`);
+      }
+      setTimeout(() => setStatusNotice(null), 5000);
+    } finally {
+      setCheckingUpdate(false);
+    }
   };
 
   const projectLabel =
@@ -421,6 +484,9 @@ export const AppRoot: React.FC = () => {
             <rect x="4" y="16" width="9" height="4" rx="1.5" fill="var(--chart-skill)" />
           </svg>
           <strong style={{ fontSize: 14 }}>Flight Recorder</strong>
+          <span className="app-version" title={`Flight Recorder v${APP_VERSION}`}>
+            v{APP_VERSION}
+          </span>
 
           <span style={{ color: "var(--txt-tertiary)" }}>/</span>
           <button
@@ -475,6 +541,15 @@ export const AppRoot: React.FC = () => {
           >
             Pricing
           </button>
+          <button
+            type="button"
+            className="btn"
+            title="Check GitHub for a newer Flight Recorder version"
+            onClick={() => void handleCheckUpdate()}
+            disabled={!connected || checkingUpdate}
+          >
+            {checkingUpdate ? "Checking..." : "Updates"}
+          </button>
         </div>
       </header>
 
@@ -508,6 +583,67 @@ export const AppRoot: React.FC = () => {
         </div>
       )}
 
+      {updateResult?.status === "update_available" && (
+        <div className="update-banner" role="status">
+          <div className="update-banner-head">
+            <strong>
+              Update available: v{updateResult.currentVersion} → v
+              {updateResult.latestVersion}
+            </strong>
+            <div className="update-banner-actions">
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => void handleOpenRepoLink(updateResult.repoUrl)}
+              >
+                View on GitHub
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setUpdateResult(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+          <div className="update-banner-body">
+            {updateResult.installMethod === "git" &&
+            updateResult.updateCommand ? (
+              <>
+                <div className="update-banner-cmd-row">
+                  <code className="update-banner-cmd">
+                    {updateResult.updateCommand}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() =>
+                      void handleCopyText(
+                        updateResult.updateCommand!,
+                        "Copied git update command to clipboard."
+                      )
+                    }
+                  >
+                    Copy command
+                  </button>
+                </div>
+                <div>
+                  After pulling, toggle <code>flight-recorder_recorder</code>{" "}
+                  off/on in Settings → MCP Servers.
+                </div>
+              </>
+            ) : (
+              <div>
+                Download the latest ZIP from GitHub and replace your{" "}
+                <code>flight-recorder</code> plugins folder, then restart
+                Antigravity.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {loading && !dashboard ? (
         <div style={{ padding: "28px 12px", color: "var(--txt-secondary)" }}>
           Scanning Antigravity transcripts and lifecycle hooks...
@@ -524,7 +660,7 @@ export const AppRoot: React.FC = () => {
               onSelectProject={(p) => void openProject(p)}
               onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenSettings={() => setShowSettings(true)}
-              onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
+              onTroubleshootPrompt={handleTroubleshootPrompt}
             />
           )}
 
@@ -539,14 +675,7 @@ export const AppRoot: React.FC = () => {
               onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenFile={handleOpenFileInAuxPane}
               onOpenSettings={() => setShowSettings(true)}
-              onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
-              onTroubleshootPrompt={(p) =>
-                void sendOrCopyPrompt(
-                  p,
-                  "Sent troubleshooting request to agent.",
-                  "Copied troubleshooting prompt to clipboard."
-                )
-              }
+              onTroubleshootPrompt={handleTroubleshootPrompt}
             />
           )}
 
@@ -560,14 +689,7 @@ export const AppRoot: React.FC = () => {
               onAssignProject={handleAssignProject}
               onSelectChat={(id, stepIdx) => void openChat(id, stepIdx)}
               onOpenSettings={() => setShowSettings(true)}
-              onOptimizeSkill={(m, p) => void handleOptimizeSkill(m, p)}
-              onTroubleshootPrompt={(p) =>
-                void sendOrCopyPrompt(
-                  p,
-                  "Sent troubleshooting request to agent.",
-                  "Copied troubleshooting prompt to clipboard."
-                )
-              }
+              onTroubleshootPrompt={handleTroubleshootPrompt}
             />
           )}
         </>

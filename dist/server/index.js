@@ -203,8 +203,8 @@ function assignProp(target, prop, value) {
     configurable: !0
   });
 }
-function getElementAtPath(obj, path6) {
-  return path6 ? path6.reduce((acc, key) => acc?.[key], obj) : obj;
+function getElementAtPath(obj, path7) {
+  return path7 ? path7.reduce((acc, key) => acc?.[key], obj) : obj;
 }
 function promiseAllObject(promisesObj) {
   let keys = Object.keys(promisesObj), promises = keys.map((key) => promisesObj[key]);
@@ -399,10 +399,10 @@ function aborted(x, startIndex = 0) {
       return !0;
   return !1;
 }
-function prefixIssues(path6, issues) {
+function prefixIssues(path7, issues) {
   return issues.map((iss) => {
     var _a;
-    return (_a = iss).path ?? (_a.path = []), iss.path.unshift(path6), iss;
+    return (_a = iss).path ?? (_a.path = []), iss.path.unshift(path7), iss;
   });
 }
 function unwrapMessage(message) {
@@ -521,7 +521,7 @@ function formatError(error40, _mapper) {
 function treeifyError(error40, _mapper) {
   let mapper = _mapper || function(issue2) {
     return issue2.message;
-  }, result = { errors: [] }, processError = (error41, path6 = []) => {
+  }, result = { errors: [] }, processError = (error41, path7 = []) => {
     var _a, _b;
     for (let issue2 of error41.issues)
       if (issue2.code === "invalid_union" && issue2.errors.length)
@@ -531,7 +531,7 @@ function treeifyError(error40, _mapper) {
       else if (issue2.code === "invalid_element")
         processError({ issues: issue2.issues }, issue2.path);
       else {
-        let fullpath = [...path6, ...issue2.path];
+        let fullpath = [...path7, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -545,9 +545,9 @@ function treeifyError(error40, _mapper) {
   };
   return processError(error40), result;
 }
-function toDotPath(path6) {
+function toDotPath(path7) {
   let segs = [];
-  for (let seg of path6)
+  for (let seg of path7)
     typeof seg == "number" ? segs.push(`[${seg}]`) : typeof seg == "symbol" ? segs.push(`[${JSON.stringify(String(seg))}]`) : /[^\w$]/.test(seg) ? segs.push(`[${JSON.stringify(seg)}]`) : (segs.length && segs.push("."), segs.push(seg));
   return segs.join("");
 }
@@ -11514,8 +11514,8 @@ var require_utils = __commonJS({
         str[i] === token && ind++;
       return ind;
     }
-    function removeDotSegments(path6) {
-      let input = path6, output = [], nextSlash = -1, len = 0;
+    function removeDotSegments(path7) {
+      let input = path7, output = [], nextSlash = -1, len = 0;
       for (; len = input.length; ) {
         if (len === 1) {
           if (input === ".")
@@ -11570,10 +11570,10 @@ var require_utils = __commonJS({
       }
       return output.join("");
     }
-    function removeDotSegmentsRelative(path6) {
-      if (path6 === "" || path6[0] === "/")
-        return removeDotSegments(path6);
-      let segments = path6.split("/"), last = segments.length - 1, output = [], trailingDirectory = !1;
+    function removeDotSegmentsRelative(path7) {
+      if (path7 === "" || path7[0] === "/")
+        return removeDotSegments(path7);
+      let segments = path7.split("/"), last = segments.length - 1, output = [], trailingDirectory = !1;
       for (let i = 0; i <= last; i++) {
         let segment = segments[i];
         segment === "." || segment === ".." ? (segment === ".." && (output.length !== 0 && output[output.length - 1] !== ".." ? output.pop() : output.push("..")), trailingDirectory = i === last) : output.push(segment);
@@ -11818,8 +11818,8 @@ var require_schemes = __commonJS({
     }
     function wsSerialize(wsComponent) {
       if ((wsComponent.port === (wsIsSecure(wsComponent) ? 443 : 80) || wsComponent.port === "") && (wsComponent.port = void 0), typeof wsComponent.secure == "boolean" && (wsComponent.scheme = wsComponent.secure ? "wss" : "ws", wsComponent.secure = void 0), wsComponent.resourceName) {
-        let queryIndex = wsComponent.resourceName.indexOf("?"), path6 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path6 && path6 !== "/" ? path6 : void 0, wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1), wsComponent.resourceName = void 0;
+        let queryIndex = wsComponent.resourceName.indexOf("?"), path7 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path7 && path7 !== "/" ? path7 : void 0, wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1), wsComponent.resourceName = void 0;
       }
       return wsComponent.fragment = void 0, wsComponent;
     }
@@ -14456,11 +14456,11 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f2;
     };
-    function addFormats(ajv, list, fs8, exportName) {
+    function addFormats(ajv, list, fs9, exportName) {
       var _a, _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 || (_b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`);
       for (let f2 of list)
-        ajv.addFormat(f2, fs8[f2]);
+        ajv.addFormat(f2, fs9[f2]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: !0 });
@@ -15899,7 +15899,7 @@ var StdioServerTransport = class {
 
 // src/server/index.ts
 import os3 from "node:os";
-import path5 from "node:path";
+import path6 from "node:path";
 
 // src/server/db.ts
 import fs from "node:fs";
@@ -17231,17 +17231,19 @@ function collectDescendantIds(rootId, childrenMap) {
   }
   return out;
 }
-function buildPrescription(name, kind, instructionTokens, totalTokens, unusedChildren, dupChildren) {
+function buildPrescription(name, _kind, instructionTokens, totalTokens, unusedChildren, dupChildren) {
   let parts = [];
   if (unusedChildren.length > 0 && parts.push(
-    `Loaded ${unusedChildren.join(", ")} without invoking its CLI/MCP tools\u2014tighten the skill description trigger so it only loads when needed.`
+    `Loaded ${unusedChildren.join(", ")} without invoking its CLI/MCP tools \u2014 disable this plugin in Plugins Manager when you do not need it on this project.`
   ), dupChildren.length > 0) {
     let dupDesc = dupChildren.map((d2) => `${d2.name} (+${d2.dup}\xD7 extra)`).join(", ");
-    parts.push(`Avoid re-reading SKILL.md within the same chat: ${dupDesc}.`);
+    parts.push(
+      `Re-loaded the same instructions multiple times in one chat (${dupDesc}) \u2014 starting a fresh chat avoids carrying them again.`
+    );
   }
   let instrShare = totalTokens > 0 ? instructionTokens / totalTokens : 0;
   return instructionTokens >= 25e3 && instrShare >= 0.75 && parts.push(
-    `${Math.round(instrShare * 100)}% (+${fmtShortTok(instructionTokens)} tok) of ${name}'s context footprint is instruction markdown carried across steps\u2014move reference tables and examples out of SKILL.md into on-demand references/ files.`
+    `${Math.round(instrShare * 100)}% (+${fmtShortTok(instructionTokens)} tok) of ${name}'s context footprint came from static instructions carried across steps \u2014 disable it when unused or keep chats shorter.`
   ), parts.length > 0 ? parts.join(" ") : null;
 }
 function comparePluginSkillMetricsByImpact(a, b) {
@@ -20452,7 +20454,7 @@ function getErrorMap2() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  let { data, path: path6, errorMaps, issueData } = params, fullPath = [...path6, ...issueData.path || []], fullIssue = {
+  let { data, path: path7, errorMaps, issueData } = params, fullPath = [...path7, ...issueData.path || []], fullIssue = {
     ...issueData,
     path: fullPath
   };
@@ -20541,8 +20543,8 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path6, key) {
-    this._cachedPath = [], this.parent = parent, this.data = value, this._path = path6, this._key = key;
+  constructor(parent, value, path7, key) {
+    this._cachedPath = [], this.parent = parent, this.data = value, this._path = path7, this._key = key;
   }
   get path() {
     return this._cachedPath.length || (Array.isArray(this._key) ? this._cachedPath.push(...this._path, ...this._key) : this._cachedPath.push(...this._path, this._key)), this._cachedPath;
@@ -23127,8 +23129,8 @@ function normalizeObjectSchema(schema) {
       return schema;
   }
 }
-function getDotPath(path6) {
-  return path6.length === 0 ? "object root" : path6.reduce((acc, seg, index) => index === 0 ? String(seg) : typeof seg == "number" ? `${acc}[${seg}]` : `${acc}.${seg}`, "");
+function getDotPath(path7) {
+  return path7.length === 0 ? "object root" : path7.reduce((acc, seg, index) => index === 0 ? String(seg) : typeof seg == "number" ? `${acc}[${seg}]` : `${acc}.${seg}`, "");
 }
 function getParseErrorMessage(error40) {
   if (error40 && typeof error40 == "object") {
@@ -26239,7 +26241,163 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // src/server/tools.ts
+import fs8 from "node:fs";
+
+// src/server/updateCheck.ts
 import fs7 from "node:fs";
+import path5 from "node:path";
+
+// src/shared/updateCheck.ts
+var SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/i;
+function parseSemver(raw) {
+  let match = SEMVER_RE.exec(raw.trim());
+  if (!match) return null;
+  let major = Number(match[1]), minor = Number(match[2]), patch = Number(match[3]);
+  return !Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || !Number.isSafeInteger(patch) ? null : {
+    major,
+    minor,
+    patch,
+    prerelease: match[4] ?? null
+  };
+}
+function comparePrerelease(a, b) {
+  let aParts = a.split("."), bParts = b.split("."), len = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < len; i++) {
+    let ap = aParts[i], bp = bParts[i];
+    if (ap === void 0) return -1;
+    if (bp === void 0) return 1;
+    if (ap === bp) continue;
+    let aNum = /^\d+$/.test(ap), bNum = /^\d+$/.test(bp);
+    if (aNum && bNum) {
+      let diff = Number(ap) - Number(bp);
+      if (diff !== 0) return diff < 0 ? -1 : 1;
+    } else return aNum !== bNum ? aNum ? -1 : 1 : ap < bp ? -1 : 1;
+  }
+  return 0;
+}
+function compareSemver(a, b) {
+  let pa = parseSemver(a), pb = parseSemver(b);
+  return !pa || !pb ? null : pa.major !== pb.major ? pa.major < pb.major ? -1 : 1 : pa.minor !== pb.minor ? pa.minor < pb.minor ? -1 : 1 : pa.patch !== pb.patch ? pa.patch < pb.patch ? -1 : 1 : pa.prerelease === pb.prerelease ? 0 : pa.prerelease === null ? 1 : pb.prerelease === null ? -1 : comparePrerelease(pa.prerelease, pb.prerelease);
+}
+function buildGitPullCommand(pluginRoot, platform = process.platform) {
+  return platform === "win32" ? `git -C "${pluginRoot.replace(/"/g, '\\"')}" pull` : /^[a-zA-Z0-9._/~-]+$/.test(pluginRoot) ? `git -C ${pluginRoot} pull` : `git -C '${pluginRoot.replace(/'/g, "'\\''")}' pull`;
+}
+
+// src/server/updateCheck.ts
+var FALLBACK_PLUGIN_VERSION = "0.2.0", REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json", REPO_URL = "https://github.com/fmedery/antigravity-plugin-flight-recorder", MAX_MANIFEST_BYTES = 65536, DEFAULT_TIMEOUT_MS = 5e3, DEFAULT_CACHE_TTL_MS = 3e4, checkCache = /* @__PURE__ */ new Map();
+function readInstalledVersion(pluginRoot) {
+  if (!pluginRoot) return FALLBACK_PLUGIN_VERSION;
+  try {
+    let manifestPath = path5.join(pluginRoot, "plugin.json");
+    if (!fs7.existsSync(manifestPath)) return FALLBACK_PLUGIN_VERSION;
+    let raw = JSON.parse(fs7.readFileSync(manifestPath, "utf8"));
+    if (typeof raw.version == "string" && parseSemver(raw.version))
+      return raw.version.trim().replace(/^v/i, "");
+  } catch {
+  }
+  return FALLBACK_PLUGIN_VERSION;
+}
+function detectInstallMethod(pluginRoot) {
+  if (!pluginRoot) return "zip";
+  try {
+    return fs7.existsSync(path5.join(pluginRoot, ".git")) ? "git" : "zip";
+  } catch {
+    return "zip";
+  }
+}
+async function checkForUpdate(opts = {}) {
+  let pluginRoot = opts.pluginRoot ?? null, platform = opts.platform ?? process.platform, fetchImpl = opts.fetchImpl ?? globalThis.fetch, timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, cacheTtlMs = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS, nowMs = opts.nowMs ?? Date.now(), useCache = cacheTtlMs > 0 && fetchImpl === globalThis.fetch, cacheKey = `${pluginRoot ?? ""}::${platform}`;
+  if (useCache) {
+    let cached2 = checkCache.get(cacheKey);
+    if (cached2 && nowMs < cached2.expiresAtMs)
+      return cached2.result;
+  }
+  let currentVersion = readInstalledVersion(pluginRoot), installMethod = detectInstallMethod(pluginRoot), updateCommand = installMethod === "git" && pluginRoot ? buildGitPullCommand(pluginRoot, platform) : null, baseResult = {
+    currentVersion,
+    installMethod,
+    pluginRoot,
+    updateCommand,
+    repoUrl: REPO_URL,
+    checkedAtMs: nowMs
+  };
+  try {
+    let res = await fetchImpl(REMOTE_MANIFEST_URL, {
+      headers: {
+        "User-Agent": "flight-recorder",
+        Accept: "application/json"
+      },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok)
+      return {
+        ...baseResult,
+        status: "error",
+        latestVersion: null,
+        message: `GitHub returned HTTP ${res.status}.`
+      };
+    let contentLength = Number(res.headers.get("content-length") || "0");
+    if (Number.isFinite(contentLength) && contentLength > MAX_MANIFEST_BYTES)
+      return {
+        ...baseResult,
+        status: "error",
+        latestVersion: null,
+        message: "Remote manifest exceeded expected size."
+      };
+    let rawText = await res.text();
+    if (Buffer.byteLength(rawText, "utf8") > MAX_MANIFEST_BYTES)
+      return {
+        ...baseResult,
+        status: "error",
+        latestVersion: null,
+        message: "Remote manifest exceeded expected size."
+      };
+    let parsed;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      return {
+        ...baseResult,
+        status: "error",
+        latestVersion: null,
+        message: "Remote manifest did not contain a valid version."
+      };
+    }
+    if (parsed.name !== "flight-recorder" || typeof parsed.version != "string" || !parseSemver(parsed.version))
+      return {
+        ...baseResult,
+        status: "error",
+        latestVersion: null,
+        message: "Remote manifest did not contain a valid version."
+      };
+    let latestVersion = parsed.version.trim().replace(/^v/i, ""), cmp = compareSemver(currentVersion, latestVersion);
+    if (cmp === null)
+      return {
+        ...baseResult,
+        status: "error",
+        latestVersion: null,
+        message: "Unable to compare installed and remote versions."
+      };
+    let result = {
+      ...baseResult,
+      status: cmp < 0 ? "update_available" : "up_to_date",
+      latestVersion
+    };
+    return useCache && checkCache.set(cacheKey, {
+      expiresAtMs: nowMs + cacheTtlMs,
+      result
+    }), result;
+  } catch (err) {
+    let name = err instanceof Error ? err.name : "";
+    return {
+      ...baseResult,
+      status: "error",
+      latestVersion: null,
+      message: name === "TimeoutError" || name === "AbortError" ? "Request timed out." : "Could not reach GitHub (offline or blocked)."
+    };
+  }
+}
+
+// src/server/tools.ts
 var APP_URI = "ui://flight-recorder/dashboard.html", timeRangeSchema = external_exports2.enum(["today", "7d", "30d", "all"]).optional(), sinceMsSchema = external_exports2.number().finite().positive().nullable().optional();
 function fmtK(n) {
   return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
@@ -26336,8 +26494,8 @@ function resolveProjectMatch(db, projectPath, projectName) {
 }
 function readUiHtml(uiHtmlPath) {
   let overridePath = process.env.FLIGHT_RECORDER_APP_HTML, target = overridePath && overridePath.trim() ? overridePath.trim() : uiHtmlPath;
-  if (fs7.existsSync(target)) {
-    let html = fs7.readFileSync(target, "utf8");
+  if (fs8.existsSync(target)) {
+    let html = fs8.readFileSync(target, "utf8");
     if (html.trim().length > 0) return html;
   }
   return `<!doctype html><html><body style="font-family:system-ui;padding:16px"><h3>Flight Recorder</h3><p>UI bundle not found at ${target}. Run <code>npm run build</code>.</p></body></html>`;
@@ -26345,7 +26503,7 @@ function readUiHtml(uiHtmlPath) {
 function createTrackerMcpServer(ctx) {
   let server = new McpServer({
     name: "flight-recorder",
-    version: "0.2.0"
+    version: readInstalledVersion(ctx.pluginRoot)
   }), scanNow = async () => runScan({
     db: ctx.db,
     dataDir: ctx.dataDir,
@@ -26941,6 +27099,26 @@ ${blocks.join(`
         }
       };
     }
+  ), K3(
+    server,
+    "app_check_update",
+    {
+      title: "Check for Updates",
+      description: "App-only endpoint triggered manually by the user to check GitHub for a newer plugin.json version.",
+      inputSchema: {},
+      _meta: {
+        ui: {
+          visibility: ["app"]
+        }
+      }
+    },
+    async () => {
+      let result = await checkForUpdate({ pluginRoot: ctx.pluginRoot });
+      return {
+        content: [{ type: "text", text: "ok" }],
+        structuredContent: result
+      };
+    }
   ), server;
 }
 
@@ -26955,13 +27133,14 @@ function parseDataDirArg(argv) {
       return argv[i + 1].trim();
   }
   let envDir = process.env.PLUGIN_DATA?.trim();
-  return envDir || path5.join(os3.homedir(), ".gemini", "flight-recorder-data");
+  return envDir || path6.join(os3.homedir(), ".gemini", "flight-recorder-data");
 }
 async function main() {
-  let dataDir = parseDataDirArg(process.argv.slice(2)), db = new TrackerDatabase(dataDir), uiHtmlPath = path5.resolve(import.meta.dirname, "..", "ui", "index.html"), server = createTrackerMcpServer({
+  let dataDir = parseDataDirArg(process.argv.slice(2)), db = new TrackerDatabase(dataDir), uiHtmlPath = path6.resolve(import.meta.dirname, "..", "ui", "index.html"), pluginRoot = path6.resolve(import.meta.dirname, "..", ".."), server = createTrackerMcpServer({
     db,
     dataDir,
-    uiHtmlPath
+    uiHtmlPath,
+    pluginRoot
   }), transport = new StdioServerTransport();
   await server.connect(transport), runScan({ db, dataDir }).catch((err) => {
     process.stderr.write(

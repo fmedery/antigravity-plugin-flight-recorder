@@ -5,6 +5,11 @@ import path from "node:path";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const distServerDir = path.join(repoRoot, "dist", "server");
 const distSharedDir = path.join(repoRoot, "dist", "shared");
+const pluginManifest = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "plugin.json"), "utf8")
+);
+const pluginVersion =
+  typeof pluginManifest.version === "string" ? pluginManifest.version : "0.2.0";
 
 // Resolve esbuild either hoisted or nested under vite so pnpm/npm both work without extra deps.
 const rootReq = createRequire(path.join(repoRoot, "package.json"));
@@ -38,6 +43,9 @@ await esbuild.build({
   target: "node22",
   sourcemap: false,
   minifySyntax: true,
+  define: {
+    __FLIGHT_RECORDER_VERSION__: JSON.stringify(pluginVersion)
+  },
   external: externals,
   banner: {
     js: 'import { createRequire as __frCreateRequire } from "node:module"; const require = __frCreateRequire(import.meta.url);'

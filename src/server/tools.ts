@@ -23,6 +23,7 @@ import {
 } from "./analytics.js";
 import type { TrackerDatabase } from "./db.js";
 import { runScan, type BrainRootConfig } from "./scanner.js";
+import { checkForUpdate, readInstalledVersion } from "./updateCheck.js";
 
 export const APP_URI = "ui://flight-recorder/dashboard.html";
 
@@ -33,6 +34,7 @@ export interface TrackerServerContext {
   db: TrackerDatabase;
   dataDir: string;
   uiHtmlPath: string;
+  pluginRoot?: string;
   brainRoots?: BrainRootConfig[];
   eventsPath?: string;
 }
@@ -219,7 +221,7 @@ function readUiHtml(uiHtmlPath: string): string {
 export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
   const server = new McpServer({
     name: "flight-recorder",
-    version: "0.2.0"
+    version: readInstalledVersion(ctx.pluginRoot)
   });
 
   const scanNow = async () =>
@@ -1054,6 +1056,30 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           dashboard,
           chatDetail
         }
+      };
+    }
+  );
+
+  // 12. App-only: app_check_update
+  registerAppTool(
+    server,
+    "app_check_update",
+    {
+      title: "Check for Updates",
+      description:
+        "App-only endpoint triggered manually by the user to check GitHub for a newer plugin.json version.",
+      inputSchema: {},
+      _meta: {
+        ui: {
+          visibility: ["app"]
+        }
+      }
+    },
+    async () => {
+      const result = await checkForUpdate({ pluginRoot: ctx.pluginRoot });
+      return {
+        content: [{ type: "text", text: "ok" }],
+        structuredContent: result as unknown as Record<string, unknown>
       };
     }
   );

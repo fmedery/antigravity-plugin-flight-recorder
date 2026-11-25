@@ -2,7 +2,6 @@ import React, { useMemo, useState } from "react";
 import type { PluginSkillMetric } from "../../shared/types";
 import {
   buildErrorTroubleshootingPrompt,
-  buildSkillOptimizationPrompt,
   describeErrorBadge,
   describePluginWarning,
   fmtDuration,
@@ -22,7 +21,7 @@ interface Props {
   scopeLabel?: string;
   currentConversationId?: string;
   canSendMessage?: boolean;
-  onOptimizeSkill?: (metric: PluginSkillMetric, prompt: string) => void;
+  onTroubleshootPrompt?: (prompt: string) => void;
   onSelectChat?: (conversationId: string, stepIndex?: number) => void;
   onJumpToStep?: (stepIndex: number) => void;
   onViewAll?: () => void;
@@ -41,7 +40,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
   scopeLabel = "current scope",
   currentConversationId,
   canSendMessage = false,
-  onOptimizeSkill,
+  onTroubleshootPrompt,
   onSelectChat,
   onJumpToStep,
   onViewAll,
@@ -288,7 +287,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                   const info = describePluginWarning(w);
                                   return `${w}: ${info.meaning} (${info.remediation})`;
                                 })
-                                .join(" | ")} — Click row for breakdown and optimization steps`}
+                                .join(" | ")} — Click row for breakdown and details`}
                             >
                               {m.warnings[0]}
                               {m.warningCount > 1
@@ -443,23 +442,6 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                 {fmtDuration(m.totalDurationMs)} · +{fmtK(m.instructionTokens)}{" "}
                                 instr / +{fmtK(m.executionTokens)} exec)
                               </span>
-                              {onOptimizeSkill && (
-                                <button
-                                  type="button"
-                                  className="btn btn-sm btn-primary"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onOptimizeSkill(
-                                      m,
-                                      buildSkillOptimizationPrompt(m, scopeLabel)
-                                    );
-                                  }}
-                                >
-                                  {canSendMessage
-                                    ? "Optimize With Agent"
-                                    : "Copy Optimization Prompt"}
-                                </button>
-                              )}
                             </div>
 
                             {m.errors > 0 && (
@@ -483,10 +465,9 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                 onSelectChat={onSelectChat}
                                 onJumpToStep={onJumpToStep}
                                 onTroubleshoot={
-                                  onOptimizeSkill
+                                  onTroubleshootPrompt
                                     ? () =>
-                                        onOptimizeSkill(
-                                          m,
+                                        onTroubleshootPrompt(
                                           buildErrorTroubleshootingPrompt({
                                             name: m.name,
                                             kind: m.kind,
@@ -615,10 +596,9 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
                                                 onSelectChat={onSelectChat}
                                                 onJumpToStep={onJumpToStep}
                                                 onTroubleshoot={
-                                                  onOptimizeSkill
+                                                  onTroubleshootPrompt
                                                     ? () =>
-                                                        onOptimizeSkill(
-                                                          m,
+                                                        onTroubleshootPrompt(
                                                           buildErrorTroubleshootingPrompt({
                                                             name: ch.name,
                                                             kind: ch.kind,
