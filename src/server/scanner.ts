@@ -175,16 +175,19 @@ function resolveWorktreeMainRoot(
   if (!gitDirMatch || !gitDirMatch[1].trim()) return repoDir;
 
   const rawTarget = gitDirMatch[1].trim();
-  const resolvedGitDir = isAbsoluteLocalPath(rawTarget)
-    ? rawTarget
-    : path.resolve(repoDir, rawTarget);
+  const resolveLocal = (baseDir: string, relTarget: string): string => {
+    if (isAbsoluteLocalPath(relTarget)) return relTarget;
+    return isWindowsPath(baseDir)
+      ? path.win32.resolve(baseDir, relTarget)
+      : path.posix.resolve(baseDir, relTarget);
+  };
+
+  const resolvedGitDir = resolveLocal(repoDir, rawTarget);
 
   const commonDirText = readFileFn(pathJoin(resolvedGitDir, "commondir"));
   if (commonDirText && commonDirText.trim()) {
     const commonRaw = commonDirText.trim();
-    const commonDir = isAbsoluteLocalPath(commonRaw)
-      ? commonRaw
-      : path.resolve(resolvedGitDir, commonRaw);
+    const commonDir = resolveLocal(resolvedGitDir, commonRaw);
     const cleanedCommon = commonDir.replace(/[\\/]+$/, "");
     if (pathBaseName(cleanedCommon).toLowerCase() === ".git") {
       const parent = pathDirName(cleanedCommon);

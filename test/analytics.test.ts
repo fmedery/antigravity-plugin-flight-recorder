@@ -3118,6 +3118,23 @@ test("swarm_wait is excluded from activeMs, toolWallMs, toolSumMs, slow_step dia
   });
   assert.equal(wtRoot, "/Users/dev/main-repo");
 
+  // Windows worktree .git file resolution back to primary repository root
+  const winWtRoot = findProjectRootForPath("C:\\Users\\dev\\worktrees\\wt-1\\src\\index.ts", {
+    homeDir: "C:\\Users\\dev",
+    existsFn: (p) => p === "C:\\Users\\dev\\worktrees\\wt-1\\.git",
+    isFileFn: (p) => p === "C:\\Users\\dev\\worktrees\\wt-1\\.git",
+    readFileFn: (p) => {
+      if (p === "C:\\Users\\dev\\worktrees\\wt-1\\.git") {
+        return "gitdir: C:\\Users\\dev\\main-repo\\.git\\worktrees\\wt-1\n";
+      }
+      if (p === "C:\\Users\\dev\\main-repo\\.git\\worktrees\\wt-1\\commondir") {
+        return "../..\n";
+      }
+      return null;
+    }
+  });
+  assert.equal(winWtRoot, "C:\\Users\\dev\\main-repo");
+
   // Swarm model switch trigger label
   const switches = extractModelSwitches(
     [

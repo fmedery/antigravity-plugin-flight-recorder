@@ -20156,9 +20156,9 @@ function resolveWorktreeMainRoot(repoDir, options = {}) {
   if (!pointer) return repoDir;
   let gitDirMatch = pointer.match(/^gitdir:\s*(.+)$/im);
   if (!gitDirMatch || !gitDirMatch[1].trim()) return repoDir;
-  let rawTarget = gitDirMatch[1].trim(), resolvedGitDir = isAbsoluteLocalPath(rawTarget) ? rawTarget : path4.resolve(repoDir, rawTarget), commonDirText = readFileFn(pathJoin(resolvedGitDir, "commondir"));
+  let rawTarget = gitDirMatch[1].trim(), resolveLocal = (baseDir, relTarget) => isAbsoluteLocalPath(relTarget) ? relTarget : isWindowsPath(baseDir) ? path4.win32.resolve(baseDir, relTarget) : path4.posix.resolve(baseDir, relTarget), resolvedGitDir = resolveLocal(repoDir, rawTarget), commonDirText = readFileFn(pathJoin(resolvedGitDir, "commondir"));
   if (commonDirText && commonDirText.trim()) {
-    let commonRaw = commonDirText.trim(), cleanedCommon = (isAbsoluteLocalPath(commonRaw) ? commonRaw : path4.resolve(resolvedGitDir, commonRaw)).replace(/[\\/]+$/, "");
+    let commonRaw = commonDirText.trim(), cleanedCommon = resolveLocal(resolvedGitDir, commonRaw).replace(/[\\/]+$/, "");
     if (pathBaseName(cleanedCommon).toLowerCase() === ".git") {
       let parent = pathDirName(cleanedCommon);
       if (parent && parent !== ".") return parent;

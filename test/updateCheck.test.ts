@@ -187,7 +187,10 @@ test("checkForUpdate checks GitHub Releases first, falls back to plugin.json on 
     assert.equal(fallbackGit.latestVersion, "0.3.1");
     assert.equal(fallbackGit.source, "manifest");
     assert.equal(fallbackGit.releaseUrl, REPO_URL);
-    assert.equal(fallbackGit.updateCommand, `git -C ${gitRoot} pull`);
+    assert.equal(
+      fallbackGit.updateCommand,
+      buildGitPullCommand(gitRoot, "darwin")
+    );
 
     // 4. Fallback on 403 rate limit for ZIP install
     const fallbackZip = await checkForUpdate({
