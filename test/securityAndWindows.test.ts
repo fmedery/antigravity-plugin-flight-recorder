@@ -494,10 +494,18 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(readme, /agy plugin install/);
 
     // 4. Server version & plain .mjs script syntax checks (no TypeScript syntax in .mjs!)
-    assert.equal(client.getServerVersion()?.version, "0.2.0");
+    const expectedPluginVersion = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "plugin.json"), "utf8")
+    ).version;
+    const expectedPackageVersion = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")
+    ).version;
+    assert.equal(expectedPackageVersion, expectedPluginVersion);
+    assert.equal(client.getServerVersion()?.version, expectedPluginVersion);
     for (const mjsRel of [
       "scripts/install-plugin.mjs",
       "scripts/build-server.mjs",
+      "scripts/bump-version.mjs",
       "hooks/record-event.mjs"
     ]) {
       const chk = spawnSync(process.execPath, ["--check", path.join(repoRoot, mjsRel)], {

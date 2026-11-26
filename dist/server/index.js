@@ -26284,7 +26284,7 @@ function buildGitPullCommand(pluginRoot, platform = process.platform) {
 }
 
 // src/server/updateCheck.ts
-var FALLBACK_PLUGIN_VERSION = "0.2.0", REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json", REPO_URL = "https://github.com/fmedery/antigravity-plugin-flight-recorder", MAX_MANIFEST_BYTES = 65536, DEFAULT_TIMEOUT_MS = 5e3, DEFAULT_CACHE_TTL_MS = 3e4, checkCache = /* @__PURE__ */ new Map();
+var FALLBACK_PLUGIN_VERSION = "0.3.0", REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json", REPO_URL = "https://github.com/fmedery/antigravity-plugin-flight-recorder", MAX_MANIFEST_BYTES = 65536, DEFAULT_TIMEOUT_MS = 5e3, DEFAULT_CACHE_TTL_MS = 3e4, checkCache = /* @__PURE__ */ new Map();
 function readInstalledVersion(pluginRoot) {
   if (!pluginRoot) return FALLBACK_PLUGIN_VERSION;
   try {

@@ -1,6 +1,6 @@
 {
   "name": "flight-recorder",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,8 @@
     "build:ui": "vite build",
     "build": "npm run build:server && npm run build:ui",
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
-    "install-plugin": "node scripts/install-plugin.mjs"
+    "install-plugin": "node scripts/install-plugin.mjs",
+    "version:bump": "node scripts/bump-version.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

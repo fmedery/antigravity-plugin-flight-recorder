@@ -288,6 +288,7 @@ npm install
 npm run build          # Type-checks & bundles dist/server/index.js + dist/ui/index.html
 npm test               # Unit, Windows path, security, and zero-node_modules stdio tests
 npm run install-plugin # Links this checkout into ~/.gemini/config/plugins/flight-recorder (junction on Windows)
+npm run version:bump -- patch  # Bumps plugin.json + package.json (patch | minor | major | X.Y.Z)
 ```
 
 Remember to commit the rebuilt `dist/` — users run the prebuilt bundles directly.
