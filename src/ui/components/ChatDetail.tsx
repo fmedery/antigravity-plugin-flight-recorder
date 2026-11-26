@@ -6,6 +6,7 @@ import type {
 } from "../../shared/types";
 import { fmtDateSpan, fmtDuration, fmtK, fmtPct, fmtUsdCompact } from "../format";
 import { KpiHelpTip } from "./KpiHelpTip";
+import { KpiStatusPill } from "./KpiStatusPill";
 import { ModelBreakdownPanel, ModelInlinePill } from "./ModelBreakdown";
 import { PluginSkillLeaderboard } from "./PluginSkillLeaderboard";
 import { SkillToolMatrix } from "./SkillToolMatrix";
@@ -424,11 +425,31 @@ export const ChatDetailView: React.FC<Props> = ({
             {kpiTokens.hasTokenTelemetry ? fmtK(kpiTotalTokens) : "N/A (legacy)"}
           </div>
           <div className="kpi-sub">
-            {kpiTokens.hasTokenTelemetry
-              ? usingCombinedKpis
-                ? `${fmtPct(kpiTokens.cacheHitRatio)} cache · Coord ${fmtK(parentTotalTokens)} · Workers ${fmtK(subagentTotals.totalTokens)}`
-                : `${fmtPct(kpiTokens.cacheHitRatio)} cache · Peak ${fmtK(kpiTokens.peakContextTokens)}`
-              : "Legacy transcript without token counters"}
+            {kpiTokens.hasTokenTelemetry &&
+            kpiTokens.inputTokens + kpiTokens.cacheReadTokens > 0 ? (
+              <>
+                <KpiStatusPill
+                  kind="cacheHit"
+                  ratio={kpiTokens.cacheHitRatio}
+                  pillLabel={`${fmtPct(kpiTokens.cacheHitRatio)} cache`}
+                  title="Prompt Cache Hit"
+                  detail={`${fmtPct(kpiTokens.cacheHitRatio)} of input context (${fmtK(kpiTokens.cacheReadTokens)} cached ÷ ${fmtK(kpiTokens.cacheReadTokens + kpiTokens.inputTokens)} total input; output excluded) was served from prompt cache.`}
+                />
+                <span>
+                  {usingCombinedKpis
+                    ? `Coord ${fmtK(parentTotalTokens)} · Workers ${fmtK(subagentTotals.totalTokens)}`
+                    : `Peak ${fmtK(kpiTokens.peakContextTokens)}`}
+                </span>
+              </>
+            ) : kpiTokens.hasTokenTelemetry ? (
+              <span>
+                {usingCombinedKpis
+                  ? `Coord ${fmtK(parentTotalTokens)} · Workers ${fmtK(subagentTotals.totalTokens)}`
+                  : "No input tokens"}
+              </span>
+            ) : (
+              <span>Legacy transcript without token counters</span>
+            )}
           </div>
         </div>
         <div className="kpi-card">
