@@ -7,13 +7,13 @@ import test from "node:test";
 import { TrackerDatabase } from "../src/server/db.js";
 import { ingestHookEvents } from "../src/server/hookIngestor.js";
 
-test("hooks/record-event.mjs writes compact JSONL fast and ingestHookEvents tracks incremental byte offsets", () => {
+test("scripts/record-event.mjs writes compact JSONL fast and ingestHookEvents tracks incremental byte offsets", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-hook-test-"));
   const hookScript = path.resolve(
     import.meta.dirname,
     "..",
     "..",
-    "hooks",
+    "scripts",
     "record-event.mjs"
   );
   const eventsPath = path.join(tmpDir, "events.jsonl");

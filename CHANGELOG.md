@@ -10,6 +10,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- Completed Antigravity Marketplace manifest metadata (`$schema`, `license`, `keywords`, structured `author`, and 144-char card description).
+- Moved passive hook spooler to `scripts/record-event.mjs` to match Marketplace bundle script conventions (`0755`).
+- Added `license`/`compatibility` metadata and non-UI CLI `app_*` guardrail to `skills/flight-recorder/SKILL.md`.
+- Bounded `open_flight_recorder` initial `pluginSkillMetrics` payload to stay safely under Antigravity's 1 MiB trajectory result cap.
+- Updated `README.md` to lead with Antigravity Marketplace install/update instructions and absolute screenshot URLs for pre-install card rendering.
+- Removed internal planning specs under `docs/superpowers/` from the published repository bundle.
+
 ## [0.4.0] - 2026-11-26
 
 ### Added

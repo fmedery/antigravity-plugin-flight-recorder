@@ -6,7 +6,7 @@ This document describes exactly what **Flight Recorder** (`flight-recorder`) rea
 
 ## 1. Zero Background Network & Zero Telemetry
 
-- **Zero background network & zero telemetry:** Neither the MCP server (`dist/server/index.js`), the passive lifecycle hook (`hooks/record-event.mjs`), nor the interactive UI (`dist/ui/index.html`) sends telemetry, analytics, crash reports, or automatic/startup network requests.
+- **Zero background network & zero telemetry:** Neither the MCP server (`dist/server/index.js`), the passive lifecycle hook (`scripts/record-event.mjs`), nor the interactive UI (`dist/ui/index.html`) sends telemetry, analytics, crash reports, or automatic/startup network requests.
 - **Explicit, user-triggered update check only:** The only outbound request Flight Recorder can make is when you explicitly click **Updates** in the dashboard, which issues a server-side `GET https://api.github.com/repos/fmedery/antigravity-plugin-flight-recorder/releases/latest` (falling back to `GET https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json` if no GitHub Release exists yet or the API is rate-limited), using a generic `User-Agent: flight-recorder` header and no OS, machine, or usage identifiers, strictly to compare your installed `version`.
 - **Strict iframe Content Security Policy:** The MCP App UI runs inside Antigravity's isolated `text/html;profile=mcp-app` sandbox under the default `default-src 'none'` CSP—no external scripts, stylesheets, fonts, or analytics beacons are loaded.
 - **No install-time lifecycle scripts:** `package.json` defines zero `preinstall`, `install`, or `postinstall` hooks, and end users installing the plugin do not need to run `npm install`.
@@ -18,7 +18,7 @@ This document describes exactly what **Flight Recorder** (`flight-recorder`) rea
 | Process | When It Runs | Purpose & Safety Guarantees |
 | :--- | :--- | :--- |
 | `node ${PLUGIN_ROOT}/dist/server/index.js --data-dir=${PLUGIN_DATA}` | Started by Antigravity over `stdio` while the `flight-recorder` plugin is enabled | Serves read-only analytics tools and the embedded single-file dashboard UI, indexing local transcripts incrementally into `${PLUGIN_DATA}/tracker.sqlite`. |
-| `node ./hooks/record-event.mjs` | Triggered passively on `SessionStart`, `PreInvocation`, `PostToolUse`, `PostInvocation`, and `Stop` (`timeout: 5s`) | Appends compact lifecycle timing/workspace metadata to `${PLUGIN_DATA}/events.jsonl` and exits `0` printing `{}`. **Never registers `PreToolUse`**, so tool permission prompts and execution policies are never intercepted or modified. |
+| `node ./scripts/record-event.mjs` | Triggered passively on `SessionStart`, `PreInvocation`, `PostToolUse`, `PostInvocation`, and `Stop` (`timeout: 5s`) | Appends compact lifecycle timing/workspace metadata to `${PLUGIN_DATA}/events.jsonl` and exits `0` printing `{}`. **Never registers `PreToolUse`**, so tool permission prompts and execution policies are never intercepted or modified. |
 
 ---
 
@@ -52,7 +52,7 @@ Flight Recorder never modifies your workspace source code, Antigravity `config.j
 
 ## 5. Secret Redaction & Input Hardening
 
-- **Credential redaction before storage:** Both `hooks/record-event.mjs` and `src/server/transcriptParser.ts` (`src/shared/redact.ts`) scrub sensitive values from prompt, command, and error previews before writing to `events.jsonl` or `tracker.sqlite`, including:
+- **Credential redaction before storage:** Both `scripts/record-event.mjs` and `src/server/transcriptParser.ts` (`src/shared/redact.ts`) scrub sensitive values from prompt, command, and error previews before writing to `events.jsonl` or `tracker.sqlite`, including:
   - `Authorization: Bearer ...` and `Basic ...` headers
   - URL userinfo credentials (`https://user:pass@host` -> `https://[REDACTED]@host`)
   - API key, secret, password, cookie, and token assignments (`API_KEY=...`, `GITHUB_TOKEN=...`, `CLIENT_SECRET=...`, etc.) and sensitive JSON argument keys

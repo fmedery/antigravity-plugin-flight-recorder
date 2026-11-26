@@ -27121,6 +27121,15 @@ function createTrackerMcpServer(ctx) {
         ...p2,
         topSkills: p2.topSkills.slice(0, 5),
         topTools: p2.topTools.slice(0, 5)
+      })), slimPluginSkills = dashboard.pluginSkillMetrics.slice(0, 30).map((m2) => ({
+        ...m2,
+        targetPaths: m2.targetPaths.slice(0, 5),
+        errorSamples: m2.errorSamples?.slice(0, 3),
+        children: m2.children.slice(0, 15).map((ch) => ({
+          ...ch,
+          targetPaths: ch.targetPaths.slice(0, 3),
+          errorSamples: ch.errorSamples?.slice(0, 2)
+        }))
       })), structured = {
         initialView,
         selectedProjectPath: resolvedProject,
@@ -27128,6 +27137,7 @@ function createTrackerMcpServer(ctx) {
         dashboard: {
           ...dashboard,
           projects: slimProjects,
+          pluginSkillMetrics: slimPluginSkills,
           recentChats: dashboard.recentChats.slice(0, 20)
         }
       }, globalMix = dashboard.totals.modelBreakdown.length > 0 ? `, model mix: ${fmtModelMix(dashboard.totals.modelBreakdown, 4)}` : "", ctxSummary = fmtContextHealth(dashboard.totals.contextHealth), cmpSummary = fmtPeriodComparison(dashboard.periodComparison), swarmCount = dashboard.totals.swarmCount ?? 0, swarmPart = swarmCount > 0 ? `, ${swarmCount} swarm${swarmCount === 1 ? "" : "s"}` : "";

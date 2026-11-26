@@ -4,7 +4,7 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Antigravity plugin to track and optimize parent-first plugin & skill spend, active time, prompt cache carry, and step-by-step timing across projects and chats.",
+  "description": "Antigravity plugin to track and diagnose parent-first plugin & skill spend, active time, prompt cache carry, and step-by-step timing across projects and chats.",
   "author": "Frederic Medery",
   "repository": {
     "type": "git",

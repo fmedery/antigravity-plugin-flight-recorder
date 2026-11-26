@@ -1,6 +1,8 @@
 ---
 name: flight-recorder
 description: Inspect and explain what tasks, tools, skills, plugins, MCP servers, models, and subagents built a project or ran in a chat, including most token-hungry plugins and standalone skills (rolled up without sub-skills or methods), per-model usage percentages, orchestrator model switches, why tokens and cache reads grew, estimated USD costs, and how wall-clock time was spent across steps. Use whenever the user asks about token usage, token-hungry plugins or skills, model mix or switches, cache hit ratio, cost, slow steps, project build history, or asks to open Flight Recorder.
+license: MIT
+compatibility: Requires Node.js >= 22.15.0 (built-in node:sqlite) and read access to local Antigravity transcripts.
 ---
 
 # Flight Recorder Skill
@@ -29,4 +31,5 @@ Call `open_flight_recorder` when the user wants a visual overview, timeline wate
 
 - **Cite exact evidence**: Mention the step index, tool/skill name, byte size, and exact token/duration numbers returned by the tools.
 - **Keep active time vs. idle time separate**: Clearly distinguish active agent execution (`model` + `tool wall` + `subagent`/`worker`) from user wait/idle gaps between turns and Swarm board parking (`swarm_wait`).
+- **Never call `app_*` tools directly**: Tools prefixed with `app_` (such as `app_get_dashboard_data` or `app_rescan_all`) are internal UI endpoints for the interactive dashboard (`visibility: ["app"]`). On non-UI surfaces like Antigravity CLI (`agy`) where all server tools may be listed, always use the 6 model tools (`open_flight_recorder`, `list_projects`, `get_project_summary`, `get_chat_analysis`, `get_skill_optimization`, `explain_bottlenecks`).
 - **Be transparent about pricing**: If `unpricedModels` is non-empty or `estimatedCostUsd` is `null`, state which model(s) are `Unpriced` and tell the user they can set per-1M rates in Flight Recorder's **Pricing** modal—never invent a dollar figure for an unpriced model.

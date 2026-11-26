@@ -259,7 +259,7 @@ test("Windows AGY project inference, transcript path extraction, .exe/.cmd plugi
   }
 });
 
-test("sanitizePreviewText, hooks/record-event.mjs, POSIX 0600 permissions, ReDoS guard, and chunked hook ingestion protect local data", () => {
+test("sanitizePreviewText, scripts/record-event.mjs, POSIX 0600 permissions, ReDoS guard, and chunked hook ingestion protect local data", () => {
   const dirty =
     "\u001b[31mError\u001b[0m \u001b]52;c;c2VjcmV0\u0007 GITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuv " +
     "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl " +
@@ -293,7 +293,7 @@ test("sanitizePreviewText, hooks/record-event.mjs, POSIX 0600 permissions, ReDoS
 
   // Node hook spooler fail-open, secret redaction, POSIX 0700/0600 permissions, and chunked mid-line ingestion
   const tmpDir = path.join(os.tmpdir(), `fr-sec-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const hookScript = path.resolve(import.meta.dirname, "..", "..", "hooks", "record-event.mjs");
+  const hookScript = path.resolve(import.meta.dirname, "..", "..", "scripts", "record-event.mjs");
   try {
     // 1. Malformed JSON stdin fails open with {} and exit 0
     const badRes = spawnSync(process.execPath, [hookScript], {
@@ -434,15 +434,20 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
 
     // 3. Manifest, hooks, skill, and public documentation contracts
     const allowedPluginKeys = new Set([
+      "$schema",
       "name",
       "displayName",
       "version",
       "description",
       "logo",
       "suggestedPrompts",
+      "skills",
       "author",
       "homepage",
       "repository",
+      "license",
+      "keywords",
+      "extensions",
       "disabled"
     ]);
     const pluginJson = JSON.parse(
@@ -451,6 +456,20 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     for (const key of Object.keys(pluginJson)) {
       assert.ok(allowedPluginKeys.has(key), `Unsupported plugin.json key: ${key}`);
     }
+    assert.equal(
+      pluginJson.$schema,
+      "https://antigravity.google/schemas/v1/plugin.json"
+    );
+    assert.equal(pluginJson.license, "MIT");
+    assert.ok(
+      typeof pluginJson.description === "string" &&
+        pluginJson.description.length >= 40 &&
+        pluginJson.description.length <= 160,
+      `Expected Marketplace description length <= 160 chars, got ${String(pluginJson.description ?? "").length}`
+    );
+    assert.ok(
+      Array.isArray(pluginJson.keywords) && pluginJson.keywords.length > 0
+    );
     assert.equal(
       pluginJson.repository,
       "https://github.com/fmedery/antigravity-plugin-flight-recorder"
@@ -476,7 +495,7 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
       "Legacy Python hook must be removed"
     );
     assert.equal(
-      fs.existsSync(path.join(repoRoot, "hooks", "record-event.mjs")),
+      fs.existsSync(path.join(repoRoot, "scripts", "record-event.mjs")),
       true
     );
 
@@ -523,7 +542,7 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
       "scripts/bump-version.mjs",
       "scripts/extract-changelog.mjs",
       "scripts/release.mjs",
-      "hooks/record-event.mjs"
+      "scripts/record-event.mjs"
     ]) {
       const chk = spawnSync(process.execPath, ["--check", path.join(repoRoot, mjsRel)], {
         encoding: "utf8"

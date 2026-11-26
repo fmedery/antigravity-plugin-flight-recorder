@@ -315,6 +315,21 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         topTools: p.topTools.slice(0, 5)
       }));
 
+      // Keep persisted CallToolResult comfortably under Antigravity's 1 MiB trajectory cap;
+      // the interactive UI can fetch full datasets via app_get_dashboard_data.
+      const slimPluginSkills = dashboard.pluginSkillMetrics
+        .slice(0, 30)
+        .map((m) => ({
+          ...m,
+          targetPaths: m.targetPaths.slice(0, 5),
+          errorSamples: m.errorSamples?.slice(0, 3),
+          children: m.children.slice(0, 15).map((ch) => ({
+            ...ch,
+            targetPaths: ch.targetPaths.slice(0, 3),
+            errorSamples: ch.errorSamples?.slice(0, 2)
+          }))
+        }));
+
       const structured = {
         initialView,
         selectedProjectPath: resolvedProject,
@@ -322,6 +337,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         dashboard: {
           ...dashboard,
           projects: slimProjects,
+          pluginSkillMetrics: slimPluginSkills,
           recentChats: dashboard.recentChats.slice(0, 20)
         }
       };

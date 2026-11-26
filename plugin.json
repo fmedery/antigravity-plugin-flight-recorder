@@ -1,15 +1,34 @@
 {
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "flight-recorder",
   "displayName": "Flight Recorder",
   "version": "0.4.0",
-  "author": "Frederic Medery",
-  "homepage": "https://github.com/fmedery/antigravity-plugin-flight-recorder#readme",
-  "repository": "https://github.com/fmedery/antigravity-plugin-flight-recorder",
-  "description": "Understand and optimize which plugins, skills, MCP servers, and tools drive your Antigravity spend, active time, prompt cache carry, and context compaction across projects and chats.",
+  "description": "Track and diagnose which plugins, skills, MCP tools, and models drive your tokens, spend, cache hits, and active time across projects and chats.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "Open Flight Recorder to inspect this project",
     "Which plugins and skills drove spend and active time in this project?",
-    "Why did this chat use so many tokens and how can we optimize our skills?"
+    "Why did this chat use so many tokens and what bottlenecks should we fix?"
+  ],
+  "author": {
+    "name": "Frederic Medery",
+    "url": "https://github.com/fmedery"
+  },
+  "homepage": "https://github.com/fmedery/antigravity-plugin-flight-recorder#readme",
+  "repository": "https://github.com/fmedery/antigravity-plugin-flight-recorder",
+  "license": "MIT",
+  "keywords": [
+    "analytics",
+    "tokens",
+    "cost",
+    "pricing",
+    "telemetry",
+    "cache",
+    "timing",
+    "performance",
+    "swarm",
+    "mcp",
+    "skills",
+    "dashboard"
   ]
 }

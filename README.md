@@ -1,6 +1,6 @@
 # Flight Recorder (`flight-recorder`)
 
-**See which plugins, skills, MCP servers, tools, and models drive your tokens, prompt-cache carry, estimated USD, and active agent time in Google Antigravity — and get concrete steps to optimize them.**
+**See which plugins, skills, MCP servers, tools, and models drive your tokens, prompt-cache carry, estimated USD, and active agent time in Google Antigravity — and pinpoint concrete bottlenecks across projects and chats.**
 
 Flight Recorder is a local-only **Antigravity plugin with an interactive MCP App dashboard**. It works with **Antigravity 2.x (Hub)**, the **Antigravity IDE**, and the **Antigravity CLI (`agy`)** on **Windows, macOS, and Linux**.
 
@@ -46,7 +46,7 @@ KPIs: **Projects**, **Total Tokens**, **Active Time**, **Context Health** (avg p
 | **Plugins & Models** | The global **parent-first plugin & skill leaderboard** and model mix across all projects. |
 | **Recent Chats** | Latest chats across all projects — click one to open its timeline. |
 
-![All Projects dashboard with annotated navigation, time-range filter, KPIs, and workspace table](./docs/screenshots/all-projects.png)
+![All Projects dashboard with annotated navigation, time-range filter, KPIs, and workspace table](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/all-projects.png)
 
 ### 2. Plugins & Skills leaderboard
 
@@ -59,7 +59,7 @@ Available globally on the **Plugins & Models** tab as well as per-project and pe
   - **N× read** — the same `SKILL.md` was read multiple times.
   - Red **err** badges — click to open an inline error drawer with recorded samples, what it means, remediation steps, and **Troubleshoot With Agent**.
 
-![Plugins and Skills leaderboard with annotated model mix, waste badges, and expanded breakdown drawer](./docs/screenshots/plugins-leaderboard.png)
+![Plugins and Skills leaderboard with annotated model mix, waste badges, and expanded breakdown drawer](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/plugins-leaderboard.png)
 
 ### 3. Project view
 
@@ -71,7 +71,7 @@ KPIs: **Chats** (incl. subagents), **Total Tokens**, **Active Time**, **Context 
 | **Usage** | Sub-tabs for **Plugins & Skills**, **Models** (toggle **Tokens**, **Steps**, or **Model Time** share), **Tools** (sort by **Context Impact** or **Wall Time**), and **Files** (`r` read · `e` edit · `c` create touches and `Context Carry`, click to open). |
 | **Chats** | Every chat and subagent run in the project. |
 
-![Project view with annotated KPIs, model mix, and grouped chats with expanded subagents](./docs/screenshots/project-view.png)
+![Project view with annotated KPIs, model mix, and grouped chats with expanded subagents](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/project-view.png)
 
 ### 4. Chat view
 
@@ -87,13 +87,13 @@ KPIs: **Active Time**, **Turns & Wait**, **Tokens & Cache**, **Est. Cost**. Use 
 
 Inspect each user turn, parallel tool batch, cache miss, subagent run, and step-level token attribution.
 
-![Chat Timeline waterfall with annotated turn breakdown, parallel tool batches, and step inspector](./docs/screenshots/chat-timeline.png)
+![Chat Timeline waterfall with annotated turn breakdown, parallel tool batches, and step inspector](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/chat-timeline.png)
 
 #### Tokens & Models
 
 Track prompt-cache carry step by step against `200k` / `256k` context thresholds, switch between **Tokens**, **Steps**, and **Model Time** model shares, and spot orchestrator model switches.
 
-![Chat Tokens and Models panel with annotated 200k cliff, 256k compaction thresholds, and model switch log](./docs/screenshots/chat-tokens-models.png)
+![Chat Tokens and Models panel with annotated 200k cliff, 256k compaction thresholds, and model switch log](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/chat-tokens-models.png)
 
 ### Pricing
 
@@ -129,12 +129,28 @@ You don't have to open the dashboard. Ask your agent and it will call Flight Rec
 
 ### Install
 
-All Antigravity surfaces auto-discover plugins placed in your global plugins folder:
+#### Antigravity Marketplace (Recommended once published)
+
+- **Antigravity App:** open **Left Sidebar → Customizations → Marketplace**, search for **Flight Recorder**, and click **Add**.
+- **Antigravity CLI (`agy`):**
+  ```bash
+  agy plugin install flight-recorder@antigravity-plugins-partners
+  ```
+
+#### Manual / GitHub Install
+
+All Antigravity surfaces also auto-discover plugins placed directly in your global plugins folder:
 
 - **macOS / Linux:** `~/.gemini/config/plugins/flight-recorder`
 - **Windows:** `%USERPROFILE%\.gemini\config\plugins\flight-recorder`
 
-#### Option 1: Git (Recommended)
+##### Option 1: Antigravity CLI (`agy`) from GitHub
+
+```bash
+agy plugin install https://github.com/fmedery/antigravity-plugin-flight-recorder
+```
+
+##### Option 2: Git Clone
 
 **macOS / Linux (Terminal):**
 ```bash
@@ -151,7 +167,7 @@ git clone https://github.com/fmedery/antigravity-plugin-flight-recorder "$HOME\.
 git clone https://github.com/fmedery/antigravity-plugin-flight-recorder "%USERPROFILE%\.gemini\config\plugins\flight-recorder"
 ```
 
-#### Option 2: Download ZIP (no Git)
+##### Option 3: Download ZIP (no Git)
 
 1. On GitHub, click **Code → Download ZIP** and extract the archive.
 2. Rename the extracted folder to `flight-recorder` and move it into your plugins directory so `plugin.json` sits directly at:
@@ -159,17 +175,11 @@ git clone https://github.com/fmedery/antigravity-plugin-flight-recorder "%USERPR
    - **macOS / Linux:** `~/.gemini/config/plugins/flight-recorder/plugin.json`
    > **Important:** `plugin.json` must be directly inside `flight-recorder/` — not nested one level deeper (e.g. `flight-recorder/antigravity-plugin-flight-recorder-main/plugin.json`).
 
-#### Option 3: Ask Antigravity in Chat
+##### Option 4: Ask Antigravity in Chat
 
 Paste this prompt into any Antigravity conversation:
 
 > Install `https://github.com/fmedery/antigravity-plugin-flight-recorder` into my global Antigravity plugins folder as `flight-recorder`.
-
-#### Option 4: Antigravity CLI (`agy`)
-
-```bash
-agy plugin install https://github.com/fmedery/antigravity-plugin-flight-recorder
-```
 
 ### Verify & Open
 
@@ -211,7 +221,11 @@ See [SECURITY.md](./SECURITY.md) for the full audit table.
 
 You can check whether a newer version is available anytime by clicking **Updates** in the top-right of the Flight Recorder dashboard (manual check only; for Git installs, it also gives you a copyable `git -C ... pull` command for your exact folder).
 
-### Upgrade an existing Git install (Recommended)
+### Upgrade a Marketplace install
+
+If you installed Flight Recorder from the **Antigravity Marketplace**, Antigravity manages updates automatically from **Customizations → Installed** (or re-run `agy plugin install flight-recorder@antigravity-plugins-partners`).
+
+### Upgrade an existing Git install
 
 Because prebuilt `dist/` bundles are committed to the repository, **no `npm install` or build step is needed** after pulling.
 
@@ -300,7 +314,7 @@ Remember to commit the rebuilt `dist/` — users run the prebuilt bundles direct
 | `src/server/` | MCP server: transcript scanner/parser, hook ingestor, SQLite, analytics, tools |
 | `src/ui/` | React dashboard (bundled into a single `dist/ui/index.html`) |
 | `src/shared/` | Paths, pricing, redaction, time-range helpers shared by server and UI |
-| `hooks/` | Passive lifecycle-hook recorder |
+| `scripts/record-event.mjs` | Passive lifecycle-hook recorder (executed via `hooks.json`) |
 | `skills/flight-recorder/` | Skill that teaches the agent when and how to use the tools |
 
 ## License
