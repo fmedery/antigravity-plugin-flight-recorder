@@ -2,7 +2,11 @@ import fs from "node:fs";
 import readline from "node:readline";
 import { isAbsoluteLocalPath, unwrapFileUri } from "../shared/paths.js";
 import { sanitizePreviewText } from "../shared/redact.js";
-import type { ToolCategory } from "../shared/types.js";
+import type {
+  ChildConversationLink,
+  SwarmRole,
+  ToolCategory
+} from "../shared/types.js";
 
 export interface ParsedTurnRaw {
   turnIndex: number;
@@ -26,6 +30,8 @@ export interface ParsedToolCallRaw {
   skillPlugin: string | null;
   targetPath: string | null;
   childConversationId: string | null;
+  childConversationIds?: string[];
+  childLinks?: ChildConversationLink[];
   startedAtMs: number | null;
   completedAtMs: number | null;
   durationMs: number;
@@ -41,6 +47,7 @@ export interface ParsedPlannerStepRaw {
   stepIndex: number;
   turnIndex: number;
   model: string;
+  modelSource?: "transcript" | "settings_change" | "unknown";
   createdAtMs: number;
   thinkingChars: number;
   contentChars: number;
@@ -67,6 +74,22 @@ export interface ParsedTranscript {
   plannerSteps: ParsedPlannerStepRaw[];
   toolCalls: ParsedToolCallRaw[];
   candidatePaths: string[];
+  modelUnavailableErrors?: Array<{ model: string; tsMs: number; reason: string }>;
+  detectedSwarmRole?: SwarmRole | null;
+  swarmTitle?: string | null;
+}
+
+export function isIdleWaitTool(toolName: string): boolean {
+  return toolName === "swarm_wait";
+}
+
+export function isSwarmBoardTool(toolName: string): boolean {
+  return (
+    toolName === "read_board" ||
+    toolName === "post_board" ||
+    toolName === "swarm_post" ||
+    toolName === "swarm_wait"
+  );
 }
 
 interface RawLine {
@@ -76,6 +99,7 @@ interface RawLine {
   status?: string;
   created_at?: string;
   model?: string;
+  error?: string;
   input_tokens?: number;
   cache_read_tokens?: number;
   output_tokens?: number;
@@ -86,6 +110,30 @@ interface RawLine {
     name?: string;
     args?: unknown;
   }>;
+}
+
+export function extractUnavailableModelError(
+  errorText: string
+): { model: string; reason: string } | null {
+  if (!errorText || typeof errorText !== "string") return null;
+  const bounded = errorText.slice(0, 600);
+  const patterns = [
+    /(?:no capacity available|not found|not available|no longer available|deprecated|retired|unsupported|unavailable)\s+(?:for\s+)?model\s+[`"']?([a-z0-9][a-z0-9._-]{2,80})[`"']?/i,
+    /models\/([a-z0-9][a-z0-9._-]{2,80})\s+(?:is\s+)?(?:not found|deprecated|retired|no longer available|not supported|unavailable)/i,
+    /model\s+[`"']?([a-z0-9][a-z0-9._-]{2,80})[`"']?\s+(?:is\s+)?(?:not found|does not exist|has been deprecated|is deprecated|retired|no longer available|is unavailable|not supported)/i
+  ];
+  for (const re of patterns) {
+    const match = bounded.match(re);
+    if (match && match[1]) {
+      const model = match[1].trim().toLowerCase();
+      if (!model || model === "unknown" || model === "auto") continue;
+      return {
+        model,
+        reason: sanitizePreviewText(bounded, 120)
+      };
+    }
+  }
+  return null;
 }
 
 export function parseTimestampMs(raw: string | undefined | null): number | null {
@@ -123,6 +171,53 @@ export function normalizeArgs(rawArgs: unknown): Record<string, unknown> {
     out[k] = unwrapStringValue(v);
   }
   return out;
+}
+
+export function normalizeModelSelectionLabel(rawLabel: string): string | null {
+  const cleaned = rawLabel.trim().replace(/[.,;:]+$/, "").trim();
+  if (!cleaned || /^(?:none|auto|default|unknown)$/i.test(cleaned)) {
+    return null;
+  }
+
+  const lower = cleaned.toLowerCase();
+  if (lower.startsWith("gemini")) {
+    const slug = lower
+      .replace(/[^a-z0-9.]+/g, "-")
+      .replace(/(?<!\d)\.|\.(?!\d)/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return slug || null;
+  }
+
+  const slug = lower
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug || null;
+}
+
+export function extractModelSelectionFromUserInput(content: string): {
+  found: boolean;
+  model: string | null;
+} {
+  if (!content) return { found: false, model: null };
+  const blockRe = /<USER_SETTINGS_CHANGE>([\s\S]*?)<\/USER_SETTINGS_CHANGE>/gi;
+  const settingRe =
+    /changed setting `Model Selection` from [^\r\n`]+? to ([^\r\n<]+?)(?=\.(?:\s|$|<)|\r?\n|<|$)/gi;
+
+  let found = false;
+  let model: string | null = null;
+  let blockMatch: RegExpExecArray | null;
+  while ((blockMatch = blockRe.exec(content)) !== null) {
+    const block = blockMatch[1];
+    settingRe.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = settingRe.exec(block)) !== null) {
+      found = true;
+      model = normalizeModelSelectionLabel(match[1]);
+    }
+  }
+  return { found, model };
 }
 
 function extractUserRequest(content: string): {
@@ -315,17 +410,106 @@ function extractCommandPathHints(cmd: string): string[] {
   return combined.length > 0 ? Array.from(new Set(combined)) : [];
 }
 
-function extractChildConversationId(body: string): string | null {
-  const explicitMatch = body.match(
-    /(?:conversationId|conversation_id|conversation:\/\/)["'\s:=]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+const EXPLICIT_CONV_UUID_RE =
+  /(?:conversationId|conversation_id|conversation:\/\/)["'\s:=]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+const BARE_UUID_RE =
+  /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+
+function extractSwarmWorkerRoleFromLine(
+  line: string,
+  baseName: string,
+  index: number,
+  isMulti: boolean
+): string | null {
+  const ignored = new Set(["added", "worker", "workers", "with", "id", "conv", "conversation"]);
+  const beforeConvMatch = line.match(
+    /\b([a-z0-9][a-z0-9_-]{0,23})\s*(?:[:(\-]|->)?\s*(?:conversationId|conversation_id|conversation:\/\/)/i
   );
-  if (explicitMatch) {
-    return explicitMatch[1];
+  if (beforeConvMatch && !ignored.has(beforeConvMatch[1].toLowerCase())) {
+    return beforeConvMatch[1];
   }
-  const anyUuid = body.match(
-    /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i
-  );
-  return anyUuid ? anyUuid[1] : null;
+  const workerNameMatch = line.match(/\bworker\s+([a-z0-9][a-z0-9_-]{0,23})\b/i);
+  if (workerNameMatch && !ignored.has(workerNameMatch[1].toLowerCase())) {
+    return workerNameMatch[1];
+  }
+  if (baseName) {
+    return isMulti ? `${baseName}-${index + 1}` : baseName;
+  }
+  return null;
+}
+
+function extractChildConversationLinks(
+  toolName: string,
+  args: Record<string, unknown>,
+  body: string
+): ChildConversationLink[] {
+  if (!body) return [];
+
+  if (toolName === "invoke_subagent") {
+    const role = typeof args.Role === "string" && args.Role.trim() ? args.Role.trim() : null;
+    const typeName =
+      typeof args.TypeName === "string" && args.TypeName.trim()
+        ? args.TypeName.trim()
+        : "subagent";
+    EXPLICIT_CONV_UUID_RE.lastIndex = 0;
+    const explicitMatch = EXPLICIT_CONV_UUID_RE.exec(body);
+    if (explicitMatch?.[1]) {
+      return [{ conversationId: explicitMatch[1], role, typeName }];
+    }
+    const bareMatch = body.match(BARE_UUID_RE);
+    return bareMatch?.[1]
+      ? [{ conversationId: bareMatch[1], role, typeName }]
+      : [];
+  }
+
+  if (toolName === "swarm") {
+    const action =
+      typeof args.action === "string" ? args.action.trim().toLowerCase() : "";
+    if (action !== "" && action !== "add") {
+      return [];
+    }
+    const baseName =
+      typeof args.name === "string" && args.name.trim() ? args.name.trim() : "";
+    const nArg = typeof args.n === "number" ? args.n : 1;
+    const tasksArg = Array.isArray(args.tasks) ? args.tasks : [];
+
+    const seen = new Set<string>();
+    const rawMatches: Array<{ uuid: string; line: string }> = [];
+    for (const line of body.split(/\r?\n/)) {
+      EXPLICIT_CONV_UUID_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = EXPLICIT_CONV_UUID_RE.exec(line)) !== null) {
+        const uuid = m[1];
+        if (!uuid || seen.has(uuid)) continue;
+        seen.add(uuid);
+        rawMatches.push({ uuid, line });
+      }
+    }
+
+    const isMulti =
+      rawMatches.length > 1 || nArg > 1 || tasksArg.length > 0;
+    return rawMatches.map((entry, idx) => ({
+      conversationId: entry.uuid,
+      role: extractSwarmWorkerRoleFromLine(entry.line, baseName, idx, isMulti),
+      typeName: "swarm"
+    }));
+  }
+
+  if (toolName === "run_workflow") {
+    const seen = new Set<string>();
+    const links: ChildConversationLink[] = [];
+    EXPLICIT_CONV_UUID_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = EXPLICIT_CONV_UUID_RE.exec(body)) !== null) {
+      const uuid = m[1];
+      if (!uuid || seen.has(uuid)) continue;
+      seen.add(uuid);
+      links.push({ conversationId: uuid, role: null, typeName: "run_workflow" });
+    }
+    return links;
+  }
+
+  return [];
 }
 
 function classifyTool(
@@ -339,6 +523,8 @@ function classifyTool(
   skillPlugin: string | null;
   targetPath: string | null;
   childConversationId: string | null;
+  childConversationIds: string[];
+  childLinks: ChildConversationLink[];
   argsPreview: string;
   commandPathHints: string[];
 } {
@@ -348,6 +534,8 @@ function classifyTool(
   let skillName: string | null = null;
   let skillPlugin: string | null = null;
   let childConversationId: string | null = null;
+  let childConversationIds: string[] = [];
+  let childLinks: ChildConversationLink[] = [];
   let commandPathHints: string[] = [];
 
   const normTarget = targetPath ? targetPath.replace(/\\/g, "/") : null;
@@ -365,6 +553,12 @@ function classifyTool(
     }
   }
 
+  const swarmAction =
+    toolName === "swarm" && typeof args.action === "string"
+      ? args.action.trim().toLowerCase()
+      : "";
+  const isSwarmSpawn = toolName === "swarm" && (swarmAction === "add" || swarmAction === "");
+
   if (category !== "skill") {
     if (toolName === "call_mcp_tool") {
       category = "mcp";
@@ -376,13 +570,15 @@ function classifyTool(
       mcpServer = firstSeg || "mcp";
     } else if (
       toolName === "invoke_subagent" ||
-      toolName === "swarm" ||
+      isSwarmSpawn ||
       toolName === "run_workflow"
     ) {
       category = "subagent";
-      if (toolName === "invoke_subagent") {
-        childConversationId = extractChildConversationId(body);
-      }
+      childLinks = extractChildConversationLinks(toolName, args, body);
+      childConversationIds = childLinks.map((l) => l.conversationId);
+      childConversationId = childConversationIds[0] ?? null;
+    } else if (toolName === "swarm") {
+      category = "other";
     } else if (toolName === "run_command") {
       category = "command";
       const cmd = typeof args.CommandLine === "string" ? args.CommandLine : "";
@@ -419,6 +615,28 @@ function classifyTool(
     const typeName = typeof args.TypeName === "string" ? args.TypeName : "subagent";
     const role = typeof args.Role === "string" ? args.Role : "";
     argsPreview = `Type: ${typeName}${role ? ` | Role: ${role}` : ""}`;
+  } else if (toolName === "swarm") {
+    const name = typeof args.name === "string" && args.name.trim() ? args.name.trim() : "";
+    if (isSwarmSpawn) {
+      const nCount = typeof args.n === "number" && args.n > 1 ? args.n : 0;
+      const tasksCount = Array.isArray(args.tasks) && args.tasks.length > 0 ? args.tasks.length : 0;
+      const multiCount = Math.max(nCount, tasksCount, childLinks.length);
+      if (multiCount > 1 || tasksCount > 0) {
+        argsPreview = `Type: swarm | Role: ${name || "worker"} (${multiCount || 1} workers)`;
+      } else {
+        argsPreview = `Type: swarm${name ? ` | Role: ${name}` : ""}`;
+      }
+    } else {
+      const parts = [`Action: ${swarmAction}`];
+      if (name) parts.push(`Worker: ${name}`);
+      if (typeof args.model === "string" && args.model.trim()) {
+        parts.push(`Model: ${args.model.trim()}`);
+      }
+      if (typeof args.title === "string" && args.title.trim()) {
+        parts.push(`Title: ${makePreview(args.title.trim(), 60)}`);
+      }
+      argsPreview = parts.join(" | ");
+    }
   } else if (toolName === "call_mcp_tool") {
     argsPreview = `${String(args.ServerName ?? "")}/${String(args.ToolName ?? "")}`;
   } else if (targetPath) {
@@ -436,6 +654,8 @@ function classifyTool(
     skillPlugin,
     targetPath,
     childConversationId,
+    childConversationIds,
+    childLinks,
     argsPreview,
     commandPathHints
   };
@@ -467,11 +687,52 @@ export async function parseTranscriptFile(
   let maxTs = 0;
   let hasTokenTelemetry = false;
   let firstSystemMessage: string | null = null;
+  let activeSelectedModel: string | null = null;
+  let hasCoordinatorSignal = false;
+  let explicitSwarmWorkerTag = false;
+  let hasBoardTools = false;
+  let swarmTitle: string | null = null;
+  const unavailableByModel = new Map<
+    string,
+    { model: string; tsMs: number; reason: string }
+  >();
+
+  const recordSwarmToolSignals = (
+    toolName: string,
+    args: Record<string, unknown>,
+    classified: ReturnType<typeof classifyTool>
+  ) => {
+    if (toolName === "swarm") {
+      hasCoordinatorSignal = true;
+      const action =
+        typeof args.action === "string" ? args.action.trim().toLowerCase() : "";
+      if (action === "title" && typeof args.title === "string" && args.title.trim()) {
+        swarmTitle = makePreview(args.title.trim(), 80);
+      }
+    }
+    if (isSwarmBoardTool(toolName)) {
+      hasBoardTools = true;
+    }
+    if (classified.skillName === "swarm_pane") {
+      hasCoordinatorSignal = true;
+    } else if (classified.skillName === "swarm_monitor") {
+      explicitSwarmWorkerTag = true;
+    }
+    if (
+      classified.targetPath &&
+      /\/\.system_generated\/swarm\/plan\.json$/i.test(
+        classified.targetPath.replace(/\\/g, "/")
+      )
+    ) {
+      hasCoordinatorSignal = true;
+    }
+  };
 
   const flushPendingTools = () => {
     while (pendingQueue.length > 0) {
       const pending = pendingQueue.shift()!;
       const classified = classifyTool(pending.toolName, pending.args, "");
+      recordSwarmToolSignals(pending.toolName, pending.args, classified);
       if (classified.targetPath) candidatePaths.push(classified.targetPath);
       for (const hint of classified.commandPathHints) candidatePaths.push(hint);
 
@@ -487,6 +748,8 @@ export async function parseTranscriptFile(
         skillPlugin: classified.skillPlugin,
         targetPath: classified.targetPath,
         childConversationId: classified.childConversationId,
+        childConversationIds: classified.childConversationIds,
+        childLinks: classified.childLinks,
         startedAtMs: pending.plannerCreatedAtMs,
         completedAtMs: null,
         durationMs: 0,
@@ -522,8 +785,34 @@ export async function parseTranscriptFile(
     }
 
     if (raw.type === "SYSTEM_MESSAGE") {
-      if (firstSystemMessage === null && typeof raw.content === "string" && raw.content.trim()) {
-        firstSystemMessage = raw.content;
+      if (typeof raw.content === "string") {
+        if (firstSystemMessage === null && raw.content.trim()) {
+          firstSystemMessage = raw.content;
+        }
+        if (/<swarm_worker>/i.test(raw.content) || /\bswarm_monitor\b/i.test(raw.content)) {
+          explicitSwarmWorkerTag = true;
+        }
+      }
+      continue;
+    }
+
+    if (raw.type === "ERROR_MESSAGE") {
+      const errText =
+        typeof raw.error === "string"
+          ? raw.error
+          : typeof raw.content === "string"
+            ? raw.content
+            : "";
+      const extracted = extractUnavailableModelError(errText);
+      if (extracted) {
+        const existing = unavailableByModel.get(extracted.model);
+        if (!existing || stepCreatedAtMs >= existing.tsMs) {
+          unavailableByModel.set(extracted.model, {
+            model: extracted.model,
+            tsMs: stepCreatedAtMs,
+            reason: extracted.reason
+          });
+        }
       }
       continue;
     }
@@ -532,8 +821,17 @@ export async function parseTranscriptFile(
       flushPendingTools();
       currentTurnIndex += 1;
       const content = typeof raw.content === "string" ? raw.content : "";
+      const sel = extractModelSelectionFromUserInput(content);
+      if (sel.found) {
+        activeSelectedModel = sel.model;
+      }
       const { promptText, slashCommand } = extractUserRequest(content);
-      if (slashCommand) slashSet.add(slashCommand);
+      if (slashCommand) {
+        slashSet.add(slashCommand);
+        if (slashCommand.toLowerCase() === "/swarm") {
+          hasCoordinatorSignal = true;
+        }
+      }
 
       turns.push({
         turnIndex: currentTurnIndex,
@@ -562,8 +860,14 @@ export async function parseTranscriptFile(
         });
       }
 
-      const model =
-        typeof raw.model === "string" && raw.model.trim() ? raw.model.trim() : "unknown";
+      const rawModel =
+        typeof raw.model === "string" && raw.model.trim() ? raw.model.trim() : null;
+      const model = rawModel ?? activeSelectedModel ?? "unknown";
+      const modelSource: "transcript" | "settings_change" | "unknown" = rawModel
+        ? "transcript"
+        : activeSelectedModel
+          ? "settings_change"
+          : "unknown";
       if (model !== "unknown") modelsSet.add(model);
 
       if (
@@ -584,6 +888,7 @@ export async function parseTranscriptFile(
         stepIndex,
         turnIndex: currentTurnIndex,
         model,
+        modelSource,
         createdAtMs: stepCreatedAtMs,
         thinkingChars: typeof raw.thinking === "string" ? raw.thinking.length : 0,
         contentChars: typeof raw.content === "string" ? raw.content.length : 0,
@@ -628,6 +933,7 @@ export async function parseTranscriptFile(
       const estResultTokens = Math.ceil(resultBytes / 4);
       const { isError, errorPreview } = detectToolError(raw.status, body);
       const classified = classifyTool(pending.toolName, pending.args, body);
+      recordSwarmToolSignals(pending.toolName, pending.args, classified);
 
       if (classified.targetPath) candidatePaths.push(classified.targetPath);
       for (const hint of classified.commandPathHints) candidatePaths.push(hint);
@@ -644,6 +950,8 @@ export async function parseTranscriptFile(
         skillPlugin: classified.skillPlugin,
         targetPath: classified.targetPath,
         childConversationId: classified.childConversationId,
+        childConversationIds: classified.childConversationIds,
+        childLinks: classified.childLinks,
         startedAtMs,
         completedAtMs: endMs,
         durationMs,
@@ -683,6 +991,13 @@ export async function parseTranscriptFile(
 
   const startedAtMs = Number.isFinite(minTs) ? minTs : 0;
   const endedAtMs = maxTs >= startedAtMs ? maxTs : startedAtMs;
+  const detectedSwarmRole: SwarmRole | null = explicitSwarmWorkerTag
+    ? "worker"
+    : hasCoordinatorSignal
+      ? "coordinator"
+      : hasBoardTools
+        ? "worker"
+        : null;
 
   return {
     conversationId,
@@ -698,6 +1013,9 @@ export async function parseTranscriptFile(
     turns,
     plannerSteps,
     toolCalls,
-    candidatePaths
+    candidatePaths,
+    modelUnavailableErrors: Array.from(unavailableByModel.values()),
+    detectedSwarmRole,
+    swarmTitle
   };
 }

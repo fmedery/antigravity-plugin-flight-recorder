@@ -1,18 +1,62 @@
 import React, { useState } from "react";
-import { DEFAULT_PRICING_RULES } from "../../shared/pricing";
-import type { ModelPricingRule } from "../../shared/types";
+import {
+  DEFAULT_PRICING_RULES,
+  getModelAvailability,
+  isDefaultRetiredModelPattern,
+  isUnpriceablePlaceholderModel,
+  matchesModelPattern
+} from "../../shared/pricing";
+import type {
+  ModelAvailabilitySignal,
+  ModelAvailabilityStatus,
+  ModelPricingRule
+} from "../../shared/types";
 
 interface Props {
   rules: ModelPricingRule[];
   unpricedModels: string[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
   saving: boolean;
   onClose: () => void;
   onSave: (rules: ModelPricingRule[]) => Promise<void>;
 }
 
+function resolveRuleAutoStatus(
+  pattern: string,
+  modelSignals?: Record<string, ModelAvailabilitySignal>,
+  latestGlobalActivityMs = 0
+): ModelAvailabilityStatus {
+  if (isDefaultRetiredModelPattern(pattern)) {
+    return {
+      status: "retired",
+      badge: "Retired",
+      reason: "Legacy model family — no longer available"
+    };
+  }
+  if (modelSignals) {
+    let bestInactive: ModelAvailabilityStatus | null = null;
+    for (const modelName of Object.keys(modelSignals)) {
+      if (!matchesModelPattern(modelName, pattern)) continue;
+      const st = getModelAvailability(
+        modelName,
+        [],
+        modelSignals,
+        latestGlobalActivityMs
+      );
+      if (st.status === "unavailable") return st;
+      if (st.status === "inactive" && !bestInactive) bestInactive = st;
+    }
+    if (bestInactive) return bestInactive;
+  }
+  return { status: "active", badge: null, reason: null };
+}
+
 export const SettingsModal: React.FC<Props> = ({
   rules,
   unpricedModels,
+  modelSignals,
+  latestGlobalActivityMs = 0,
   saving,
   onClose,
   onSave
@@ -54,6 +98,10 @@ export const SettingsModal: React.FC<Props> = ({
     setDraft(DEFAULT_PRICING_RULES.map((r) => ({ ...r })));
   };
 
+  const actionableUnpriced = unpricedModels.filter(
+    (m) => !isUnpriceablePlaceholderModel(m)
+  );
+
   const handleSave = async () => {
     const cleaned = draft
       .filter((r) => r.pattern.trim().length > 0)
@@ -67,7 +115,8 @@ export const SettingsModal: React.FC<Props> = ({
           : 0,
         outputPer1M: Number.isFinite(r.outputPer1M)
           ? Math.max(0, r.outputPer1M)
-          : 0
+          : 0,
+        ...(typeof r.retired === "boolean" ? { retired: r.retired } : {})
       }));
     await onSave(cleaned);
     onClose();
@@ -88,8 +137,7 @@ export const SettingsModal: React.FC<Props> = ({
           <div>
             <strong style={{ fontSize: 15 }}>Model USD Pricing (per 1M tokens)</strong>
             <div style={{ fontSize: 12, color: "var(--txt-secondary)", marginTop: 2 }}>
-              Costs are local estimates only. Models without a matching rule display as{" "}
-              <strong>Unpriced</strong>.
+              Costs are local estimates only. Unavailable/retired models are auto-detected from legacy families, server errors, and 30d+ inactivity (use <strong>Retired</strong> to override).
             </div>
           </div>
           <button type="button" className="btn btn-sm" onClick={onClose}>
@@ -97,7 +145,7 @@ export const SettingsModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {unpricedModels.length > 0 && (
+        {actionableUnpriced.length > 0 && (
           <div
             style={{
               marginTop: 10,
@@ -112,16 +160,29 @@ export const SettingsModal: React.FC<Props> = ({
             }}
           >
             <span style={{ fontWeight: 600 }}>Unpriced models detected:</span>
-            {unpricedModels.map((m) => (
-              <button
-                key={m}
-                type="button"
-                className="btn btn-sm"
-                onClick={() => addEmptyRule(m)}
-              >
-                + Add rate for {m}
-              </button>
-            ))}
+            {actionableUnpriced.map((m) => {
+              const avail = getModelAvailability(
+                m,
+                draft,
+                modelSignals,
+                latestGlobalActivityMs
+              );
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
+                  title={avail.reason || `Add a pricing rule for ${m}`}
+                  onClick={() => addEmptyRule(m)}
+                >
+                  <span>+ Add rate for {m}</span>
+                  {avail.badge && (
+                    <span className="model-retired-tag">{avail.badge}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -130,6 +191,7 @@ export const SettingsModal: React.FC<Props> = ({
             <thead>
               <tr>
                 <th>On</th>
+                <th title="Optional manual override (auto-detected otherwise)">Retired</th>
                 <th>Model Pattern</th>
                 <th>Label</th>
                 <th className="text-right">Input $/1M</th>
@@ -139,39 +201,86 @@ export const SettingsModal: React.FC<Props> = ({
               </tr>
             </thead>
             <tbody>
-              {draft.map((rule, idx) => (
-                <tr key={rule.id}>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={rule.enabled}
-                      onChange={(e) =>
-                        updateRule(idx, { enabled: e.target.checked })
-                      }
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      className="input-field"
-                      style={{ width: 145 }}
-                      value={rule.pattern}
-                      onChange={(e) =>
-                        updateRule(idx, { pattern: e.target.value })
-                      }
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      className="input-field"
-                      style={{ width: 120 }}
-                      value={rule.label}
-                      onChange={(e) =>
-                        updateRule(idx, { label: e.target.value })
-                      }
-                    />
-                  </td>
+              {draft.map((rule, idx) => {
+                const autoStatus = resolveRuleAutoStatus(
+                  rule.pattern,
+                  modelSignals,
+                  latestGlobalActivityMs
+                );
+                const isFlagged =
+                  rule.retired === true ||
+                  (rule.retired === undefined && Boolean(autoStatus.badge));
+                const badgeLabel =
+                  rule.retired === true
+                    ? "Retired"
+                    : rule.retired === undefined
+                      ? autoStatus.badge
+                      : null;
+                const badgeTitle =
+                  rule.retired === true
+                    ? "Marked as retired / no longer available"
+                    : autoStatus.reason ?? "Mark model as no longer available";
+                return (
+                  <tr
+                    key={rule.id}
+                    className={isFlagged ? "pricing-row-retired" : undefined}
+                  >
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={rule.enabled}
+                        onChange={(e) =>
+                          updateRule(idx, { enabled: e.target.checked })
+                        }
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={isFlagged}
+                        aria-label={`Mark ${rule.label || rule.pattern} as retired`}
+                        title={
+                          rule.retired === undefined && autoStatus.badge
+                            ? `Auto-detected (${autoStatus.badge}) — uncheck to mark active`
+                            : "Manual override: mark model as no longer available"
+                        }
+                        onChange={(e) =>
+                          updateRule(idx, { retired: e.target.checked })
+                        }
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        className="input-field"
+                        style={{ width: 145 }}
+                        value={rule.pattern}
+                        onChange={(e) =>
+                          updateRule(idx, { pattern: e.target.value })
+                        }
+                      />
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <input
+                          type="text"
+                          className="input-field"
+                          style={{ width: 120 }}
+                          value={rule.label}
+                          onChange={(e) =>
+                            updateRule(idx, { label: e.target.value })
+                          }
+                        />
+                        {badgeLabel && (
+                          <span
+                            className="badge badge-retired"
+                            title={badgeTitle}
+                          >
+                            {badgeLabel}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                   <td className="text-right">
                     <input
                       type="number"
@@ -215,18 +324,19 @@ export const SettingsModal: React.FC<Props> = ({
                       }
                     />
                   </td>
-                  <td>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => removeRule(idx)}
-                      title="Remove rule"
-                    >
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => removeRule(idx)}
+                        title="Remove rule"
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

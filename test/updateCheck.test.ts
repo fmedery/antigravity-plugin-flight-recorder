@@ -3,7 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { checkForUpdate } from "../src/server/updateCheck.js";
+import {
+  checkForUpdate,
+  detectInstallMethod,
+  REMOTE_MANIFEST_URL,
+  REMOTE_RELEASE_URL,
+  REPO_URL
+} from "../src/server/updateCheck.js";
 import {
   buildGitPullCommand,
   compareSemver,
@@ -56,22 +62,64 @@ test("buildGitPullCommand quotes paths safely on POSIX and Windows", () => {
   );
 });
 
-test("checkForUpdate handles up-to-date, git/zip update_available, and error conditions", async () => {
+test("detectInstallMethod distinguishes git, marketplace markers, and zip installs", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr-method-test-"));
+  try {
+    const gitDir = path.join(tmpDir, "git-dir");
+    fs.mkdirSync(path.join(gitDir, ".git"), { recursive: true });
+    assert.equal(detectInstallMethod(gitDir), "git");
+
+    const catalogIdDir = path.join(tmpDir, "-1870732469773246571");
+    fs.mkdirSync(catalogIdDir, { recursive: true });
+    assert.equal(detectInstallMethod(catalogIdDir), "marketplace");
+
+    const markerDir = path.join(tmpDir, "mp-marker");
+    fs.mkdirSync(markerDir, { recursive: true });
+    fs.writeFileSync(path.join(markerDir, ".marketplace"), "partners\n", "utf8");
+    assert.equal(detectInstallMethod(markerDir), "marketplace");
+
+    const sourceManifestDir = path.join(tmpDir, "mp-source");
+    fs.mkdirSync(sourceManifestDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sourceManifestDir, "plugin.json"),
+      JSON.stringify({
+        name: "flight-recorder",
+        version: "0.3.0",
+        source: "antigravity-plugins-partners"
+      }),
+      "utf8"
+    );
+    assert.equal(detectInstallMethod(sourceManifestDir), "marketplace");
+
+    const zipDir = path.join(tmpDir, "flight-recorder");
+    fs.mkdirSync(zipDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(zipDir, "plugin.json"),
+      JSON.stringify({ name: "flight-recorder", version: "0.3.0" }),
+      "utf8"
+    );
+    assert.equal(detectInstallMethod(zipDir), "zip");
+    assert.equal(detectInstallMethod(null), "zip");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("checkForUpdate checks GitHub Releases first, falls back to plugin.json on 404/403, and handles marketplace/git/zip/errors", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fr-update-test-"));
   const gitRoot = path.join(tmpDir, "git-install");
   const zipRoot = path.join(tmpDir, "zip-install");
+  const mpRoot = path.join(tmpDir, "-1870732469773246571");
   fs.mkdirSync(path.join(gitRoot, ".git"), { recursive: true });
   fs.mkdirSync(zipRoot, { recursive: true });
-  fs.writeFileSync(
-    path.join(gitRoot, "plugin.json"),
-    JSON.stringify({ name: "flight-recorder", version: "0.2.0" }),
-    "utf8"
-  );
-  fs.writeFileSync(
-    path.join(zipRoot, "plugin.json"),
-    JSON.stringify({ name: "flight-recorder", version: "0.2.0" }),
-    "utf8"
-  );
+  fs.mkdirSync(mpRoot, { recursive: true });
+  for (const dir of [gitRoot, zipRoot, mpRoot]) {
+    fs.writeFileSync(
+      path.join(dir, "plugin.json"),
+      JSON.stringify({ name: "flight-recorder", version: "0.3.0" }),
+      "utf8"
+    );
+  }
 
   const mockJsonResponse = (body: unknown, status = 200) =>
     new Response(typeof body === "string" ? body : JSON.stringify(body), {
@@ -80,44 +128,82 @@ test("checkForUpdate handles up-to-date, git/zip update_available, and error con
     });
 
   try {
-    // 1. Up to date
+    // 1. Primary GitHub Release endpoint: up to date
     const upToDate = await checkForUpdate({
       pluginRoot: gitRoot,
       cacheTtlMs: 0,
-      fetchImpl: async () =>
-        mockJsonResponse({ name: "flight-recorder", version: "0.2.0" })
+      fetchImpl: async (url) => {
+        assert.equal(String(url), REMOTE_RELEASE_URL);
+        return mockJsonResponse({
+          tag_name: "v0.3.0",
+          html_url: `${REPO_URL}/releases/tag/v0.3.0`,
+          draft: false,
+          prerelease: false
+        });
+      }
     });
     assert.equal(upToDate.status, "up_to_date");
-    assert.equal(upToDate.currentVersion, "0.2.0");
-    assert.equal(upToDate.latestVersion, "0.2.0");
+    assert.equal(upToDate.currentVersion, "0.3.0");
+    assert.equal(upToDate.latestVersion, "0.3.0");
     assert.equal(upToDate.installMethod, "git");
+    assert.equal(upToDate.source, "github_release");
+    assert.equal(upToDate.releaseUrl, `${REPO_URL}/releases/tag/v0.3.0`);
     assert.ok(upToDate.updateCommand?.startsWith("git -C "));
 
-    // 2. Update available on git install
-    const gitUpdate = await checkForUpdate({
+    // 2. Primary GitHub Release endpoint: update available on marketplace install + untrusted html_url sanitized
+    const mpUpdate = await checkForUpdate({
+      pluginRoot: mpRoot,
+      cacheTtlMs: 0,
+      fetchImpl: async () =>
+        mockJsonResponse({
+          tag_name: "v1.0.0",
+          html_url: "https://evil.example.com/phish",
+          draft: false,
+          prerelease: false
+        })
+    });
+    assert.equal(mpUpdate.status, "update_available");
+    assert.equal(mpUpdate.latestVersion, "1.0.0");
+    assert.equal(mpUpdate.installMethod, "marketplace");
+    assert.equal(mpUpdate.updateCommand, null);
+    assert.equal(mpUpdate.releaseUrl, `${REPO_URL}/releases/tag/v1.0.0`);
+
+    // 3. Fallback to raw plugin.json when Releases API returns 404 (no releases yet)
+    const calledUrls: string[] = [];
+    const fallbackGit = await checkForUpdate({
       pluginRoot: gitRoot,
       platform: "darwin",
       cacheTtlMs: 0,
-      fetchImpl: async () =>
-        mockJsonResponse({ name: "flight-recorder", version: "0.2.1" })
+      fetchImpl: async (url) => {
+        const u = String(url);
+        calledUrls.push(u);
+        if (u === REMOTE_RELEASE_URL) return mockJsonResponse({ message: "Not Found" }, 404);
+        assert.equal(u, REMOTE_MANIFEST_URL);
+        return mockJsonResponse({ name: "flight-recorder", version: "0.3.1" });
+      }
     });
-    assert.equal(gitUpdate.status, "update_available");
-    assert.equal(gitUpdate.latestVersion, "0.2.1");
-    assert.equal(gitUpdate.installMethod, "git");
-    assert.equal(gitUpdate.updateCommand, `git -C ${gitRoot} pull`);
+    assert.deepEqual(calledUrls, [REMOTE_RELEASE_URL, REMOTE_MANIFEST_URL]);
+    assert.equal(fallbackGit.status, "update_available");
+    assert.equal(fallbackGit.latestVersion, "0.3.1");
+    assert.equal(fallbackGit.source, "manifest");
+    assert.equal(fallbackGit.releaseUrl, REPO_URL);
+    assert.equal(fallbackGit.updateCommand, `git -C ${gitRoot} pull`);
 
-    // 3. Update available on ZIP install (no .git dir)
-    const zipUpdate = await checkForUpdate({
+    // 4. Fallback on 403 rate limit for ZIP install
+    const fallbackZip = await checkForUpdate({
       pluginRoot: zipRoot,
       cacheTtlMs: 0,
-      fetchImpl: async () =>
-        mockJsonResponse({ name: "flight-recorder", version: "0.3.0" })
+      fetchImpl: async (url) => {
+        if (String(url) === REMOTE_RELEASE_URL) return mockJsonResponse("rate limited", 403);
+        return mockJsonResponse({ name: "flight-recorder", version: "0.4.0" });
+      }
     });
-    assert.equal(zipUpdate.status, "update_available");
-    assert.equal(zipUpdate.installMethod, "zip");
-    assert.equal(zipUpdate.updateCommand, null);
+    assert.equal(fallbackZip.status, "update_available");
+    assert.equal(fallbackZip.installMethod, "zip");
+    assert.equal(fallbackZip.updateCommand, null);
+    assert.equal(fallbackZip.source, "manifest");
 
-    // 4. HTTP error
+    // 5. HTTP 500 error
     const httpErr = await checkForUpdate({
       pluginRoot: gitRoot,
       cacheTtlMs: 0,
@@ -126,7 +212,7 @@ test("checkForUpdate handles up-to-date, git/zip update_available, and error con
     assert.equal(httpErr.status, "error");
     assert.match(httpErr.message ?? "", /HTTP 500/);
 
-    // 5. Network failure
+    // 6. Network failure
     const netErr = await checkForUpdate({
       pluginRoot: gitRoot,
       cacheTtlMs: 0,
@@ -137,7 +223,7 @@ test("checkForUpdate handles up-to-date, git/zip update_available, and error con
     assert.equal(netErr.status, "error");
     assert.match(netErr.message ?? "", /Could not reach GitHub/);
 
-    // 6. Timeout / AbortError
+    // 7. Timeout / AbortError
     const timeoutErr = await checkForUpdate({
       pluginRoot: gitRoot,
       cacheTtlMs: 0,
@@ -150,8 +236,23 @@ test("checkForUpdate handles up-to-date, git/zip update_available, and error con
     assert.equal(timeoutErr.status, "error");
     assert.match(timeoutErr.message ?? "", /timed out/i);
 
-    // 7. Malformed JSON, wrong plugin name, invalid version
-    for (const badBody of [
+    // 8. Malformed JSON, draft release, wrong plugin name, invalid version
+    for (const badRelease of [
+      "{not-json",
+      { tag_name: "v0.9.0", draft: true },
+      { tag_name: "v0.9.0-rc.1", prerelease: true },
+      { tag_name: "bad" }
+    ]) {
+      const badRes = await checkForUpdate({
+        pluginRoot: gitRoot,
+        cacheTtlMs: 0,
+        fetchImpl: async () => mockJsonResponse(badRelease)
+      });
+      assert.equal(badRes.status, "error");
+      assert.match(badRes.message ?? "", /valid version/);
+    }
+
+    for (const badManifest of [
       "{not-json",
       { name: "other-plugin", version: "9.9.9" },
       { name: "flight-recorder", version: "bad" }
@@ -159,7 +260,10 @@ test("checkForUpdate handles up-to-date, git/zip update_available, and error con
       const badRes = await checkForUpdate({
         pluginRoot: gitRoot,
         cacheTtlMs: 0,
-        fetchImpl: async () => mockJsonResponse(badBody)
+        fetchImpl: async (url) => {
+          if (String(url) === REMOTE_RELEASE_URL) return mockJsonResponse({}, 404);
+          return mockJsonResponse(badManifest);
+        }
       });
       assert.equal(badRes.status, "error");
       assert.match(badRes.message ?? "", /valid version/);

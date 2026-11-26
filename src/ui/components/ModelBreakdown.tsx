@@ -1,10 +1,112 @@
 import React, { useMemo, useState } from "react";
-import type { ModelSwitchEvent, ModelUsageMetric } from "../../shared/types";
+import {
+  getModelAvailability,
+  isUnpriceablePlaceholderModel
+} from "../../shared/pricing";
+import type {
+  ModelAvailabilitySignal,
+  ModelPricingRule,
+  ModelSwitchEvent,
+  ModelUsageMetric
+} from "../../shared/types";
 import { fmtDuration, fmtK, fmtPct } from "../format";
 import { buildModelColorMap, getModelColor } from "../modelColors";
 import { CostCell } from "./CostCell";
 
 export type ModelShareBasis = "tokens" | "steps" | "time";
+
+export interface ModelInlinePillProps {
+  models: string[];
+  breakdown?: ModelUsageMetric[];
+  pricingRules?: ModelPricingRule[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
+  maxWidth?: number;
+}
+
+export const ModelInlinePill: React.FC<ModelInlinePillProps> = ({
+  models,
+  breakdown,
+  pricingRules = [],
+  modelSignals,
+  latestGlobalActivityMs = 0,
+  maxWidth
+}) => {
+  const ordered = useMemo(() => {
+    const raw =
+      breakdown && breakdown.length > 0
+        ? breakdown.map((m) => m.model)
+        : models;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of raw) {
+      const clean = (item || "").trim();
+      if (!clean || seen.has(clean)) continue;
+      seen.add(clean);
+      out.push(clean);
+    }
+    return out;
+  }, [models, breakdown]);
+
+  if (ordered.length === 0) return null;
+
+  const primary = ordered[0];
+  const primaryAvail = getModelAvailability(
+    primary,
+    pricingRules,
+    modelSignals,
+    latestGlobalActivityMs
+  );
+  const rest = ordered.length - 1;
+  const hasTokens = Boolean(breakdown?.some((m) => m.totalTokens > 0));
+  const tooltipList =
+    breakdown && breakdown.length > 0
+      ? breakdown
+          .map((m) => {
+            const share = hasTokens ? m.tokenShare : m.stepShare;
+            const avail = getModelAvailability(
+              m.model,
+              pricingRules,
+              modelSignals,
+              latestGlobalActivityMs
+            );
+            const tag = avail.badge ? ` [${avail.badge}]` : "";
+            return `${m.model}${tag} (${Math.round(share * 100)}%)`;
+          })
+          .join(", ")
+      : ordered
+          .map((m) => {
+            const avail = getModelAvailability(
+              m,
+              pricingRules,
+              modelSignals,
+              latestGlobalActivityMs
+            );
+            return avail.badge ? `${m} [${avail.badge}]` : m;
+          })
+          .join(", ");
+  const tooltip = `Models: ${tooltipList}${primaryAvail.reason ? ` · ${primaryAvail.reason}` : ""}`;
+
+  return (
+    <span
+      className={`model-inline-pill${primaryAvail.badge ? " model-inline-pill-retired" : ""}`}
+      title={tooltip}
+      style={maxWidth ? { maxWidth } : undefined}
+    >
+      <span
+        className="model-dot"
+        style={{ background: getModelColor(primary) }}
+      />
+      <span className={`truncate${primaryAvail.badge ? " model-name-retired" : ""}`}>
+        {primary}
+      </span>
+      {primaryAvail.badge && (
+        <span className="model-retired-tag">{primaryAvail.badge}</span>
+      )}
+      {rest > 0 && <span className="model-inline-more">+{rest}</span>}
+    </span>
+  );
+};
 
 const MODEL_BASIS_HELP: Record<ModelShareBasis, string> = {
   tokens:
@@ -36,6 +138,9 @@ function getShare(m: ModelUsageMetric, basis: ModelShareBasis): number {
 
 interface ModelMixBarProps {
   breakdown: ModelUsageMetric[];
+  pricingRules?: ModelPricingRule[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
   basis?: ModelShareBasis;
   maxLabels?: number;
   compact?: boolean;
@@ -43,6 +148,9 @@ interface ModelMixBarProps {
 
 export const ModelMixBar: React.FC<ModelMixBarProps> = ({
   breakdown,
+  pricingRules = [],
+  modelSignals,
+  latestGlobalActivityMs = 0,
   basis = "tokens",
   maxLabels = 3,
   compact = false
@@ -103,6 +211,12 @@ export const ModelMixBar: React.FC<ModelMixBarProps> = ({
       <div className="model-mix-legend" style={{ marginTop: compact ? 4 : 6 }}>
         {visible.map((m) => {
           const share = getShare(m, effectiveBasis);
+          const avail = getModelAvailability(
+            m.model,
+            pricingRules,
+            modelSignals,
+            latestGlobalActivityMs
+          );
           return (
             <span
               key={m.model}
@@ -111,16 +225,30 @@ export const ModelMixBar: React.FC<ModelMixBarProps> = ({
                 alignItems: "center",
                 gap: 4,
                 minWidth: 0,
-                maxWidth: compact ? 150 : 230
+                maxWidth: compact ? 190 : 260
               }}
-              title={m.model}
+              title={
+                avail.reason
+                  ? `${m.model} · ${avail.reason}`
+                  : m.model
+              }
             >
               <span
                 className="model-dot"
                 style={{ background: colorFor(m.model) }}
               />
               <strong className="tabular">{Math.round(share * 100)}%</strong>
-              <span className="truncate">{m.model}</span>
+              <span className={`truncate${avail.badge ? " model-name-retired" : ""}`}>
+                {m.model}
+              </span>
+              {avail.badge && (
+                <span
+                  className="model-retired-tag"
+                  title={avail.reason ?? undefined}
+                >
+                  {avail.badge}
+                </span>
+              )}
             </span>
           );
         })}
@@ -139,10 +267,15 @@ export const ModelMixBar: React.FC<ModelMixBarProps> = ({
 
 interface ModelBreakdownPanelProps {
   title?: string;
+  subtitle?: string;
   breakdown: ModelUsageMetric[];
+  pricingRules?: ModelPricingRule[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
   basis?: ModelShareBasis;
   onBasisChange?: (b: ModelShareBasis) => void;
   switches?: ModelSwitchEvent[];
+  switchesTitle?: string;
   unpricedModels?: string[];
   showChatsColumn?: boolean;
   collapsibleTable?: boolean;
@@ -153,10 +286,15 @@ interface ModelBreakdownPanelProps {
 
 export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
   title = "Model Breakdown",
+  subtitle,
   breakdown,
+  pricingRules = [],
+  modelSignals,
+  latestGlobalActivityMs = 0,
   basis: controlledBasis,
   onBasisChange,
   switches,
+  switchesTitle = "Model Switches",
   unpricedModels = [],
   showChatsColumn = false,
   collapsibleTable = false,
@@ -217,6 +355,11 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
       <div className="panel-header">
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span className="panel-title">{title}</span>
+          {subtitle && (
+            <span style={{ fontSize: 11, color: "var(--txt-tertiary)" }}>
+              {subtitle}
+            </span>
+          )}
           {fellBackToSteps && (
             <span className="badge badge-neutral">by steps (legacy)</span>
           )}
@@ -313,14 +456,34 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
           {sorted.map((m) => {
             const share = getShare(m, effectiveBasis);
             const pct = Math.round(share * 100);
+            const avail = getModelAvailability(
+              m.model,
+              pricingRules,
+              modelSignals,
+              latestGlobalActivityMs
+            );
             return (
-              <span key={m.model} className="badge badge-neutral">
+              <span
+                key={m.model}
+                className={`badge badge-neutral${avail.badge ? " badge-retired-summary" : ""}`}
+                title={avail.reason ?? undefined}
+              >
                 <span
                   className="model-dot"
                   style={{ background: colorFor(m.model) }}
                 />
                 <strong className="tabular">{pct}%</strong>
-                <span>{m.model}</span>
+                <span className={avail.badge ? "model-name-retired" : undefined}>
+                  {m.model}
+                </span>
+                {avail.badge && (
+                  <span
+                    className="model-retired-tag"
+                    title={avail.reason ?? undefined}
+                  >
+                    {avail.badge}
+                  </span>
+                )}
               </span>
             );
           })}
@@ -342,8 +505,16 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
             <tbody>
               {sorted.map((m) => {
                 const share = getShare(m, effectiveBasis);
+                const isPlaceholder = isUnpriceablePlaceholderModel(m.model);
+                const avail = getModelAvailability(
+                  m.model,
+                  pricingRules,
+                  modelSignals,
+                  latestGlobalActivityMs
+                );
                 const isUnpriced =
-                  m.estimatedCostUsd === null || unpricedModels.includes(m.model);
+                  !isPlaceholder &&
+                  (m.estimatedCostUsd === null || unpricedModels.includes(m.model));
                 const color = colorFor(m.model);
                 return (
                   <tr key={m.model}>
@@ -353,7 +524,20 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                           className="model-dot"
                           style={{ background: color }}
                         />
-                        <span style={{ fontWeight: 600 }}>{m.model}</span>
+                        <span
+                          className={avail.badge ? "model-name-retired" : undefined}
+                          style={{ fontWeight: 600 }}
+                        >
+                          {m.model}
+                        </span>
+                        {avail.badge && (
+                          <span
+                            className="badge badge-retired"
+                            title={avail.reason ?? undefined}
+                          >
+                            {avail.badge}
+                          </span>
+                        )}
                         {isUnpriced && (
                           <button
                             type="button"
@@ -425,7 +609,16 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                       </span>
                     </td>
                     <td className="text-right tabular">
-                      <CostCell estimatedCostUsd={m.estimatedCostUsd} />
+                      {isPlaceholder ? (
+                        <span
+                          className="cost-unpriced"
+                          title="Model not recorded in transcript — pricing not applicable"
+                        >
+                          —
+                        </span>
+                      ) : (
+                        <CostCell estimatedCostUsd={m.estimatedCostUsd} />
+                      )}
                     </td>
                   </tr>
                 );
@@ -438,25 +631,48 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
       {switches && switches.length > 0 && (() => {
         const renderSwitchesList = () => (
           <div>
-            {switches.map((sw, idx) => (
-              <div key={`${sw.stepIndex}-${idx}`} className="switch-row">
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
-                  <span className="badge badge-neutral tabular">
-                    Step {sw.stepIndex} · Turn {sw.turnIndex + 1}
-                  </span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 500 }}>
-                    <span
-                      className="model-dot"
-                      style={{ background: colorFor(sw.fromModel) }}
-                    />
-                    <span>{sw.fromModel}</span>
-                    <span style={{ color: "var(--txt-tertiary)" }}>→</span>
-                    <span
-                      className="model-dot"
-                      style={{ background: colorFor(sw.toModel) }}
-                    />
-                    <span>{sw.toModel}</span>
-                  </span>
+            {switches.map((sw, idx) => {
+              const fromAvail = getModelAvailability(
+                sw.fromModel,
+                pricingRules,
+                modelSignals,
+                latestGlobalActivityMs
+              );
+              const toAvail = getModelAvailability(
+                sw.toModel,
+                pricingRules,
+                modelSignals,
+                latestGlobalActivityMs
+              );
+              return (
+                <div key={`${sw.stepIndex}-${idx}`} className="switch-row">
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+                    <span className="badge badge-neutral tabular">
+                      Step {sw.stepIndex} · Turn {sw.turnIndex + 1}
+                    </span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 500 }}>
+                      <span
+                        className="model-dot"
+                        style={{ background: colorFor(sw.fromModel) }}
+                      />
+                      <span
+                        className={fromAvail.badge ? "model-name-retired" : undefined}
+                        title={fromAvail.reason ?? undefined}
+                      >
+                        {sw.fromModel}
+                      </span>
+                      <span style={{ color: "var(--txt-tertiary)" }}>→</span>
+                      <span
+                        className="model-dot"
+                        style={{ background: colorFor(sw.toModel) }}
+                      />
+                      <span
+                        className={toAvail.badge ? "model-name-retired" : undefined}
+                        title={toAvail.reason ?? undefined}
+                      >
+                        {sw.toModel}
+                      </span>
+                    </span>
                   <span style={{ color: "var(--txt-secondary)" }}>
                     {sw.trigger}
                   </span>
@@ -477,7 +693,8 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                   </button>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         );
 
@@ -485,7 +702,7 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
           return (
             <div style={{ borderTop: "1px solid var(--bdr-secondary)" }}>
               <details className="err-samples-details" style={{ padding: "8px 12px" }}>
-                <summary>Model Switches ({switches.length})</summary>
+                <summary>{switchesTitle} ({switches.length})</summary>
                 <div style={{ marginTop: 6 }}>{renderSwitchesList()}</div>
               </details>
             </div>
@@ -503,7 +720,7 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
                 borderBottom: "1px solid var(--bdr-secondary)"
               }}
             >
-              Model Switches ({switches.length})
+              {switchesTitle} ({switches.length})
             </div>
             {renderSwitchesList()}
           </div>

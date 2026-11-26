@@ -26,6 +26,7 @@ interface WaterfallItem {
   barColor: string;
   activeOffsetMs: number;
   durationMs: number;
+  displayDurationMs?: number;
   outputLabel: string;
   directTokens: number;
   compoundedTokens: number;
@@ -192,7 +193,13 @@ export const TimelineWaterfall: React.FC<Props> = ({
               tc.startedAtMs >= batchMinStart
                 ? tc.startedAtMs - batchMinStart
                 : 0;
-            const dur = Math.max(120, tc.durationMs);
+            const isSwarmWait = tc.toolName === "swarm_wait";
+            const isSwarmBoard =
+              tc.toolName === "read_board" ||
+              tc.toolName === "post_board" ||
+              tc.toolName === "swarm_post";
+            const rawDur = Math.max(120, tc.durationMs);
+            const dur = isSwarmWait ? Math.min(rawDur, 10_000) : rawDur;
 
             let tBadge = "Tool";
             let tBadgeVariant: WaterfallItem["badgeVariant"] = "neutral";
@@ -206,6 +213,22 @@ export const TimelineWaterfall: React.FC<Props> = ({
               tBadge = "Skill";
               tBadgeVariant = "warning";
               barColor = "var(--chart-skill)";
+            } else if (tc.toolName === "swarm" && tc.category === "subagent") {
+              tBadge = "Swarm Spawn";
+              tBadgeVariant = "info";
+              barColor = "var(--chart-subagent)";
+            } else if (tc.toolName === "swarm") {
+              tBadge = "Swarm";
+              tBadgeVariant = "info";
+              barColor = "var(--chart-subagent)";
+            } else if (isSwarmWait) {
+              tBadge = "Swarm Wait";
+              tBadgeVariant = "neutral";
+              barColor = "var(--bdr-primary)";
+            } else if (isSwarmBoard) {
+              tBadge = "Board";
+              tBadgeVariant = "info";
+              barColor = "var(--chart-subagent)";
             } else if (tc.category === "subagent") {
               tBadge = "Subagent";
               tBadgeVariant = "info";
@@ -222,11 +245,22 @@ export const TimelineWaterfall: React.FC<Props> = ({
               tBadgeVariant = "success";
             }
 
-            const toolLabel = tc.skillName
+            let toolLabel = tc.skillName
               ? `${tc.toolName}: ${tc.skillName}`
               : tc.targetPath
                 ? `${tc.toolName}: ${pathTailSegments(tc.targetPath, 2)}`
                 : tc.toolName;
+            if (tc.toolName === "swarm") {
+              const roleMatch = tc.argsPreview.match(/Role:\s*([^|]+)/i);
+              const actionMatch = tc.argsPreview.match(/Action:\s*([^|]+)/i);
+              if (tc.category === "subagent") {
+                toolLabel = roleMatch
+                  ? `swarm add: ${roleMatch[1].trim()}`
+                  : "swarm add";
+              } else if (actionMatch) {
+                toolLabel = `swarm: ${actionMatch[1].trim()}`;
+              }
+            }
 
             const toolItem: WaterfallItem = {
               id: `tc-${tc.id}-${tc.stepIndex}`,
@@ -239,15 +273,18 @@ export const TimelineWaterfall: React.FC<Props> = ({
               barColor,
               activeOffsetMs: turnCursorMs + relStart,
               durationMs: dur,
+              ...(isSwarmWait ? { displayDurationMs: tc.durationMs } : {}),
               outputLabel: fmtBytes(tc.resultBytes),
               directTokens: tc.attributedInputTokens,
               compoundedTokens: tc.compoundedCacheTokens,
               argsPreview: tc.argsPreview,
               why: tc.isError
                 ? tc.errorPreview || "Tool returned an error"
-                : tc.attributedInputTokens > 0
-                  ? `Attributed +${fmtK(tc.attributedInputTokens)} new tokens (+${fmtK(tc.compoundedCacheTokens)} cache carry)`
-                  : tc.argsPreview || "Executed tool step",
+                : isSwarmWait
+                  ? "Parked waiting on swarm board (excluded from active time)"
+                  : tc.attributedInputTokens > 0
+                    ? `Attributed +${fmtK(tc.attributedInputTokens)} new tokens (+${fmtK(tc.compoundedCacheTokens)} cache carry)`
+                    : tc.argsPreview || "Executed tool step",
               isParallelBatch: batchTools.length > 1,
               parallelFactor: parallelRatio
             };
@@ -576,7 +613,7 @@ export const TimelineWaterfall: React.FC<Props> = ({
                                 className="tabular text-right"
                                 style={{ width: 58, flexShrink: 0, fontWeight: 500 }}
                               >
-                                {fmtDuration(item.durationMs)}
+                                {fmtDuration(item.displayDurationMs ?? item.durationMs)}
                               </div>
                             </button>
 
@@ -611,7 +648,7 @@ export const TimelineWaterfall: React.FC<Props> = ({
                                 </div>
                                 <div className="wf-step-detail-metrics tabular">
                                   <span>
-                                    Duration: <strong>{fmtDuration(item.durationMs)}</strong>
+                                    Duration: <strong>{fmtDuration(item.displayDurationMs ?? item.durationMs)}</strong>
                                   </span>
                                   <span>
                                     Size: <strong>{item.outputLabel}</strong>

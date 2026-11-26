@@ -526,6 +526,7 @@ import type {
   PluginSkillMetric,
   ToolErrorSample
 } from "../shared/types.js";
+import { isIdleWaitTool } from "./transcriptParser.js";
 
 export interface ConversationEfficiencyInput {
   conversationId: string;
@@ -1091,10 +1092,18 @@ export function computeScopeSkillEfficiency(
       }
 
       for (const tc of stepTools) {
+        if (isIdleWaitTool(tc.toolName)) continue;
+
+        const childIds =
+          tc.childConversationIds && tc.childConversationIds.length > 0
+            ? tc.childConversationIds
+            : tc.childConversationId
+              ? [tc.childConversationId]
+              : [];
         const skipSubagentWait =
           tc.category === "subagent" &&
-          tc.childConversationId !== null &&
-          scopeConvIds.has(tc.childConversationId);
+          childIds.length > 0 &&
+          childIds.some((cid) => scopeConvIds.has(cid));
         if (skipSubagentWait) continue;
 
         if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
@@ -1150,13 +1159,21 @@ export function computeScopeSkillEfficiency(
         activeStepHits = [guidingHit];
       }
 
-      // Propagate guide to any subagents spawned in this step
+      // Propagate guide to any subagents/swarm workers spawned in this step
       const guideAtSpawn =
         guidingHit ?? (activeStepHits.length > 0 ? activeStepHits[0] : null);
       if (guideAtSpawn) {
         for (const tc of stepTools) {
-          if (tc.childConversationId && !spawnInheritedGuide.has(tc.childConversationId)) {
-            spawnInheritedGuide.set(tc.childConversationId, guideAtSpawn);
+          const childIds =
+            tc.childConversationIds && tc.childConversationIds.length > 0
+              ? tc.childConversationIds
+              : tc.childConversationId
+                ? [tc.childConversationId]
+                : [];
+          for (const cid of childIds) {
+            if (!spawnInheritedGuide.has(cid)) {
+              spawnInheritedGuide.set(cid, guideAtSpawn);
+            }
           }
         }
       }

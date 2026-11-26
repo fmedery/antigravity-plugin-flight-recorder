@@ -4,6 +4,8 @@ import type {
   ContextHealthSummary,
   ConversationSummary,
   DashboardData,
+  ModelAvailabilitySignal,
+  ModelPricingRule,
   PeriodComparison,
   ProjectDetail,
   ProjectSummary,
@@ -27,6 +29,7 @@ import { CostCell } from "./CostCell";
 import { KpiHelpTip } from "./KpiHelpTip";
 import {
   ModelBreakdownPanel,
+  ModelInlinePill,
   ModelMixBar,
   type ModelShareBasis
 } from "./ModelBreakdown";
@@ -296,7 +299,8 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
             p.models.some((m) => m.toLowerCase().includes(q)) ||
             p.topPluginsSkills.some((s) => s.toLowerCase().includes(q)) ||
             p.topSkills.some((s) => s.toLowerCase().includes(q)) ||
-            p.topTools.some((t) => t.toLowerCase().includes(q))
+            p.topTools.some((t) => t.toLowerCase().includes(q)) ||
+            ((p.swarmCount ?? 0) > 0 && q.length >= 2 && "swarm".includes(q))
         )
       : dashboard.projects;
 
@@ -364,7 +368,11 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
           <div className="kpi-value">{tot.projectCount}</div>
           <div className="kpi-sub">
             <span>
-              {tot.chatCount} chats (+{tot.subagentCount} sub)
+              {tot.chatCount} chats (+{tot.subagentCount} sub
+              {(tot.swarmCount ?? 0) > 0
+                ? ` · ${tot.swarmCount} swarm${tot.swarmCount === 1 ? "" : "s"}`
+                : ""}
+              )
             </span>
             <DeltaPill
               text={deltas.chats.text}
@@ -425,7 +433,12 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
             <KpiHelpTip helpKey="estCost" />
           </div>
           <div className="kpi-value">
-            <span>{fmtUsdCompact(tot.tokens.estimatedCostUsd)}</span>
+            <span>
+              {tot.tokens.estimatedCostUsd === null &&
+              tot.tokens.unpricedModels.length === 0
+                ? "—"
+                : fmtUsdCompact(tot.tokens.estimatedCostUsd)}
+            </span>
             <DeltaPill
               text={deltas.cost.text}
               tone={deltas.cost.tone}
@@ -443,6 +456,8 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
               </button>
             ) : tot.tokens.cacheSavingsUsd !== null ? (
               `Saved ~${fmtUsdCompact(tot.tokens.cacheSavingsUsd)}`
+            ) : tot.tokens.estimatedCostUsd === null ? (
+              "No rateable model"
             ) : (
               "All models priced"
             )}
@@ -545,8 +560,14 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                           </td>
                           <td className="text-right tabular">
                             <div className="metric-primary">{p.chatCount}</div>
-                            {p.subagentCount > 0 && (
-                              <div className="cell-sub">+{p.subagentCount} sub</div>
+                            {(p.subagentCount > 0 || (p.swarmCount ?? 0) > 0) && (
+                              <div className="cell-sub">
+                                {p.subagentCount > 0 ? `+${p.subagentCount} sub` : ""}
+                                {p.subagentCount > 0 && (p.swarmCount ?? 0) > 0 ? " · " : ""}
+                                {(p.swarmCount ?? 0) > 0
+                                  ? `${p.swarmCount} swarm${p.swarmCount === 1 ? "" : "s"}`
+                                  : ""}
+                              </div>
                             )}
                           </td>
                           <td className="text-right tabular">
@@ -588,6 +609,9 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
               <ModelBreakdownPanel
                 title="Global Model Mix Across All Projects"
                 breakdown={tot.modelBreakdown}
+                pricingRules={dashboard.pricingRules}
+                modelSignals={dashboard.modelSignals}
+                latestGlobalActivityMs={dashboard.latestGlobalActivityMs}
                 basis={modelBasis}
                 onBasisChange={setModelBasis}
                 unpricedModels={tot.tokens.unpricedModels}
@@ -698,17 +722,51 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                               style={{ maxWidth: 360, fontWeight: 500 }}
                               title={c.title}
                             >
-                              {c.parentConversationId && (
+                              {c.swarmRole === "coordinator" ? (
                                 <span
-                                  className="badge badge-info"
+                                  className="badge badge-swarm"
                                   style={{ marginRight: 6 }}
                                 >
-                                  Subagent
+                                  Swarm
                                 </span>
+                              ) : c.swarmRole === "worker" || c.subagentType === "swarm" ? (
+                                <span
+                                  className="badge badge-swarm"
+                                  style={{ marginRight: 6 }}
+                                >
+                                  Swarm · {c.subagentRole || "worker"}
+                                </span>
+                              ) : (
+                                c.parentConversationId && (
+                                  <span
+                                    className="badge badge-info"
+                                    style={{ marginRight: 6 }}
+                                  >
+                                    Subagent
+                                  </span>
+                                )
                               )}
                               {c.title}
                             </div>
-                            <div className="cell-sub">{c.projectName}</div>
+                            <div
+                              className="cell-sub"
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                flexWrap: "wrap"
+                              }}
+                            >
+                              <span>{c.projectName}</span>
+                              <ModelInlinePill
+                                models={c.models}
+                                breakdown={c.modelBreakdown}
+                                pricingRules={dashboard.pricingRules}
+                                modelSignals={dashboard.modelSignals}
+                                latestGlobalActivityMs={dashboard.latestGlobalActivityMs}
+                                maxWidth={170}
+                              />
+                            </div>
                           </td>
                           <td className="text-right tabular">
                             {c.tokens.hasTokenTelemetry ? fmtK(cTok) : "N/A (legacy)"}
@@ -745,6 +803,9 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
 
 interface ProjectDetailProps {
   detail: ProjectDetail;
+  pricingRules?: ModelPricingRule[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
   canSendMessage?: boolean;
   timeRange?: TimeRangePreset;
   updatingRange?: boolean;
@@ -760,6 +821,9 @@ type UsageSubtab = "plugins" | "models" | "tools" | "files";
 
 interface ProjectChatRowProps {
   chat: ConversationSummary;
+  pricingRules?: ModelPricingRule[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
   isSubagent?: boolean;
   subagentCount?: number;
   isExpanded?: boolean;
@@ -769,6 +833,9 @@ interface ProjectChatRowProps {
 
 const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
   chat,
+  pricingRules = [],
+  modelSignals,
+  latestGlobalActivityMs = 0,
   isSubagent = false,
   subagentCount = 0,
   isExpanded = false,
@@ -779,8 +846,7 @@ const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
     chat.tokens.inputTokens +
     chat.tokens.cacheReadTokens +
     chat.tokens.outputTokens;
-  const topDriver =
-    chat.topPluginsSkills[0] || chat.skillsUsed[0] || chat.models[0] || "";
+  const topSkillOrPlugin = chat.topPluginsSkills[0] || chat.skillsUsed[0] || "";
 
   return (
     <tr
@@ -796,9 +862,23 @@ const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
           }}
           title={chat.title}
         >
+          {!isSubagent && chat.swarmRole === "coordinator" && (
+            <span className="badge badge-swarm" style={{ marginRight: 6 }}>
+              Swarm
+            </span>
+          )}
           {isSubagent && (
-            <span className="badge badge-info" style={{ marginRight: 6 }}>
-              {chat.subagentRole || "Subagent"}
+            <span
+              className={
+                chat.swarmRole === "worker" || chat.subagentType === "swarm"
+                  ? "badge badge-swarm"
+                  : "badge badge-info"
+              }
+              style={{ marginRight: 6 }}
+            >
+              {chat.swarmRole === "worker" || chat.subagentType === "swarm"
+                ? `Swarm · ${chat.subagentRole || "worker"}`
+                : chat.subagentRole || "Subagent"}
             </span>
           )}
           {chat.title}
@@ -815,13 +895,21 @@ const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
         >
           <span>
             {fmtDateShort(chat.endedAtMs)} · {chat.turnCount} turns
-            {topDriver ? ` · ${topDriver}` : ""}
+            {topSkillOrPlugin ? ` · ${topSkillOrPlugin}` : ""}
           </span>
+          <ModelInlinePill
+            models={chat.models}
+            breakdown={chat.modelBreakdown}
+            pricingRules={pricingRules}
+            modelSignals={modelSignals}
+            latestGlobalActivityMs={latestGlobalActivityMs}
+            maxWidth={190}
+          />
           {subagentCount > 0 &&
             (onToggleSubagents ? (
               <button
                 type="button"
-                className="subagent-toggle-btn"
+                className={`subagent-toggle-btn ${chat.swarmRole === "coordinator" ? "is-swarm" : ""}`}
                 aria-expanded={isExpanded}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -829,10 +917,24 @@ const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
                 }}
               >
                 <span aria-hidden="true">{isExpanded ? "▾" : "▸"}</span>
-                +{subagentCount} sub
+                +{subagentCount}{" "}
+                {chat.swarmRole === "coordinator"
+                  ? `worker${subagentCount === 1 ? "" : "s"}`
+                  : "sub"}
               </button>
             ) : (
-              <span className="badge badge-info">+{subagentCount} sub</span>
+              <span
+                className={
+                  chat.swarmRole === "coordinator"
+                    ? "badge badge-swarm"
+                    : "badge badge-info"
+                }
+              >
+                +{subagentCount}{" "}
+                {chat.swarmRole === "coordinator"
+                  ? `worker${subagentCount === 1 ? "" : "s"}`
+                  : "sub"}
+              </span>
             ))}
         </div>
       </td>
@@ -863,6 +965,9 @@ const ProjectChatRow: React.FC<ProjectChatRowProps> = ({
 
 interface ProjectChatsTableProps {
   groups: GroupedProjectChat[];
+  pricingRules?: ModelPricingRule[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
   expandedChatIds: Set<string>;
   onToggleGroup: (rootId: string) => void;
   onSelectChat: (conversationId: string, stepIndex?: number) => void;
@@ -870,6 +975,9 @@ interface ProjectChatsTableProps {
 
 const ProjectChatsTable: React.FC<ProjectChatsTableProps> = ({
   groups,
+  pricingRules = [],
+  modelSignals,
+  latestGlobalActivityMs = 0,
   expandedChatIds,
   onToggleGroup,
   onSelectChat
@@ -901,6 +1009,9 @@ const ProjectChatsTable: React.FC<ProjectChatsTableProps> = ({
               <React.Fragment key={g.root.conversationId}>
                 <ProjectChatRow
                   chat={g.root}
+                  pricingRules={pricingRules}
+                  modelSignals={modelSignals}
+                  latestGlobalActivityMs={latestGlobalActivityMs}
                   subagentCount={g.subagents.length}
                   isExpanded={isExpanded}
                   onToggleSubagents={
@@ -915,6 +1026,9 @@ const ProjectChatsTable: React.FC<ProjectChatsTableProps> = ({
                     <ProjectChatRow
                       key={sub.conversationId}
                       chat={sub}
+                      pricingRules={pricingRules}
+                      modelSignals={modelSignals}
+                      latestGlobalActivityMs={latestGlobalActivityMs}
                       isSubagent
                       onSelect={onSelectChat}
                     />
@@ -930,6 +1044,9 @@ const ProjectChatsTable: React.FC<ProjectChatsTableProps> = ({
 
 export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
   detail,
+  pricingRules = [],
+  modelSignals,
+  latestGlobalActivityMs = 0,
   canSendMessage = false,
   timeRange = "all",
   updatingRange = false,
@@ -1038,6 +1155,11 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             />
           </div>
           <div className="kpi-sub">
+            {(s.swarmCount ?? 0) > 0 && (
+              <span>
+                {s.swarmCount} swarm{s.swarmCount === 1 ? "" : "s"} ·{" "}
+              </span>
+            )}
             {s.errorCount > 0
               ? `${s.errorCount} tool error${s.errorCount === 1 ? "" : "s"}`
               : "No tool errors"}
@@ -1101,7 +1223,12 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             <KpiHelpTip helpKey="estCost" />
           </div>
           <div className="kpi-value">
-            <span>{fmtUsdCompact(s.tokens.estimatedCostUsd)}</span>
+            <span>
+              {s.tokens.estimatedCostUsd === null &&
+              s.tokens.unpricedModels.length === 0
+                ? "—"
+                : fmtUsdCompact(s.tokens.estimatedCostUsd)}
+            </span>
             <DeltaPill
               text={deltas.cost.text}
               tone={deltas.cost.tone}
@@ -1117,8 +1244,10 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
               >
                 Set pricing
               </button>
-            ) : (
+            ) : s.tokens.cacheSavingsUsd !== null ? (
               `Saved ~${fmtUsdCompact(s.tokens.cacheSavingsUsd)}`
+            ) : (
+              "No rateable model"
             )}
           </div>
         </div>
@@ -1168,7 +1297,14 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
                   </button>
                 </div>
                 <div style={{ padding: "8px 12px" }}>
-                  <ModelMixBar breakdown={s.modelBreakdown} maxLabels={4} compact />
+                  <ModelMixBar
+                    breakdown={s.modelBreakdown}
+                    pricingRules={pricingRules}
+                    modelSignals={modelSignals}
+                    latestGlobalActivityMs={latestGlobalActivityMs}
+                    maxLabels={4}
+                    compact
+                  />
                 </div>
               </div>
             )}
@@ -1201,6 +1337,9 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
               </div>
               <ProjectChatsTable
                 groups={groupedChats.slice(0, 5)}
+                pricingRules={pricingRules}
+                modelSignals={modelSignals}
+                latestGlobalActivityMs={latestGlobalActivityMs}
                 expandedChatIds={expandedChatIds}
                 onToggleGroup={toggleChatGroup}
                 onSelectChat={onSelectChat}
@@ -1274,6 +1413,9 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
               <ModelBreakdownPanel
                 title="Project Model Breakdown"
                 breakdown={s.modelBreakdown}
+                pricingRules={pricingRules}
+                modelSignals={modelSignals}
+                latestGlobalActivityMs={latestGlobalActivityMs}
                 unpricedModels={s.tokens.unpricedModels}
                 showChatsColumn
                 onOpenSettings={onOpenSettings}

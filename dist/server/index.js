@@ -1,3 +1,4 @@
+/* flight-recorder v0.3.0 */
 import { createRequire as __frCreateRequire } from "node:module"; const require = __frCreateRequire(import.meta.url);
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -15902,11 +15903,15 @@ import os3 from "node:os";
 import path6 from "node:path";
 
 // src/server/db.ts
-import fs from "node:fs";
+import fs2 from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
 // src/shared/pricing.ts
+function isUnpriceablePlaceholderModel(model) {
+  let normalized = (model || "").trim().toLowerCase();
+  return !normalized || normalized === "auto" || normalized === "unknown";
+}
 var DEFAULT_PRICING_RULES = [
   {
     id: "gemini-2.5-pro",
@@ -15915,7 +15920,8 @@ var DEFAULT_PRICING_RULES = [
     inputPer1M: 1.25,
     cacheReadPer1M: 0.3125,
     outputPer1M: 10,
-    enabled: !0
+    enabled: !0,
+    retired: !0
   },
   {
     id: "gemini-2.5-flash",
@@ -15924,7 +15930,8 @@ var DEFAULT_PRICING_RULES = [
     inputPer1M: 0.15,
     cacheReadPer1M: 0.0375,
     outputPer1M: 0.6,
-    enabled: !0
+    enabled: !0,
+    retired: !0
   },
   {
     id: "gemini-2.0-flash",
@@ -15933,7 +15940,8 @@ var DEFAULT_PRICING_RULES = [
     inputPer1M: 0.1,
     cacheReadPer1M: 0.025,
     outputPer1M: 0.4,
-    enabled: !0
+    enabled: !0,
+    retired: !0
   },
   {
     id: "claude-sonnet-4",
@@ -15942,7 +15950,8 @@ var DEFAULT_PRICING_RULES = [
     inputPer1M: 3,
     cacheReadPer1M: 0.3,
     outputPer1M: 15,
-    enabled: !0
+    enabled: !0,
+    retired: !0
   },
   {
     id: "claude-opus-4",
@@ -15951,7 +15960,8 @@ var DEFAULT_PRICING_RULES = [
     inputPer1M: 15,
     cacheReadPer1M: 1.5,
     outputPer1M: 75,
-    enabled: !0
+    enabled: !0,
+    retired: !0
   }
 ];
 function wildcardMatch(text, rawPattern) {
@@ -15969,22 +15979,25 @@ function wildcardMatch(text, rawPattern) {
     pIdx += 1;
   return pIdx === pat.length;
 }
-function matchPricingRule(model, rules) {
-  let normalized = (model || "").trim().toLowerCase();
-  if (!normalized || normalized === "auto" || normalized === "unknown")
-    return null;
-  let enabled = rules.filter((r2) => r2.enabled && r2.pattern.trim().length > 0), exact = enabled.find(
-    (r2) => r2.pattern.trim().toLowerCase() === normalized
+function findBestRuleMatch(normalizedModel, candidates) {
+  let nonEmpty = candidates.filter((r2) => r2.pattern.trim().length > 0), exact = nonEmpty.find(
+    (r2) => r2.pattern.trim().toLowerCase() === normalizedModel
   );
   if (exact)
     return exact;
-  let sorted = [...enabled].sort(
+  let sorted = [...nonEmpty].sort(
     (a, b) => b.pattern.replace(/\*/g, "").length - a.pattern.replace(/\*/g, "").length
   );
   for (let rule of sorted)
-    if (wildcardMatch(normalized, rule.pattern))
+    if (wildcardMatch(normalizedModel, rule.pattern))
       return rule;
   return null;
+}
+function matchPricingRule(model, rules) {
+  if (isUnpriceablePlaceholderModel(model))
+    return null;
+  let normalized = model.trim().toLowerCase(), enabled = rules.filter((r2) => r2.enabled && r2.pattern.trim().length > 0);
+  return findBestRuleMatch(normalized, enabled);
 }
 function estimateStepCost(tokens, model, rules) {
   let rule = matchPricingRule(model, rules);
@@ -16013,12 +16026,581 @@ function aggregateCosts(steps, rules) {
   let totalUsd = 0, totalSavings = 0, anyPriced = !1, unpricedSet = /* @__PURE__ */ new Set();
   for (let step of steps) {
     let est = estimateStepCost(step, step.model, rules);
-    est.unpriced || est.totalUsd === null ? step.model && step.model.trim() ? unpricedSet.add(step.model.trim()) : unpricedSet.add("unknown") : (anyPriced = !0, totalUsd += est.totalUsd, totalSavings += est.cacheSavingsUsd ?? 0);
+    est.unpriced || est.totalUsd === null ? isUnpriceablePlaceholderModel(step.model) || unpricedSet.add(step.model.trim()) : (anyPriced = !0, totalUsd += est.totalUsd, totalSavings += est.cacheSavingsUsd ?? 0);
   }
   return {
     estimatedCostUsd: anyPriced ? totalUsd : null,
     cacheSavingsUsd: anyPriced ? totalSavings : null,
     unpricedModels: Array.from(unpricedSet).sort()
+  };
+}
+
+// src/server/transcriptParser.ts
+import fs from "node:fs";
+import readline from "node:readline";
+
+// src/shared/paths.ts
+function safeDecodePercent(raw) {
+  return raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run.replace(/%[0-7][0-9A-Fa-f]/g, (asciiSeq) => {
+        try {
+          return decodeURIComponent(asciiSeq);
+        } catch {
+          return asciiSeq;
+        }
+      });
+    }
+  });
+}
+function unwrapFileUri(raw) {
+  let trimmed = (raw || "").trim();
+  if (!/^file:\/\//i.test(trimmed)) return trimmed;
+  let rest = trimmed.slice(7);
+  return /^localhost\//i.test(rest) && (rest = rest.slice(9)), rest = rest.replace(/^(\/?[a-zA-Z])%3[aA](?=[\\/]|$)/, "$1:"), /^\/[a-zA-Z]:[\\/]/.test(rest) || /^\/[a-zA-Z]:$/.test(rest) ? safeDecodePercent(rest.slice(1)) : /^[a-zA-Z]:[\\/]/.test(rest) || /^[a-zA-Z]:$/.test(rest) ? safeDecodePercent(rest) : !rest.startsWith("/") && rest.includes("/") ? "\\\\" + safeDecodePercent(rest).replace(/\//g, "\\") : safeDecodePercent(rest);
+}
+function isWindowsPath(p2) {
+  let s = (p2 || "").trim();
+  return /^[a-zA-Z]:[\\/]/.test(s) || /^[a-zA-Z]:$/.test(s) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(s);
+}
+function isAbsoluteLocalPath(p2) {
+  let s = (p2 || "").trim();
+  return s.startsWith("/") || isWindowsPath(s);
+}
+function stripTrailingSeparators(p2) {
+  if (!p2) return "";
+  if (p2 === "/") return "/";
+  if (/^[a-zA-Z]:[\\/]$/.test(p2)) return p2;
+  let uncRoot = p2.match(/^(\\\\[^\\/]+\\[^\\/]+)[\\/]*$/);
+  return uncRoot ? uncRoot[1] : p2.replace(/[\\/]+$/, "");
+}
+function sameLocalPath(a, b) {
+  let ua = stripTrailingSeparators(unwrapFileUri(a)), ub = stripTrailingSeparators(unwrapFileUri(b));
+  return !ua || !ub ? ua === ub : isWindowsPath(ua) || isWindowsPath(ub) ? ua.replace(/\\/g, "/").toLowerCase() === ub.replace(/\\/g, "/").toLowerCase() : ua === ub;
+}
+function pathBaseName(p2) {
+  let clean = stripTrailingSeparators((p2 || "").trim());
+  if (!clean || clean === "/" || /^[a-zA-Z]:[\\/]?$/.test(clean)) return clean;
+  let idx = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
+  return idx >= 0 ? clean.slice(idx + 1) : clean;
+}
+function pathDirName(p2) {
+  let clean = stripTrailingSeparators((p2 || "").trim());
+  if (!clean) return "";
+  if (clean === "/") return "/";
+  if (/^[a-zA-Z]:[\\/]?$/.test(clean)) {
+    let sep = clean.includes("\\") ? "\\" : "/";
+    return `${clean.slice(0, 2)}${sep}`;
+  }
+  if (/^\\\\[^\\/]+\\[^\\/]+$/.test(clean))
+    return clean;
+  let idx = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
+  if (idx < 0) return ".";
+  if (idx === 0) return "/";
+  let prefix = clean.slice(0, idx);
+  if (/^[a-zA-Z]:$/.test(prefix)) {
+    let sep = clean[idx];
+    return `${prefix}${sep}`;
+  }
+  return prefix;
+}
+function pathExtName(p2) {
+  let base = pathBaseName(p2), dotIdx = base.lastIndexOf(".");
+  return dotIdx <= 0 ? "" : base.slice(dotIdx);
+}
+function pathJoin(dir, child) {
+  let sep = isWindowsPath(dir) && dir.includes("\\") ? "\\" : "/", base = dir.replace(/[\\/]+$/, ""), next = child.replace(/^[\\/]+/, "");
+  return base ? `${base}${sep}${next}` : `${sep}${next}`;
+}
+function pathTailSegments(p2, count = 2) {
+  let clean = stripTrailingSeparators((p2 || "").trim());
+  return clean ? clean.split(/[\\/]+/).filter(Boolean).slice(-count).join("/") : "";
+}
+
+// src/shared/redact.ts
+function stripControlAndAnsi(input) {
+  return input ? input.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "").replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "") : "";
+}
+function redactSecrets(input) {
+  return input ? input.replace(/(https?:\/\/)([^/\s:@]+:[^/\s@]+)@/gi, "$1[REDACTED]@").replace(/\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1[REDACTED]").replace(
+    /\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]{20,}|sk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g,
+    "[REDACTED]"
+  ).replace(
+    /\b([A-Za-z0-9_]{0,64}?(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|AUTH[_-]?TOKEN|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE)[A-Za-z0-9_]{0,64})((?:["'])?\s*[=:]\s*)(?!(?:[0-9]+(?:\.[0-9]+)?|true|false|null)\b)("[^"\r\n]{0,512}"|'[^'\r\n]{0,512}'|[^\s"',;}\]]{1,512})/gi,
+    (_m, k2, sep, val) => val.startsWith('"') && val.endsWith('"') ? `${k2}${sep}"[REDACTED]"` : `${k2}${sep}[REDACTED]`
+  ) : "";
+}
+function sanitizePreviewText(input, maxChars) {
+  if (!input) return "";
+  let bounded = maxChars !== void 0 && input.length > Math.max(4096, maxChars * 8) ? input.slice(0, Math.max(4096, maxChars * 8)) : input, cleaned = redactSecrets(stripControlAndAnsi(bounded)).replace(/\s+/g, " ").trim();
+  return maxChars !== void 0 && maxChars > 3 && cleaned.length > maxChars ? cleaned.slice(0, maxChars - 3) + "..." : cleaned;
+}
+
+// src/server/transcriptParser.ts
+function isIdleWaitTool(toolName) {
+  return toolName === "swarm_wait";
+}
+function isSwarmBoardTool(toolName) {
+  return toolName === "read_board" || toolName === "post_board" || toolName === "swarm_post" || toolName === "swarm_wait";
+}
+function extractUnavailableModelError(errorText) {
+  if (!errorText || typeof errorText != "string") return null;
+  let bounded = errorText.slice(0, 600), patterns = [
+    /(?:no capacity available|not found|not available|no longer available|deprecated|retired|unsupported|unavailable)\s+(?:for\s+)?model\s+[`"']?([a-z0-9][a-z0-9._-]{2,80})[`"']?/i,
+    /models\/([a-z0-9][a-z0-9._-]{2,80})\s+(?:is\s+)?(?:not found|deprecated|retired|no longer available|not supported|unavailable)/i,
+    /model\s+[`"']?([a-z0-9][a-z0-9._-]{2,80})[`"']?\s+(?:is\s+)?(?:not found|does not exist|has been deprecated|is deprecated|retired|no longer available|is unavailable|not supported)/i
+  ];
+  for (let re of patterns) {
+    let match = bounded.match(re);
+    if (match && match[1]) {
+      let model = match[1].trim().toLowerCase();
+      if (!model || model === "unknown" || model === "auto") continue;
+      return {
+        model,
+        reason: sanitizePreviewText(bounded, 120)
+      };
+    }
+  }
+  return null;
+}
+function parseTimestampMs(raw) {
+  if (!raw || typeof raw != "string") return null;
+  let trimmed = raw.trim();
+  if (!trimmed) return null;
+  let ms = Date.parse(trimmed);
+  return Number.isFinite(ms) ? ms : null;
+}
+function unwrapStringValue(val) {
+  if (typeof val != "string") return val;
+  let trimmed = val.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("{") && trimmed.endsWith("}") || trimmed.startsWith("[") && trimmed.endsWith("]"))
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return val;
+    }
+  return val;
+}
+function normalizeArgs(rawArgs) {
+  let unwrapped = unwrapStringValue(rawArgs);
+  if (!unwrapped || typeof unwrapped != "object" || Array.isArray(unwrapped))
+    return unwrapped != null ? { value: unwrapped } : {};
+  let out = {};
+  for (let [k2, v2] of Object.entries(unwrapped))
+    out[k2] = unwrapStringValue(v2);
+  return out;
+}
+function normalizeModelSelectionLabel(rawLabel) {
+  let cleaned = rawLabel.trim().replace(/[.,;:]+$/, "").trim();
+  if (!cleaned || /^(?:none|auto|default|unknown)$/i.test(cleaned))
+    return null;
+  let lower = cleaned.toLowerCase();
+  return lower.startsWith("gemini") ? lower.replace(/[^a-z0-9.]+/g, "-").replace(/(?<!\d)\.|\.(?!\d)/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || null : lower.replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || null;
+}
+function extractModelSelectionFromUserInput(content) {
+  if (!content) return { found: !1, model: null };
+  let blockRe = /<USER_SETTINGS_CHANGE>([\s\S]*?)<\/USER_SETTINGS_CHANGE>/gi, settingRe = /changed setting `Model Selection` from [^\r\n`]+? to ([^\r\n<]+?)(?=\.(?:\s|$|<)|\r?\n|<|$)/gi, found = !1, model = null, blockMatch;
+  for (; (blockMatch = blockRe.exec(content)) !== null; ) {
+    let block = blockMatch[1];
+    settingRe.lastIndex = 0;
+    let match;
+    for (; (match = settingRe.exec(block)) !== null; )
+      found = !0, model = normalizeModelSelectionLabel(match[1]);
+  }
+  return { found, model };
+}
+function extractUserRequest(content) {
+  let text = content, reqMatch = content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+  reqMatch ? text = reqMatch[1].trim() : text = content.trim();
+  let slashCommand = null, slashMatch = text.match(/^(\/[a-zA-Z][a-zA-Z0-9_-]*)(?:\s|$)/);
+  if (slashMatch)
+    slashCommand = slashMatch[1];
+  else {
+    let metaSlash = content.match(/(\/[a-zA-Z][a-zA-Z0-9_-]*)\s+is a \[Slash Command\]/);
+    metaSlash && (slashCommand = metaSlash[1]);
+  }
+  return { promptText: text, slashCommand };
+}
+function makePreview(text, maxLen) {
+  return sanitizePreviewText(text, maxLen);
+}
+function extractGenericHeaders(content) {
+  let lines = content.split(/\r?\n/), createdAtMs = null, completedAtMs = null, bodyStartLine = 0, limit = Math.min(lines.length, 8);
+  for (let i = 0; i < limit; i++) {
+    let line = lines[i].trim();
+    if (line.startsWith("Created At:")) {
+      let parsed = parseTimestampMs(line.slice(11));
+      parsed !== null && createdAtMs === null && (createdAtMs = parsed), bodyStartLine = i + 1;
+      continue;
+    }
+    if (line.startsWith("Completed At:")) {
+      let parsed = parseTimestampMs(line.slice(13));
+      parsed !== null && completedAtMs === null && (completedAtMs = parsed), bodyStartLine = i + 1;
+      continue;
+    }
+    if (line === "") {
+      bodyStartLine === i && (bodyStartLine = i + 1);
+      continue;
+    }
+    break;
+  }
+  let body = lines.slice(bodyStartLine).join(`
+`);
+  return { createdAtMs, completedAtMs, body };
+}
+function detectToolError(status, body) {
+  return status === "ERROR" ? {
+    isError: !0,
+    errorPreview: makePreview(body || "Step status ERROR", 180)
+  } : body.match(/Command exited with code ([1-9]\d*)/) ? {
+    isError: !0,
+    errorPreview: makePreview(body, 180)
+  } : body.startsWith("Encountered error in tool execution") || /"isError"\s*:\s*true/.test(body) || /isError:\s*true/.test(body) ? {
+    isError: !0,
+    errorPreview: makePreview(body, 180)
+  } : { isError: !1, errorPreview: null };
+}
+var skillFrontmatterCache = /* @__PURE__ */ new Map();
+function extractYamlName(text) {
+  let fmMatch = text.match(/^(?:\d+:\s*)?---\s*\r?\n([\s\S]*?)\r?\n(?:\d+:\s*)?---/), nameMatch = (fmMatch ? fmMatch[1] : text.slice(0, 600)).match(/(?:^|\n)\s*(?:\d+:\s*)?name:\s*["']?([a-zA-Z0-9_.-]+)["']?/);
+  return nameMatch ? nameMatch[1].trim() : null;
+}
+function lookupCanonicalSkillName(skillRootDir) {
+  if (skillFrontmatterCache.has(skillRootDir))
+    return skillFrontmatterCache.get(skillRootDir) ?? null;
+  let skillMdPath = `${skillRootDir}/SKILL.md`, resolved = null;
+  try {
+    if (fs.existsSync(skillMdPath) && fs.statSync(skillMdPath).isFile()) {
+      let content = fs.readFileSync(skillMdPath, "utf8");
+      resolved = extractYamlName(content);
+    }
+  } catch {
+    resolved = null;
+  }
+  return skillFrontmatterCache.set(skillRootDir, resolved), resolved;
+}
+function extractSkillMetadata(targetPath, body) {
+  let norm = targetPath.replace(/\\/g, "/"), skillPlugin = null, pluginMatch = norm.match(/\/(?:builtin\/)?plugins\/([^/]+)\//);
+  pluginMatch ? skillPlugin = pluginMatch[1] : norm.includes("/builtin/skills/") && (skillPlugin = "builtin");
+  let skillDirMatch = norm.match(/^(.*\/skills\/([^/]+))\//), skillName = skillDirMatch ? skillDirMatch[2] : null;
+  if (/\/SKILL\.md$/i.test(norm)) {
+    let parsedName = extractYamlName(body);
+    parsedName && (skillName = parsedName, skillDirMatch && skillFrontmatterCache.set(skillDirMatch[1], parsedName));
+  } else if (skillDirMatch) {
+    let canonical = lookupCanonicalSkillName(skillDirMatch[1]);
+    canonical && (skillName = canonical);
+  }
+  return { skillName, skillPlugin };
+}
+function extractPathFromArgs(args) {
+  let candidates = [
+    args.Path,
+    args.TargetFile,
+    args.AbsolutePath,
+    args.ScriptPath,
+    args.path,
+    args.file_path,
+    args.uri,
+    args.Cwd
+  ];
+  for (let c of candidates)
+    if (typeof c == "string" && c.trim()) {
+      let unwrapped = unwrapFileUri(c.trim());
+      if (isAbsoluteLocalPath(unwrapped))
+        return unwrapped;
+    }
+  return null;
+}
+function extractCommandPathHints(cmd) {
+  let posixMatches = cmd.match(/\/[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)+/g) ?? [], winMatches = cmd.match(/[a-zA-Z]:[\\/][a-zA-Z0-9_.\-\\/]+/g) ?? [], combined = [...posixMatches, ...winMatches];
+  return combined.length > 0 ? Array.from(new Set(combined)) : [];
+}
+var EXPLICIT_CONV_UUID_RE = /(?:conversationId|conversation_id|conversation:\/\/)["'\s:=]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi, BARE_UUID_RE = /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+function extractSwarmWorkerRoleFromLine(line, baseName, index, isMulti) {
+  let ignored = /* @__PURE__ */ new Set(["added", "worker", "workers", "with", "id", "conv", "conversation"]), beforeConvMatch = line.match(
+    /\b([a-z0-9][a-z0-9_-]{0,23})\s*(?:[:(\-]|->)?\s*(?:conversationId|conversation_id|conversation:\/\/)/i
+  );
+  if (beforeConvMatch && !ignored.has(beforeConvMatch[1].toLowerCase()))
+    return beforeConvMatch[1];
+  let workerNameMatch = line.match(/\bworker\s+([a-z0-9][a-z0-9_-]{0,23})\b/i);
+  return workerNameMatch && !ignored.has(workerNameMatch[1].toLowerCase()) ? workerNameMatch[1] : baseName ? isMulti ? `${baseName}-${index + 1}` : baseName : null;
+}
+function extractChildConversationLinks(toolName, args, body) {
+  if (!body) return [];
+  if (toolName === "invoke_subagent") {
+    let role = typeof args.Role == "string" && args.Role.trim() ? args.Role.trim() : null, typeName = typeof args.TypeName == "string" && args.TypeName.trim() ? args.TypeName.trim() : "subagent";
+    EXPLICIT_CONV_UUID_RE.lastIndex = 0;
+    let explicitMatch = EXPLICIT_CONV_UUID_RE.exec(body);
+    if (explicitMatch?.[1])
+      return [{ conversationId: explicitMatch[1], role, typeName }];
+    let bareMatch = body.match(BARE_UUID_RE);
+    return bareMatch?.[1] ? [{ conversationId: bareMatch[1], role, typeName }] : [];
+  }
+  if (toolName === "swarm") {
+    let action = typeof args.action == "string" ? args.action.trim().toLowerCase() : "";
+    if (action !== "" && action !== "add")
+      return [];
+    let baseName = typeof args.name == "string" && args.name.trim() ? args.name.trim() : "", nArg = typeof args.n == "number" ? args.n : 1, tasksArg = Array.isArray(args.tasks) ? args.tasks : [], seen = /* @__PURE__ */ new Set(), rawMatches = [];
+    for (let line of body.split(/\r?\n/)) {
+      EXPLICIT_CONV_UUID_RE.lastIndex = 0;
+      let m2;
+      for (; (m2 = EXPLICIT_CONV_UUID_RE.exec(line)) !== null; ) {
+        let uuid3 = m2[1];
+        !uuid3 || seen.has(uuid3) || (seen.add(uuid3), rawMatches.push({ uuid: uuid3, line }));
+      }
+    }
+    let isMulti = rawMatches.length > 1 || nArg > 1 || tasksArg.length > 0;
+    return rawMatches.map((entry, idx) => ({
+      conversationId: entry.uuid,
+      role: extractSwarmWorkerRoleFromLine(entry.line, baseName, idx, isMulti),
+      typeName: "swarm"
+    }));
+  }
+  if (toolName === "run_workflow") {
+    let seen = /* @__PURE__ */ new Set(), links = [];
+    EXPLICIT_CONV_UUID_RE.lastIndex = 0;
+    let m2;
+    for (; (m2 = EXPLICIT_CONV_UUID_RE.exec(body)) !== null; ) {
+      let uuid3 = m2[1];
+      !uuid3 || seen.has(uuid3) || (seen.add(uuid3), links.push({ conversationId: uuid3, role: null, typeName: "run_workflow" }));
+    }
+    return links;
+  }
+  return [];
+}
+function classifyTool(toolName, args, body) {
+  let targetPath = extractPathFromArgs(args), category = "other", mcpServer = null, skillName = null, skillPlugin = null, childConversationId = null, childConversationIds = [], childLinks = [], commandPathHints = [], normTarget = targetPath ? targetPath.replace(/\\/g, "/") : null;
+  if (targetPath && normTarget && (toolName === "read_file" || toolName === "view_file") && (/\/SKILL\.md$/i.test(normTarget) || /\/skills\/[^/]+\//i.test(normTarget))) {
+    let skillMeta = extractSkillMetadata(targetPath, body);
+    skillMeta.skillName && (category = "skill", skillName = skillMeta.skillName, skillPlugin = skillMeta.skillPlugin);
+  }
+  let swarmAction = toolName === "swarm" && typeof args.action == "string" ? args.action.trim().toLowerCase() : "", isSwarmSpawn = toolName === "swarm" && (swarmAction === "add" || swarmAction === "");
+  if (category !== "skill")
+    if (toolName === "call_mcp_tool")
+      category = "mcp", mcpServer = typeof args.ServerName == "string" ? args.ServerName : "mcp";
+    else if (toolName.startsWith("mcp_"))
+      category = "mcp", mcpServer = toolName.slice(4).split("_")[0] || "mcp";
+    else if (toolName === "invoke_subagent" || isSwarmSpawn || toolName === "run_workflow")
+      category = "subagent", childLinks = extractChildConversationLinks(toolName, args, body), childConversationIds = childLinks.map((l) => l.conversationId), childConversationId = childConversationIds[0] ?? null;
+    else if (toolName === "swarm")
+      category = "other";
+    else if (toolName === "run_command") {
+      category = "command";
+      let cmd = typeof args.CommandLine == "string" ? args.CommandLine : "";
+      commandPathHints = extractCommandPathHints(cmd);
+    } else toolName === "read_file" || toolName === "view_file" || toolName === "list_dir" || toolName === "read_resource" ? category = "file_read" : toolName === "edit_file" || toolName === "write_file" || toolName === "replace_file_content" || toolName === "multi_replace_file_content" ? category = "file_write" : toolName === "search_web" || toolName === "grep_search" || toolName === "find_by_name" ? category = "search" : toolName.startsWith("browser_") && (category = "browser");
+  let argsPreview = "";
+  if (toolName === "run_command" && typeof args.CommandLine == "string")
+    argsPreview = makePreview(args.CommandLine, 160);
+  else if (toolName === "invoke_subagent") {
+    let typeName = typeof args.TypeName == "string" ? args.TypeName : "subagent", role = typeof args.Role == "string" ? args.Role : "";
+    argsPreview = `Type: ${typeName}${role ? ` | Role: ${role}` : ""}`;
+  } else if (toolName === "swarm") {
+    let name = typeof args.name == "string" && args.name.trim() ? args.name.trim() : "";
+    if (isSwarmSpawn) {
+      let nCount = typeof args.n == "number" && args.n > 1 ? args.n : 0, tasksCount = Array.isArray(args.tasks) && args.tasks.length > 0 ? args.tasks.length : 0, multiCount = Math.max(nCount, tasksCount, childLinks.length);
+      multiCount > 1 || tasksCount > 0 ? argsPreview = `Type: swarm | Role: ${name || "worker"} (${multiCount || 1} workers)` : argsPreview = `Type: swarm${name ? ` | Role: ${name}` : ""}`;
+    } else {
+      let parts = [`Action: ${swarmAction}`];
+      name && parts.push(`Worker: ${name}`), typeof args.model == "string" && args.model.trim() && parts.push(`Model: ${args.model.trim()}`), typeof args.title == "string" && args.title.trim() && parts.push(`Title: ${makePreview(args.title.trim(), 60)}`), argsPreview = parts.join(" | ");
+    }
+  } else toolName === "call_mcp_tool" ? argsPreview = `${String(args.ServerName ?? "")}/${String(args.ToolName ?? "")}` : targetPath ? argsPreview = targetPath : typeof args.query == "string" ? argsPreview = makePreview(args.query, 140) : argsPreview = makePreview(JSON.stringify(args), 140);
+  return {
+    category,
+    mcpServer,
+    skillName,
+    skillPlugin,
+    targetPath,
+    childConversationId,
+    childConversationIds,
+    childLinks,
+    argsPreview,
+    commandPathHints
+  };
+}
+async function parseTranscriptFile(transcriptPath, conversationId) {
+  let turns = [], plannerSteps = [], toolCalls = [], candidatePaths = [], modelsSet = /* @__PURE__ */ new Set(), slashSet = /* @__PURE__ */ new Set(), pendingQueue = [], currentTurnIndex = -1, minTs = Number.POSITIVE_INFINITY, maxTs = 0, hasTokenTelemetry = !1, firstSystemMessage = null, activeSelectedModel = null, hasCoordinatorSignal = !1, explicitSwarmWorkerTag = !1, hasBoardTools = !1, swarmTitle = null, unavailableByModel = /* @__PURE__ */ new Map(), recordSwarmToolSignals = (toolName, args, classified) => {
+    toolName === "swarm" && (hasCoordinatorSignal = !0, (typeof args.action == "string" ? args.action.trim().toLowerCase() : "") === "title" && typeof args.title == "string" && args.title.trim() && (swarmTitle = makePreview(args.title.trim(), 80))), isSwarmBoardTool(toolName) && (hasBoardTools = !0), classified.skillName === "swarm_pane" ? hasCoordinatorSignal = !0 : classified.skillName === "swarm_monitor" && (explicitSwarmWorkerTag = !0), classified.targetPath && /\/\.system_generated\/swarm\/plan\.json$/i.test(
+      classified.targetPath.replace(/\\/g, "/")
+    ) && (hasCoordinatorSignal = !0);
+  }, flushPendingTools = () => {
+    for (; pendingQueue.length > 0; ) {
+      let pending = pendingQueue.shift(), classified = classifyTool(pending.toolName, pending.args, "");
+      recordSwarmToolSignals(pending.toolName, pending.args, classified), classified.targetPath && candidatePaths.push(classified.targetPath);
+      for (let hint of classified.commandPathHints) candidatePaths.push(hint);
+      toolCalls.push({
+        stepIndex: pending.plannerStepIndex,
+        plannerStepIndex: pending.plannerStepIndex,
+        turnIndex: pending.turnIndex,
+        toolCallId: pending.toolCallId,
+        toolName: pending.toolName,
+        category: classified.category,
+        mcpServer: classified.mcpServer,
+        skillName: classified.skillName,
+        skillPlugin: classified.skillPlugin,
+        targetPath: classified.targetPath,
+        childConversationId: classified.childConversationId,
+        childConversationIds: classified.childConversationIds,
+        childLinks: classified.childLinks,
+        startedAtMs: pending.plannerCreatedAtMs,
+        completedAtMs: null,
+        durationMs: 0,
+        argsPreview: classified.argsPreview,
+        commandPathHints: classified.commandPathHints,
+        resultBytes: 0,
+        estResultTokens: 0,
+        isError: !1,
+        errorPreview: null
+      });
+    }
+  }, stream = fs.createReadStream(transcriptPath, { encoding: "utf8" }), rl = readline.createInterface({ input: stream, crlfDelay: 1 / 0 });
+  for await (let line of rl) {
+    let trimmed = line.trim();
+    if (!trimmed) continue;
+    let raw;
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    let stepIndex = typeof raw.step_index == "number" ? raw.step_index : 0, stepCreatedAtMs = parseTimestampMs(raw.created_at) ?? 0;
+    if (stepCreatedAtMs > 0 && (stepCreatedAtMs < minTs && (minTs = stepCreatedAtMs), stepCreatedAtMs > maxTs && (maxTs = stepCreatedAtMs)), raw.type === "SYSTEM_MESSAGE") {
+      typeof raw.content == "string" && (firstSystemMessage === null && raw.content.trim() && (firstSystemMessage = raw.content), (/<swarm_worker>/i.test(raw.content) || /\bswarm_monitor\b/i.test(raw.content)) && (explicitSwarmWorkerTag = !0));
+      continue;
+    }
+    if (raw.type === "ERROR_MESSAGE") {
+      let errText = typeof raw.error == "string" ? raw.error : typeof raw.content == "string" ? raw.content : "", extracted = extractUnavailableModelError(errText);
+      if (extracted) {
+        let existing = unavailableByModel.get(extracted.model);
+        (!existing || stepCreatedAtMs >= existing.tsMs) && unavailableByModel.set(extracted.model, {
+          model: extracted.model,
+          tsMs: stepCreatedAtMs,
+          reason: extracted.reason
+        });
+      }
+      continue;
+    }
+    if (raw.type === "USER_INPUT") {
+      flushPendingTools(), currentTurnIndex += 1;
+      let content = typeof raw.content == "string" ? raw.content : "", sel = extractModelSelectionFromUserInput(content);
+      sel.found && (activeSelectedModel = sel.model);
+      let { promptText, slashCommand } = extractUserRequest(content);
+      slashCommand && (slashSet.add(slashCommand), slashCommand.toLowerCase() === "/swarm" && (hasCoordinatorSignal = !0)), turns.push({
+        turnIndex: currentTurnIndex,
+        stepIndex,
+        createdAtMs: stepCreatedAtMs,
+        promptText,
+        promptPreview: makePreview(promptText || "(empty prompt)", 140),
+        promptBytes: Buffer.byteLength(promptText, "utf8"),
+        slashCommand
+      });
+      continue;
+    }
+    if (raw.type === "PLANNER_RESPONSE") {
+      flushPendingTools(), currentTurnIndex < 0 && (currentTurnIndex = 0, turns.push({
+        turnIndex: 0,
+        stepIndex: 0,
+        createdAtMs: stepCreatedAtMs,
+        promptText: "(implicit start)",
+        promptPreview: "(implicit start)",
+        promptBytes: 0,
+        slashCommand: null
+      }));
+      let rawModel = typeof raw.model == "string" && raw.model.trim() ? raw.model.trim() : null, model = rawModel ?? activeSelectedModel ?? "unknown", modelSource = rawModel ? "transcript" : activeSelectedModel ? "settings_change" : "unknown";
+      model !== "unknown" && modelsSet.add(model), (Object.prototype.hasOwnProperty.call(raw, "input_tokens") || Object.prototype.hasOwnProperty.call(raw, "cache_read_tokens") || Object.prototype.hasOwnProperty.call(raw, "output_tokens")) && (hasTokenTelemetry = !0);
+      let inputTokens = Number(raw.input_tokens ?? 0), cacheReadTokens = Number(raw.cache_read_tokens ?? 0), outputTokens = Number(raw.output_tokens ?? 0), totalContextTokens = inputTokens + cacheReadTokens, calls = Array.isArray(raw.tool_calls) ? raw.tool_calls : [];
+      plannerSteps.push({
+        stepIndex,
+        turnIndex: currentTurnIndex,
+        model,
+        modelSource,
+        createdAtMs: stepCreatedAtMs,
+        thinkingChars: typeof raw.thinking == "string" ? raw.thinking.length : 0,
+        contentChars: typeof raw.content == "string" ? raw.content.length : 0,
+        inputTokens,
+        cacheReadTokens,
+        outputTokens,
+        totalContextTokens,
+        toolCallCount: calls.length,
+        status: typeof raw.status == "string" ? raw.status : "DONE"
+      });
+      for (let tc of calls) {
+        let toolName = typeof tc?.name == "string" && tc.name.trim() ? tc.name.trim() : "unknown_tool";
+        pendingQueue.push({
+          plannerStepIndex: stepIndex,
+          turnIndex: currentTurnIndex,
+          plannerCreatedAtMs: stepCreatedAtMs,
+          toolCallId: typeof tc?.id == "string" ? tc.id : null,
+          toolName,
+          args: normalizeArgs(tc?.args)
+        });
+      }
+      continue;
+    }
+    if (raw.type === "GENERIC" && raw.source === "MODEL" && pendingQueue.length > 0) {
+      let pending = pendingQueue.shift(), content = typeof raw.content == "string" ? raw.content : "", { createdAtMs, completedAtMs, body } = extractGenericHeaders(content), startedAtMs2 = createdAtMs ?? (stepCreatedAtMs || pending.plannerCreatedAtMs), endMs = completedAtMs ?? startedAtMs2, durationMs = completedAtMs !== null && startedAtMs2 !== null ? Math.max(0, completedAtMs - startedAtMs2) : 0;
+      endMs > maxTs && (maxTs = endMs), startedAtMs2 > 0 && startedAtMs2 < minTs && (minTs = startedAtMs2);
+      let resultBytes = Buffer.byteLength(body, "utf8"), estResultTokens = Math.ceil(resultBytes / 4), { isError, errorPreview } = detectToolError(raw.status, body), classified = classifyTool(pending.toolName, pending.args, body);
+      recordSwarmToolSignals(pending.toolName, pending.args, classified), classified.targetPath && candidatePaths.push(classified.targetPath);
+      for (let hint of classified.commandPathHints) candidatePaths.push(hint);
+      toolCalls.push({
+        stepIndex,
+        plannerStepIndex: pending.plannerStepIndex,
+        turnIndex: pending.turnIndex,
+        toolCallId: pending.toolCallId,
+        toolName: pending.toolName,
+        category: classified.category,
+        mcpServer: classified.mcpServer,
+        skillName: classified.skillName,
+        skillPlugin: classified.skillPlugin,
+        targetPath: classified.targetPath,
+        childConversationId: classified.childConversationId,
+        childConversationIds: classified.childConversationIds,
+        childLinks: classified.childLinks,
+        startedAtMs: startedAtMs2,
+        completedAtMs: endMs,
+        durationMs,
+        argsPreview: classified.argsPreview,
+        commandPathHints: classified.commandPathHints,
+        resultBytes,
+        estResultTokens,
+        isError,
+        errorPreview
+      });
+    }
+  }
+  flushPendingTools();
+  let firstPrompt = turns.find((t) => t.promptText && t.promptText !== "(implicit start)"), hasExplicitUserPrompt = !!firstPrompt, title = conversationId.slice(0, 8);
+  if (firstPrompt) {
+    let cleaned = firstPrompt.promptText.replace(/^\/[a-zA-Z0-9_-]+\s*/, "").trim();
+    title = makePreview(cleaned || firstPrompt.promptText, 76);
+  }
+  let systemTaskPreview = null;
+  if (!hasExplicitUserPrompt && firstSystemMessage) {
+    let cleanedSys = firstSystemMessage.replace(/The following is a <SYSTEM_MESSAGE>[\s\S]*?pay attention to\./gi, " ").replace(/<\/?[A-Z_]+>/g, " ").replace(/\[Notice\][\s\S]*$/gi, " ").replace(/\s+/g, " ").trim();
+    cleanedSys.length >= 4 && (systemTaskPreview = makePreview(cleanedSys, 60));
+  }
+  let startedAtMs = Number.isFinite(minTs) ? minTs : 0, endedAtMs = maxTs >= startedAtMs ? maxTs : startedAtMs, detectedSwarmRole = explicitSwarmWorkerTag ? "worker" : hasCoordinatorSignal ? "coordinator" : hasBoardTools ? "worker" : null;
+  return {
+    conversationId,
+    transcriptPath,
+    title,
+    hasExplicitUserPrompt,
+    systemTaskPreview,
+    hasTokenTelemetry,
+    startedAtMs,
+    endedAtMs,
+    models: Array.from(modelsSet),
+    slashCommands: Array.from(slashSet),
+    turns,
+    plannerSteps,
+    toolCalls,
+    candidatePaths,
+    modelUnavailableErrors: Array.from(unavailableByModel.values()),
+    detectedSwarmRole,
+    swarmTitle
   };
 }
 
@@ -16040,7 +16622,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
   db;
   dbPath;
   constructor(dataDir) {
-    if (fs.mkdirSync(dataDir, { recursive: !0, mode: 448 }), this.dbPath = path.join(dataDir, "tracker.sqlite"), this.db = new DatabaseSync(this.dbPath), this.db.exec("PRAGMA journal_mode = WAL;"), this.db.exec("PRAGMA foreign_keys = ON;"), this.db.exec("PRAGMA busy_timeout = 5000;"), process.platform !== "win32")
+    if (fs2.mkdirSync(dataDir, { recursive: !0, mode: 448 }), this.dbPath = path.join(dataDir, "tracker.sqlite"), this.db = new DatabaseSync(this.dbPath), this.db.exec("PRAGMA journal_mode = WAL;"), this.db.exec("PRAGMA foreign_keys = ON;"), this.db.exec("PRAGMA busy_timeout = 5000;"), process.platform !== "win32")
       for (let [target, mode] of [
         [dataDir, 448],
         [this.dbPath, 384],
@@ -16048,7 +16630,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         [`${this.dbPath}-shm`, 384]
       ])
         try {
-          fs.existsSync(target) && fs.chmodSync(target, mode);
+          fs2.existsSync(target) && fs2.chmodSync(target, mode);
         } catch {
         }
     this.migrate(), this.seedDefaultPricing();
@@ -16076,6 +16658,9 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         parent_conversation_id TEXT,
         subagent_role TEXT,
         subagent_type TEXT,
+        swarm_role TEXT,
+        swarm_title TEXT,
+        swarm_tasks_json TEXT NOT NULL DEFAULT '{}',
         started_at_ms INTEGER NOT NULL,
         ended_at_ms INTEGER NOT NULL,
         termination_reason TEXT,
@@ -16160,6 +16745,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         skill_plugin TEXT,
         target_path TEXT,
         child_conversation_id TEXT,
+        child_conversation_ids_json TEXT NOT NULL DEFAULT '[]',
         started_at_ms INTEGER,
         completed_at_ms INTEGER,
         duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -16212,7 +16798,17 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         cache_read_per_1m REAL NOT NULL,
         output_per_1m REAL NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
+        retired INTEGER,
         sort_order INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS model_error_signals (
+        conversation_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        error_ts_ms INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, model),
+        FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
       );
     `), this.db.prepare("PRAGMA table_info(planner_steps)").all().some((c) => c.name === "seq_index") || this.db.exec(`
         DROP TABLE IF EXISTS planner_steps;
@@ -16240,13 +16836,19 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
           FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
         DELETE FROM indexed_files WHERE path LIKE '%transcript%';
-      `), this.db.prepare("PRAGMA table_info(conversations)").all().some((c) => c.name === "has_token_telemetry") || this.db.exec(
+      `);
+    let convCols = this.db.prepare("PRAGMA table_info(conversations)").all();
+    convCols.some((c) => c.name === "has_token_telemetry") || this.db.exec(
       "ALTER TABLE conversations ADD COLUMN has_token_telemetry INTEGER NOT NULL DEFAULT 1;"
-    );
+    ), convCols.some((c) => c.name === "swarm_role") || this.db.exec("ALTER TABLE conversations ADD COLUMN swarm_role TEXT;"), convCols.some((c) => c.name === "swarm_title") || this.db.exec("ALTER TABLE conversations ADD COLUMN swarm_title TEXT;"), convCols.some((c) => c.name === "swarm_tasks_json") || this.db.exec(
+      "ALTER TABLE conversations ADD COLUMN swarm_tasks_json TEXT NOT NULL DEFAULT '{}';"
+    ), this.db.prepare("PRAGMA table_info(tool_calls)").all().some((c) => c.name === "child_conversation_ids_json") || this.db.exec(
+      "ALTER TABLE tool_calls ADD COLUMN child_conversation_ids_json TEXT NOT NULL DEFAULT '[]';"
+    ), this.db.prepare("PRAGMA table_info(model_pricing)").all().some((c) => c.name === "retired") || this.db.exec("ALTER TABLE model_pricing ADD COLUMN retired INTEGER;");
     let versionRow = this.db.prepare("PRAGMA user_version").get();
-    Number(versionRow?.user_version ?? 0) < 6 && this.db.exec(`
+    Number(versionRow?.user_version ?? 0) < 9 && this.db.exec(`
         DELETE FROM indexed_files WHERE path LIKE '%transcript%';
-        PRAGMA user_version = 6;
+        PRAGMA user_version = 9;
       `);
   }
   seedDefaultPricing() {
@@ -16255,8 +16857,8 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
       return;
     let insert = this.db.prepare(`
       INSERT INTO model_pricing (
-        id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, sort_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, retired, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     DEFAULT_PRICING_RULES.forEach((rule, index) => {
       insert.run(
@@ -16267,6 +16869,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         rule.cacheReadPer1M,
         rule.outputPer1M,
         rule.enabled ? 1 : 0,
+        typeof rule.retired == "boolean" ? rule.retired ? 1 : 0 : null,
         index
       );
     });
@@ -16401,7 +17004,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
   }
   getPricingRules() {
     return this.db.prepare(
-      "SELECT id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled FROM model_pricing ORDER BY sort_order ASC, id ASC"
+      "SELECT id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, retired FROM model_pricing ORDER BY sort_order ASC, id ASC"
     ).all().map((r2) => ({
       id: String(r2.id),
       pattern: String(r2.pattern),
@@ -16409,7 +17012,8 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
       inputPer1M: Number(r2.input_per_1m),
       cacheReadPer1M: Number(r2.cache_read_per_1m),
       outputPer1M: Number(r2.output_per_1m),
-      enabled: Number(r2.enabled) === 1
+      enabled: Number(r2.enabled) === 1,
+      ...r2.retired !== null && r2.retired !== void 0 ? { retired: Number(r2.retired) === 1 } : {}
     }));
   }
   savePricingRules(rules) {
@@ -16418,8 +17022,8 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
       this.db.exec("DELETE FROM model_pricing");
       let insert = this.db.prepare(`
         INSERT INTO model_pricing (
-          id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, retired, sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       rules.forEach((rule, idx) => {
         insert.run(
@@ -16430,6 +17034,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
           rule.cacheReadPer1M,
           rule.outputPer1M,
           rule.enabled ? 1 : 0,
+          typeof rule.retired == "boolean" ? rule.retired ? 1 : 0 : null,
           idx
         );
       }), this.db.exec("COMMIT");
@@ -16440,16 +17045,17 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
   upsertConversation(input) {
     this.db.exec("BEGIN");
     try {
-      this.db.prepare(`
+      if (this.db.prepare(`
           INSERT INTO conversations (
             conversation_id, title, surface, transcript_path, project_path, project_source,
             parent_conversation_id, subagent_role, subagent_type,
+            swarm_role, swarm_title, swarm_tasks_json,
             started_at_ms, ended_at_ms, termination_reason,
             models_json, slash_commands_json, skills_used_json, has_live_hooks, has_token_telemetry,
             input_tokens, cache_read_tokens, output_tokens, peak_context_tokens,
             active_ms, model_ms, tool_wall_ms, tool_sum_ms, user_idle_ms, wall_clock_ms,
             error_count, diagnostics_json, files_touched_json, indexed_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(conversation_id) DO UPDATE SET
             title = excluded.title,
             surface = excluded.surface,
@@ -16459,6 +17065,9 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
             parent_conversation_id = excluded.parent_conversation_id,
             subagent_role = excluded.subagent_role,
             subagent_type = excluded.subagent_type,
+            swarm_role = excluded.swarm_role,
+            swarm_title = excluded.swarm_title,
+            swarm_tasks_json = excluded.swarm_tasks_json,
             started_at_ms = excluded.started_at_ms,
             ended_at_ms = excluded.ended_at_ms,
             termination_reason = excluded.termination_reason,
@@ -16491,6 +17100,9 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         input.parentConversationId,
         input.subagentRole,
         input.subagentType,
+        input.swarmRole ?? null,
+        input.swarmTitle ?? null,
+        JSON.stringify(input.swarmTasks ?? {}),
         input.startedAtMs,
         input.endedAtMs,
         input.terminationReason,
@@ -16513,7 +17125,30 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         JSON.stringify(input.diagnostics),
         JSON.stringify(input.filesTouched),
         input.indexedAtMs
-      ), this.db.prepare("DELETE FROM turns WHERE conversation_id = ?").run(input.conversationId), this.db.prepare("DELETE FROM planner_steps WHERE conversation_id = ?").run(input.conversationId), this.db.prepare("DELETE FROM tool_calls WHERE conversation_id = ?").run(input.conversationId);
+      ), this.db.prepare("DELETE FROM turns WHERE conversation_id = ?").run(input.conversationId), this.db.prepare("DELETE FROM planner_steps WHERE conversation_id = ?").run(input.conversationId), this.db.prepare("DELETE FROM tool_calls WHERE conversation_id = ?").run(input.conversationId), this.db.prepare("DELETE FROM model_error_signals WHERE conversation_id = ?").run(input.conversationId), input.modelUnavailableErrors && input.modelUnavailableErrors.length > 0) {
+        let insertErrSignal = this.db.prepare(`
+          INSERT INTO model_error_signals (conversation_id, model, error_ts_ms, reason)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(conversation_id, model) DO UPDATE SET
+            error_ts_ms = CASE
+              WHEN excluded.error_ts_ms >= model_error_signals.error_ts_ms
+              THEN excluded.error_ts_ms
+              ELSE model_error_signals.error_ts_ms
+            END,
+            reason = CASE
+              WHEN excluded.error_ts_ms >= model_error_signals.error_ts_ms
+              THEN excluded.reason
+              ELSE model_error_signals.reason
+            END
+        `);
+        for (let errSig of input.modelUnavailableErrors)
+          insertErrSignal.run(
+            input.conversationId,
+            errSig.model.trim().toLowerCase(),
+            errSig.tsMs,
+            errSig.reason
+          );
+      }
       let insertTurn = this.db.prepare(`
         INSERT INTO turns (
           conversation_id, turn_index, prompt_preview, slash_command,
@@ -16572,12 +17207,13 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
         INSERT INTO tool_calls (
           conversation_id, step_index, planner_step_index, turn_index, tool_call_id,
           tool_name, category, mcp_server, skill_name, skill_plugin, target_path,
-          child_conversation_id, started_at_ms, completed_at_ms, duration_ms,
+          child_conversation_id, child_conversation_ids_json, started_at_ms, completed_at_ms, duration_ms,
           args_preview, result_bytes, est_result_tokens, attributed_input_tokens,
           compounded_cache_tokens, is_error, error_preview
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      for (let tc of input.toolCalls)
+      for (let tc of input.toolCalls) {
+        let serializedLinks = tc.childLinks && tc.childLinks.length > 0 ? tc.childLinks : tc.childConversationId ? [{ conversationId: tc.childConversationId, role: null, typeName: null }] : [];
         insertTool.run(
           input.conversationId,
           tc.stepIndex,
@@ -16591,6 +17227,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
           tc.skillPlugin,
           tc.targetPath,
           tc.childConversationId,
+          JSON.stringify(serializedLinks),
           tc.startedAtMs,
           tc.completedAtMs,
           tc.durationMs,
@@ -16602,6 +17239,7 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
           tc.isError ? 1 : 0,
           tc.errorPreview
         );
+      }
       this.db.exec("COMMIT");
     } catch (err) {
       throw this.db.exec("ROLLBACK"), err;
@@ -16660,46 +17298,107 @@ var DatabaseSync = loadDatabaseSync(), TrackerDatabase = class {
     });
   }
   getToolCallsForConversation(conversationId) {
-    return this.db.prepare("SELECT * FROM tool_calls WHERE conversation_id = ? ORDER BY step_index ASC, id ASC").all(conversationId).map((r2) => ({
-      id: Number(r2.id),
-      stepIndex: Number(r2.step_index),
-      plannerStepIndex: Number(r2.planner_step_index),
-      turnIndex: Number(r2.turn_index),
-      toolCallId: r2.tool_call_id ? String(r2.tool_call_id) : null,
-      toolName: String(r2.tool_name),
-      category: String(r2.category),
-      mcpServer: r2.mcp_server ? String(r2.mcp_server) : null,
-      skillName: r2.skill_name ? String(r2.skill_name) : null,
-      skillPlugin: r2.skill_plugin ? String(r2.skill_plugin) : null,
-      targetPath: r2.target_path ? String(r2.target_path) : null,
-      childConversationId: r2.child_conversation_id ? String(r2.child_conversation_id) : null,
-      startedAtMs: r2.started_at_ms !== null && r2.started_at_ms !== void 0 ? Number(r2.started_at_ms) : null,
-      completedAtMs: r2.completed_at_ms !== null && r2.completed_at_ms !== void 0 ? Number(r2.completed_at_ms) : null,
-      durationMs: Number(r2.duration_ms),
-      argsPreview: String(r2.args_preview ?? ""),
-      resultBytes: Number(r2.result_bytes),
-      estResultTokens: Number(r2.est_result_tokens),
-      attributedInputTokens: Number(r2.attributed_input_tokens),
-      compoundedCacheTokens: Number(r2.compounded_cache_tokens),
-      isError: Number(r2.is_error) === 1,
-      errorPreview: r2.error_preview ? String(r2.error_preview) : null
-    }));
+    return this.db.prepare("SELECT * FROM tool_calls WHERE conversation_id = ? ORDER BY step_index ASC, id ASC").all(conversationId).map((r2) => {
+      let childConversationId = r2.child_conversation_id ? String(r2.child_conversation_id) : null, parsedLinks = safeJsonParse(
+        r2.child_conversation_ids_json,
+        []
+      ).filter((l) => l && typeof l.conversationId == "string" && l.conversationId.length > 0), childLinks = parsedLinks.length > 0 ? parsedLinks : childConversationId ? [{ conversationId: childConversationId, role: null, typeName: null }] : [], childConversationIds = childLinks.map((l) => l.conversationId);
+      return {
+        id: Number(r2.id),
+        stepIndex: Number(r2.step_index),
+        plannerStepIndex: Number(r2.planner_step_index),
+        turnIndex: Number(r2.turn_index),
+        toolCallId: r2.tool_call_id ? String(r2.tool_call_id) : null,
+        toolName: String(r2.tool_name),
+        category: String(r2.category),
+        mcpServer: r2.mcp_server ? String(r2.mcp_server) : null,
+        skillName: r2.skill_name ? String(r2.skill_name) : null,
+        skillPlugin: r2.skill_plugin ? String(r2.skill_plugin) : null,
+        targetPath: r2.target_path ? String(r2.target_path) : null,
+        childConversationId,
+        ...childConversationIds.length > 0 ? { childConversationIds } : {},
+        ...childLinks.length > 0 ? { childLinks } : {},
+        startedAtMs: r2.started_at_ms !== null && r2.started_at_ms !== void 0 ? Number(r2.started_at_ms) : null,
+        completedAtMs: r2.completed_at_ms !== null && r2.completed_at_ms !== void 0 ? Number(r2.completed_at_ms) : null,
+        durationMs: Number(r2.duration_ms),
+        argsPreview: String(r2.args_preview ?? ""),
+        resultBytes: Number(r2.result_bytes),
+        estResultTokens: Number(r2.est_result_tokens),
+        attributedInputTokens: Number(r2.attributed_input_tokens),
+        compoundedCacheTokens: Number(r2.compounded_cache_tokens),
+        isError: Number(r2.is_error) === 1,
+        errorPreview: r2.error_preview ? String(r2.error_preview) : null
+      };
+    });
   }
   getSubagentLinkMap() {
     let rows = this.db.prepare(`
-        SELECT conversation_id, child_conversation_id, args_preview
+        SELECT conversation_id, child_conversation_id, child_conversation_ids_json, args_preview
         FROM tool_calls
-        WHERE child_conversation_id IS NOT NULL AND child_conversation_id != ''
+        WHERE (child_conversation_id IS NOT NULL AND child_conversation_id != '')
+           OR (child_conversation_ids_json IS NOT NULL AND child_conversation_ids_json != '' AND child_conversation_ids_json != '[]')
       `).all(), map2 = /* @__PURE__ */ new Map();
     for (let row of rows) {
-      let childId = String(row.child_conversation_id), parentId = String(row.conversation_id), preview = String(row.args_preview ?? ""), roleMatch = preview.match(/Role:\s*([^|]+)/i), typeMatch = preview.match(/Type:\s*([^|]+)/i);
-      map2.set(childId, {
+      let parentId = String(row.conversation_id), preview = String(row.args_preview ?? ""), roleMatch = preview.match(/Role:\s*([^|]+)/i), typeMatch = preview.match(/Type:\s*([^|]+)/i), fallbackRole = roleMatch ? roleMatch[1].trim() : null, fallbackType = typeMatch ? typeMatch[1].trim() : null, parsedLinks = safeJsonParse(
+        row.child_conversation_ids_json,
+        []
+      ), seenInRow = /* @__PURE__ */ new Set();
+      for (let link of parsedLinks)
+        !link || typeof link.conversationId != "string" || !link.conversationId || (seenInRow.add(link.conversationId), map2.set(link.conversationId, {
+          parentConversationId: parentId,
+          role: link.role ?? fallbackRole,
+          typeName: link.typeName ?? fallbackType
+        }));
+      let legacyChildId = row.child_conversation_id ? String(row.child_conversation_id) : "";
+      legacyChildId && !seenInRow.has(legacyChildId) && map2.set(legacyChildId, {
         parentConversationId: parentId,
-        role: roleMatch ? roleMatch[1].trim() : null,
-        typeName: typeMatch ? typeMatch[1].trim() : null
+        role: fallbackRole,
+        typeName: fallbackType
       });
     }
     return map2;
+  }
+  getModelAvailabilitySignals() {
+    let signals = {}, latestGlobalActivityMs = 0, maxConvRow = this.db.prepare("SELECT MAX(ended_at_ms) AS max_ended FROM conversations").get();
+    maxConvRow?.max_ended && Number.isFinite(Number(maxConvRow.max_ended)) && (latestGlobalActivityMs = Math.max(latestGlobalActivityMs, Number(maxConvRow.max_ended)));
+    let seenRows = this.db.prepare(`
+        SELECT LOWER(TRIM(model)) AS model, MAX(created_at_ms) AS last_seen_ms
+        FROM planner_steps
+        WHERE model IS NOT NULL AND TRIM(model) != ''
+        GROUP BY LOWER(TRIM(model))
+      `).all();
+    for (let r2 of seenRows) {
+      let model = String(r2.model || "").trim().toLowerCase();
+      if (!model || model === "unknown" || model === "auto") continue;
+      let lastSeenAtMs = Number(r2.last_seen_ms ?? 0);
+      lastSeenAtMs > latestGlobalActivityMs && (latestGlobalActivityMs = lastSeenAtMs), signals[model] = {
+        model,
+        lastSeenAtMs,
+        lastUnavailableErrorAtMs: null,
+        lastUnavailableReason: null
+      };
+    }
+    let mergeError = (modelRaw, errTsMs, reason) => {
+      let model = modelRaw.trim().toLowerCase();
+      if (!model || model === "unknown" || model === "auto") return;
+      let existing = signals[model] ?? {
+        model,
+        lastSeenAtMs: 0,
+        lastUnavailableErrorAtMs: null,
+        lastUnavailableReason: null
+      };
+      (existing.lastUnavailableErrorAtMs === null || errTsMs >= existing.lastUnavailableErrorAtMs) && (existing.lastUnavailableErrorAtMs = errTsMs, existing.lastUnavailableReason = reason), signals[model] = existing;
+    }, errRows = this.db.prepare(
+      "SELECT LOWER(TRIM(model)) AS model, error_ts_ms, reason FROM model_error_signals ORDER BY error_ts_ms DESC"
+    ).all();
+    for (let r2 of errRows)
+      mergeError(String(r2.model || ""), Number(r2.error_ts_ms ?? 0), String(r2.reason ?? ""));
+    let hookErrRows = this.db.prepare("SELECT ts_ms, error FROM hook_events WHERE error IS NOT NULL AND error != ''").all();
+    for (let r2 of hookErrRows) {
+      let extracted = extractUnavailableModelError(String(r2.error || ""));
+      extracted && mergeError(extracted.model, Number(r2.ts_ms ?? 0), extracted.reason);
+    }
+    return { signals, latestGlobalActivityMs };
   }
 };
 function mapStoredConversationRow(r2) {
@@ -16713,6 +17412,9 @@ function mapStoredConversationRow(r2) {
     parentConversationId: r2.parent_conversation_id ? String(r2.parent_conversation_id) : null,
     subagentRole: r2.subagent_role ? String(r2.subagent_role) : null,
     subagentType: r2.subagent_type ? String(r2.subagent_type) : null,
+    swarmRole: r2.swarm_role === "coordinator" || r2.swarm_role === "worker" ? r2.swarm_role : null,
+    swarmTitle: r2.swarm_title ? String(r2.swarm_title) : null,
+    swarmTasks: safeJsonParse(r2.swarm_tasks_json, {}),
     startedAtMs: Number(r2.started_at_ms),
     endedAtMs: Number(r2.ended_at_ms),
     terminationReason: r2.termination_reason ? String(r2.termination_reason) : null,
@@ -16751,88 +17453,8 @@ import fs6 from "node:fs";
 import os2 from "node:os";
 import path4 from "node:path";
 
-// src/shared/paths.ts
-function safeDecodePercent(raw) {
-  return raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
-    try {
-      return decodeURIComponent(run);
-    } catch {
-      return run.replace(/%[0-7][0-9A-Fa-f]/g, (asciiSeq) => {
-        try {
-          return decodeURIComponent(asciiSeq);
-        } catch {
-          return asciiSeq;
-        }
-      });
-    }
-  });
-}
-function unwrapFileUri(raw) {
-  let trimmed = (raw || "").trim();
-  if (!/^file:\/\//i.test(trimmed)) return trimmed;
-  let rest = trimmed.slice(7);
-  return /^localhost\//i.test(rest) && (rest = rest.slice(9)), rest = rest.replace(/^(\/?[a-zA-Z])%3[aA](?=[\\/]|$)/, "$1:"), /^\/[a-zA-Z]:[\\/]/.test(rest) || /^\/[a-zA-Z]:$/.test(rest) ? safeDecodePercent(rest.slice(1)) : /^[a-zA-Z]:[\\/]/.test(rest) || /^[a-zA-Z]:$/.test(rest) ? safeDecodePercent(rest) : !rest.startsWith("/") && rest.includes("/") ? "\\\\" + safeDecodePercent(rest).replace(/\//g, "\\") : safeDecodePercent(rest);
-}
-function isWindowsPath(p2) {
-  let s = (p2 || "").trim();
-  return /^[a-zA-Z]:[\\/]/.test(s) || /^[a-zA-Z]:$/.test(s) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(s);
-}
-function isAbsoluteLocalPath(p2) {
-  let s = (p2 || "").trim();
-  return s.startsWith("/") || isWindowsPath(s);
-}
-function stripTrailingSeparators(p2) {
-  if (!p2) return "";
-  if (p2 === "/") return "/";
-  if (/^[a-zA-Z]:[\\/]$/.test(p2)) return p2;
-  let uncRoot = p2.match(/^(\\\\[^\\/]+\\[^\\/]+)[\\/]*$/);
-  return uncRoot ? uncRoot[1] : p2.replace(/[\\/]+$/, "");
-}
-function sameLocalPath(a, b) {
-  let ua = stripTrailingSeparators(unwrapFileUri(a)), ub = stripTrailingSeparators(unwrapFileUri(b));
-  return !ua || !ub ? ua === ub : isWindowsPath(ua) || isWindowsPath(ub) ? ua.replace(/\\/g, "/").toLowerCase() === ub.replace(/\\/g, "/").toLowerCase() : ua === ub;
-}
-function pathBaseName(p2) {
-  let clean = stripTrailingSeparators((p2 || "").trim());
-  if (!clean || clean === "/" || /^[a-zA-Z]:[\\/]?$/.test(clean)) return clean;
-  let idx = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
-  return idx >= 0 ? clean.slice(idx + 1) : clean;
-}
-function pathDirName(p2) {
-  let clean = stripTrailingSeparators((p2 || "").trim());
-  if (!clean) return "";
-  if (clean === "/") return "/";
-  if (/^[a-zA-Z]:[\\/]?$/.test(clean)) {
-    let sep = clean.includes("\\") ? "\\" : "/";
-    return `${clean.slice(0, 2)}${sep}`;
-  }
-  if (/^\\\\[^\\/]+\\[^\\/]+$/.test(clean))
-    return clean;
-  let idx = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
-  if (idx < 0) return ".";
-  if (idx === 0) return "/";
-  let prefix = clean.slice(0, idx);
-  if (/^[a-zA-Z]:$/.test(prefix)) {
-    let sep = clean[idx];
-    return `${prefix}${sep}`;
-  }
-  return prefix;
-}
-function pathExtName(p2) {
-  let base = pathBaseName(p2), dotIdx = base.lastIndexOf(".");
-  return dotIdx <= 0 ? "" : base.slice(dotIdx);
-}
-function pathJoin(dir, child) {
-  let sep = isWindowsPath(dir) && dir.includes("\\") ? "\\" : "/", base = dir.replace(/[\\/]+$/, ""), next = child.replace(/^[\\/]+/, "");
-  return base ? `${base}${sep}${next}` : `${sep}${next}`;
-}
-function pathTailSegments(p2, count = 2) {
-  let clean = stripTrailingSeparators((p2 || "").trim());
-  return clean ? clean.split(/[\\/]+/).filter(Boolean).slice(-count).join("/") : "";
-}
-
 // src/server/analytics.ts
-import fs3 from "node:fs";
+import fs4 from "node:fs";
 import path3 from "node:path";
 
 // src/shared/timeRange.ts
@@ -16869,7 +17491,7 @@ function computePriorTimeRangeBounds(bounds) {
 }
 
 // src/server/skillEfficiency.ts
-import fs2 from "node:fs";
+import fs3 from "node:fs";
 import os from "node:os";
 import path2 from "node:path";
 var PLUGIN_REGISTRY_TTL_MS = 3e4, pluginRegistryCache = /* @__PURE__ */ new Map();
@@ -16899,7 +17521,7 @@ var GENERIC_CLI_NAMES = /* @__PURE__ */ new Set([
 ]);
 function readTextSafe(filePath) {
   try {
-    return !fs2.existsSync(filePath) || !fs2.statSync(filePath).isFile() ? null : fs2.readFileSync(filePath, "utf8");
+    return !fs3.existsSync(filePath) || !fs3.statSync(filePath).isFile() ? null : fs3.readFileSync(filePath, "utf8");
   } catch {
     return null;
   }
@@ -16912,8 +17534,8 @@ function extractYamlSkillName(text) {
 }
 function collectPluginCliBinaries(dirPath, idLower, entryLower, out) {
   try {
-    if (!fs2.existsSync(dirPath)) return;
-    let entries = fs2.readdirSync(dirPath, { withFileTypes: !0 });
+    if (!fs3.existsSync(dirPath)) return;
+    let entries = fs3.readdirSync(dirPath, { withFileTypes: !0 });
     for (let ent of entries) {
       if (!ent.isFile() && !ent.isSymbolicLink()) continue;
       let stripped = ent.name.replace(/\.(?:exe|cmd|bat)$/i, "");
@@ -16947,13 +17569,13 @@ function discoverInstalledPlugins(pluginsDirs) {
   let byId = /* @__PURE__ */ new Map(), cliToPlugin = /* @__PURE__ */ new Map(), mcpToPlugin = /* @__PURE__ */ new Map();
   for (let pluginsDir of dirs)
     try {
-      if (fs2.existsSync(pluginsDir)) {
-        let entries = fs2.readdirSync(pluginsDir, { withFileTypes: !0 });
+      if (fs3.existsSync(pluginsDir)) {
+        let entries = fs3.readdirSync(pluginsDir, { withFileTypes: !0 });
         for (let entry of entries) {
           if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
           let pluginPath = path2.join(pluginsDir, entry.name), stat = null;
           try {
-            stat = fs2.statSync(pluginPath);
+            stat = fs3.statSync(pluginPath);
           } catch {
             stat = null;
           }
@@ -16981,8 +17603,8 @@ function discoverInstalledPlugins(pluginsDirs) {
           collectPluginCliBinaries(path2.join(pluginPath, "bin"), idLower, entryLower, cliSet);
           let skillsDir = path2.join(pluginPath, "skills"), rawSkills = [];
           try {
-            if (fs2.existsSync(skillsDir))
-              for (let skillEnt of fs2.readdirSync(skillsDir, { withFileTypes: !0 })) {
+            if (fs3.existsSync(skillsDir))
+              for (let skillEnt of fs3.readdirSync(skillsDir, { withFileTypes: !0 })) {
                 if (!skillEnt.isDirectory() && !skillEnt.isSymbolicLink()) continue;
                 let skillFolder = path2.join(skillsDir, skillEnt.name);
                 collectPluginCliBinaries(
@@ -17396,11 +18018,14 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
         let mEnd = step.completedAtMs && step.completedAtMs >= step.createdAtMs ? step.completedAtMs : step.createdAtMs + step.modelDurationMs;
         stepIntervals.push({ start: step.createdAtMs, end: mEnd });
       } else step.modelDurationMs > 0 && (stepUnplacedMs += step.modelDurationMs);
-      for (let tc of stepTools)
-        tc.category === "subagent" && tc.childConversationId !== null && scopeConvIds.has(tc.childConversationId) || (tc.startedAtMs !== null && tc.startedAtMs > 0 ? stepIntervals.push({
+      for (let tc of stepTools) {
+        if (isIdleWaitTool(tc.toolName)) continue;
+        let childIds = tc.childConversationIds && tc.childConversationIds.length > 0 ? tc.childConversationIds : tc.childConversationId ? [tc.childConversationId] : [];
+        tc.category === "subagent" && childIds.length > 0 && childIds.some((cid) => scopeConvIds.has(cid)) || (tc.startedAtMs !== null && tc.startedAtMs > 0 ? stepIntervals.push({
           start: tc.startedAtMs,
           end: Math.max(tc.startedAtMs, tc.completedAtMs ?? tc.startedAtMs + tc.durationMs)
         }) : stepUnplacedMs += tc.durationMs);
+      }
       stepIntervals.length > 0 ? (convHadPlacedIntervals = !0, allScopeIntervals.push(...stepIntervals)) : unplacedScopeActiveMs += stepUnplacedMs;
       let stepEst = step.inputTokens + step.cacheReadTokens + step.outputTokens > 0 ? estimateStepCost(step, step.model, pricingRules) : { unpriced: !0, totalUsd: null };
       !stepEst.unpriced && stepEst.totalUsd !== null && (scopeCostKnown = !0, scopeCostSum += stepEst.totalUsd);
@@ -17421,8 +18046,11 @@ function computeScopeSkillEfficiency(conversations, pricingRules, options = {}) 
       activeStepHits.length === 0 && guidingHit && (activeStepHits = [guidingHit]);
       let guideAtSpawn = guidingHit ?? (activeStepHits.length > 0 ? activeStepHits[0] : null);
       if (guideAtSpawn)
-        for (let tc of stepTools)
-          tc.childConversationId && !spawnInheritedGuide.has(tc.childConversationId) && spawnInheritedGuide.set(tc.childConversationId, guideAtSpawn);
+        for (let tc of stepTools) {
+          let childIds = tc.childConversationIds && tc.childConversationIds.length > 0 ? tc.childConversationIds : tc.childConversationId ? [tc.childConversationId] : [];
+          for (let cid of childIds)
+            spawnInheritedGuide.has(cid) || spawnInheritedGuide.set(cid, guideAtSpawn);
+        }
       if (activeStepHits.length > 0) {
         let uniqueParents = /* @__PURE__ */ new Map(), uniqueChildren = /* @__PURE__ */ new Map();
         for (let h2 of activeStepHits) {
@@ -17992,9 +18620,30 @@ function analyzeConversation(parsed, hookEvents, meta) {
       terminationReason = hookEvents[i].terminationReason;
       break;
     }
-  let plannerStepsAnalyzed = [];
-  for (let i = 0; i < parsed.plannerSteps.length; i++) {
-    let step = parsed.plannerSteps[i], prev = i > 0 ? parsed.plannerSteps[i - 1] : null, prevContext = prev ? prev.totalContextTokens : 0, isCacheMiss = !1, cacheMissCause = null;
+  let usableHookModels = hookEvents.map((h2) => ({
+    tsMs: h2.tsMs,
+    stepIdx: h2.stepIdx,
+    cleanModel: typeof h2.modelName == "string" ? h2.modelName.trim() : ""
+  })).filter((h2) => {
+    let lower = h2.cleanModel.toLowerCase();
+    return !!(lower && lower !== "auto" && lower !== "unknown");
+  }), resolvedPlannerSteps = parsed.plannerSteps.map((step) => {
+    let trimmed = typeof step.model == "string" ? step.model.trim() : "";
+    if (step.modelSource === "transcript" || step.modelSource === void 0 && trimmed.length > 0 && trimmed !== "unknown")
+      return { ...step, model: trimmed };
+    let hookMatchModel = null, bestStepTs = Number.NEGATIVE_INFINITY;
+    for (let hm of usableHookModels)
+      hm.stepIdx === step.stepIndex && hm.tsMs >= bestStepTs && (bestStepTs = hm.tsMs, hookMatchModel = hm.cleanModel);
+    if (!hookMatchModel && step.createdAtMs > 0) {
+      let bestTimeTs = Number.NEGATIVE_INFINITY;
+      for (let hm of usableHookModels)
+        hm.tsMs > 0 && hm.tsMs <= step.createdAtMs + 5e3 && hm.tsMs >= bestTimeTs && (bestTimeTs = hm.tsMs, hookMatchModel = hm.cleanModel);
+    }
+    let resolvedModel = hookMatchModel ?? (step.modelSource === "settings_change" && trimmed && trimmed !== "unknown" ? trimmed : "unknown");
+    return { ...step, model: resolvedModel };
+  }), plannerStepsAnalyzed = [];
+  for (let i = 0; i < resolvedPlannerSteps.length; i++) {
+    let step = resolvedPlannerSteps[i], prev = i > 0 ? resolvedPlannerSteps[i - 1] : null, prevContext = prev ? prev.totalContextTokens : 0, isCacheMiss = !1, cacheMissCause = null;
     if (prev && prevContext > 1e3 && step.cacheReadTokens < prevContext * 0.8) {
       isCacheMiss = !0;
       let gapMs = step.createdAtMs > 0 && prev.createdAtMs > 0 ? step.createdAtMs - prev.createdAtMs : 0;
@@ -18042,6 +18691,8 @@ function analyzeConversation(parsed, hookEvents, meta) {
     skillPlugin: tc.skillPlugin,
     targetPath: tc.targetPath,
     childConversationId: tc.childConversationId,
+    childConversationIds: tc.childConversationIds,
+    childLinks: tc.childLinks,
     startedAtMs: tc.startedAtMs,
     completedAtMs: tc.completedAtMs,
     durationMs: tc.durationMs,
@@ -18105,7 +18756,9 @@ function analyzeConversation(parsed, hookEvents, meta) {
   }
   let turnRecords = [], prevTurnEndMs = 0;
   for (let tIdx = 0; tIdx < parsed.turns.length; tIdx++) {
-    let t = parsed.turns[tIdx], tSteps = plannerStepsAnalyzed.filter((s) => s.turnIndex === t.turnIndex), tTools = analyzedTools.filter((tc) => tc.turnIndex === t.turnIndex), modelMs2 = tSteps.reduce((sum, s) => sum + s.modelDurationMs, 0), toolIntervals = tTools.filter((tc) => tc.startedAtMs !== null && tc.startedAtMs > 0).map((tc) => ({
+    let t = parsed.turns[tIdx], tSteps = plannerStepsAnalyzed.filter((s) => s.turnIndex === t.turnIndex), tTools = analyzedTools.filter((tc) => tc.turnIndex === t.turnIndex), modelMs2 = tSteps.reduce((sum, s) => sum + s.modelDurationMs, 0), toolIntervals = tTools.filter(
+      (tc) => !isIdleWaitTool(tc.toolName) && tc.startedAtMs !== null && tc.startedAtMs > 0
+    ).map((tc) => ({
       start: tc.startedAtMs,
       end: Math.max(tc.startedAtMs, tc.completedAtMs ?? tc.startedAtMs + tc.durationMs)
     })), toolWallMs2 = mergeIntervalsWallMs(toolIntervals), activeMs2 = modelMs2 + toolWallMs2, startCandidates = [
@@ -18156,7 +18809,7 @@ function analyzeConversation(parsed, hookEvents, meta) {
   ), inputTokens = plannerStepsAnalyzed.reduce((s, p2) => s + p2.inputTokens, 0), cacheReadTokens = plannerStepsAnalyzed.reduce((s, p2) => s + p2.cacheReadTokens, 0), outputTokens = plannerStepsAnalyzed.reduce((s, p2) => s + p2.outputTokens, 0), peakContextTokens = plannerStepsAnalyzed.reduce(
     (max, p2) => Math.max(max, p2.totalContextTokens),
     0
-  ), modelMs = turnRecords.reduce((s, t) => s + t.modelMs, 0), toolWallMs = turnRecords.reduce((s, t) => s + t.toolWallMs, 0), toolSumMs = analyzedTools.reduce((s, tc) => s + tc.durationMs, 0), userIdleMs = turnRecords.reduce((s, t) => s + t.userIdleBeforeMs, 0) + extraApprovalIdleMs, startedAtMs = turnRecords.length > 0 && turnRecords[0].startedAtMs > 0 ? turnRecords[0].startedAtMs : parsed.startedAtMs, endedAtMs = turnRecords.length > 0 ? Math.max(parsed.endedAtMs, ...turnRecords.map((t) => t.endedAtMs)) : parsed.endedAtMs, rawActiveMs = modelMs + toolWallMs, wallClockMs = endedAtMs > startedAtMs ? endedAtMs - startedAtMs : rawActiveMs, activeMs = wallClockMs > 0 ? Math.min(rawActiveMs, wallClockMs) : rawActiveMs, errorCount = analyzedTools.filter((t) => t.isError).length, skillsUsed = Array.from(
+  ), modelMs = turnRecords.reduce((s, t) => s + t.modelMs, 0), toolWallMs = turnRecords.reduce((s, t) => s + t.toolWallMs, 0), toolSumMs = analyzedTools.filter((tc) => !isIdleWaitTool(tc.toolName)).reduce((s, tc) => s + tc.durationMs, 0), userIdleMs = turnRecords.reduce((s, t) => s + t.userIdleBeforeMs, 0) + extraApprovalIdleMs, startedAtMs = turnRecords.length > 0 && turnRecords[0].startedAtMs > 0 ? turnRecords[0].startedAtMs : parsed.startedAtMs, endedAtMs = turnRecords.length > 0 ? Math.max(parsed.endedAtMs, ...turnRecords.map((t) => t.endedAtMs)) : parsed.endedAtMs, rawActiveMs = modelMs + toolWallMs, wallClockMs = endedAtMs > startedAtMs ? endedAtMs - startedAtMs : rawActiveMs, activeMs = wallClockMs > 0 ? Math.min(rawActiveMs, wallClockMs) : rawActiveMs, errorCount = analyzedTools.filter((t) => t.isError).length, skillsUsed = Array.from(
     new Set(
       analyzedTools.map((t) => t.skillName).filter((s) => typeof s == "string" && s.length > 0)
     )
@@ -18169,6 +18822,11 @@ function analyzeConversation(parsed, hookEvents, meta) {
     let roleOrType = meta.subagentRole || meta.subagentType;
     roleOrType && parsed.systemTaskPreview ? title = `${roleOrType} \u2014 ${parsed.systemTaskPreview}`.slice(0, 80) : roleOrType ? title = roleOrType : parsed.systemTaskPreview && (title = parsed.systemTaskPreview.slice(0, 76));
   }
+  let resolvedModels = plannerStepsAnalyzed.length > 0 ? Array.from(
+    new Set(
+      plannerStepsAnalyzed.map((p2) => p2.model).filter((m2) => m2 && m2 !== "unknown")
+    )
+  ) : parsed.models;
   return {
     conversationId: parsed.conversationId,
     title,
@@ -18179,10 +18837,13 @@ function analyzeConversation(parsed, hookEvents, meta) {
     parentConversationId: meta.parentConversationId,
     subagentRole: meta.subagentRole,
     subagentType: meta.subagentType,
+    swarmRole: meta.swarmRole ?? null,
+    swarmTitle: meta.swarmTitle ?? null,
+    swarmTasks: meta.swarmTasks,
     startedAtMs,
     endedAtMs,
     terminationReason,
-    models: parsed.models,
+    models: resolvedModels,
     slashCommands: parsed.slashCommands,
     skillsUsed,
     hasLiveHooks: hookEvents.length > 0,
@@ -18203,6 +18864,7 @@ function analyzeConversation(parsed, hookEvents, meta) {
     toolCalls: analyzedTools,
     diagnostics,
     filesTouched,
+    modelUnavailableErrors: parsed.modelUnavailableErrors ?? [],
     indexedAtMs: Date.now()
   };
 }
@@ -18240,7 +18902,7 @@ function buildDiagnostics(plannerSteps, toolCalls, filesTouched) {
     });
   let slowestCandidates = [];
   for (let tc of toolCalls)
-    tc.durationMs >= 1500 && slowestCandidates.push({
+    tc.durationMs >= 1500 && !isIdleWaitTool(tc.toolName) && slowestCandidates.push({
       id: `slow-tc-${tc.stepIndex}-${tc.toolName}`,
       title: `Slow tool: ${tc.toolName}${tc.argsPreview ? ` (${tc.argsPreview.slice(0, 48)})` : ""}`,
       detail: `Took ${formatDurationShort(tc.durationMs)}${tc.isError ? " and exited with an error" : ""}.`,
@@ -18412,7 +19074,7 @@ function aggregateSkillToolMetrics(toolCalls, plannerSteps, pricingRules) {
 var PROJECT_NAME_TTL_MS = 3e4, projectNameCache = /* @__PURE__ */ new Map();
 function readTextSafe2(filePath) {
   try {
-    return !fs3.existsSync(filePath) || !fs3.statSync(filePath).isFile() ? null : fs3.readFileSync(filePath, "utf8");
+    return !fs4.existsSync(filePath) || !fs4.statSync(filePath).isFile() ? null : fs4.readFileSync(filePath, "utf8");
   } catch {
     return null;
   }
@@ -18461,12 +19123,12 @@ function extractOriginRepoNameFromConfig(configText) {
 function resolveGitOriginRepoName(projectPath) {
   let dotGit = path3.join(projectPath, ".git");
   try {
-    if (!fs3.existsSync(dotGit)) return null;
-    let st = fs3.statSync(dotGit), configCandidates = [];
+    if (!fs4.existsSync(dotGit)) return null;
+    let st = fs4.statSync(dotGit), configCandidates = [];
     if (st.isDirectory())
       configCandidates.push(path3.join(dotGit, "config"));
     else if (st.isFile()) {
-      let gitDirMatch = fs3.readFileSync(dotGit, "utf8").match(/^gitdir:\s*(.+)$/im);
+      let gitDirMatch = fs4.readFileSync(dotGit, "utf8").match(/^gitdir:\s*(.+)$/im);
       if (gitDirMatch) {
         let resolvedGitDir = path3.resolve(projectPath, gitDirMatch[1].trim());
         configCandidates.push(path3.join(resolvedGitDir, "config"));
@@ -18640,7 +19302,9 @@ function extractModelSwitches(plannerSteps, turns, toolCalls) {
       trigger = "Plan \u2192 Execute handoff (exit_plan_mode)";
     else if (prevTools.includes("enter_plan_mode"))
       trigger = "Entered Plan Mode (enter_plan_mode)";
-    else if (prevTools.includes("invoke_subagent") || prevTools.includes("swarm"))
+    else if (prevTools.includes("swarm"))
+      trigger = "Swarm orchestration / model switch";
+    else if (prevTools.includes("invoke_subagent"))
       trigger = "Orchestrator delegation step";
     else if (curr.turnIndex > prev.turnIndex) {
       let prompt = turnMap.get(curr.turnIndex);
@@ -18675,6 +19339,8 @@ function buildConversationSummary(row, plannerSteps, toolCalls, turnCount, prici
     parentConversationId: row.parentConversationId,
     subagentRole: row.subagentRole,
     subagentType: row.subagentType,
+    swarmRole: row.swarmRole ?? null,
+    swarmTitle: row.swarmTitle ?? null,
     startedAtMs: row.startedAtMs,
     endedAtMs: row.endedAtMs,
     terminationReason: row.terminationReason,
@@ -18732,8 +19398,10 @@ function buildConversationDetail(db, conversationId) {
       ...ps,
       estimatedCostUsd: est.totalUsd
     };
-  }), subagentEffInputs = [], subagents = subagentRows.map((child) => {
+  }), subagentEffInputs = [], subagentSteps = [], subagents = subagentRows.map((child) => {
     let cSteps = db.getPlannerStepsForConversation(child.conversationId), cTools = db.getToolCallsForConversation(child.conversationId), cTurns = db.getTurnsForConversation(child.conversationId);
+    for (let st of cSteps)
+      subagentSteps.push({ ...st, conversationId: child.conversationId });
     return subagentEffInputs.push({
       conversationId: child.conversationId,
       title: child.title,
@@ -18757,7 +19425,17 @@ function buildConversationDetail(db, conversationId) {
     turns.length,
     pricingRules,
     subagentRows
-  ), skillToolMetrics = aggregateSkillToolMetrics(
+  ), subagentModelBreakdown = subagentSteps.length > 0 ? aggregateModelUsage(subagentSteps, pricingRules, subagentRows.length) : [], combinedModelBreakdown = subagentSteps.length > 0 ? aggregateModelUsage(
+    [
+      ...rawSteps.map((st) => ({
+        ...st,
+        conversationId: row.conversationId
+      })),
+      ...subagentSteps
+    ],
+    pricingRules,
+    1 + subagentRows.length
+  ) : summary.modelBreakdown, skillToolMetrics = aggregateSkillToolMetrics(
     toolCalls.map((tc) => ({
       ...tc,
       conversationId: row.conversationId,
@@ -18786,19 +19464,23 @@ function buildConversationDetail(db, conversationId) {
     let subTop = chatEff.topPluginsByConv.get(sub.conversationId);
     subTop && subTop.length > 0 && (sub.topPluginsSkills = subTop);
   }
-  let liveDiagnostics = chatEff.diagnosticsByConv.get(row.conversationId) ?? row.diagnostics, modelSwitches = extractModelSwitches(plannerSteps, turns, toolCalls);
+  let liveDiagnostics = chatEff.diagnosticsByConv.get(row.conversationId) ?? row.diagnostics, modelSwitches = extractModelSwitches(plannerSteps, turns, toolCalls), combinedTokens = subagents.length > 0 ? mergeTokenSummaries([summary.tokens, ...subagents.map((s) => s.tokens)]) : void 0, swarmTasks = row.swarmTasks && Object.keys(row.swarmTasks).length > 0 ? row.swarmTasks : void 0;
   return {
     summary,
     turns,
     plannerSteps,
     modelSwitches,
+    combinedModelBreakdown,
+    subagentModelBreakdown,
     toolCalls,
     skillToolMetrics,
     pluginSkillMetrics: chatEff.pluginSkillMetrics,
     filesTouched: row.filesTouched,
     diagnostics: liveDiagnostics,
     subagents,
-    scopeActiveMs: chatEff.scopeActiveMs
+    scopeActiveMs: chatEff.scopeActiveMs,
+    ...swarmTasks ? { swarmTasks } : {},
+    ...combinedTokens ? { combinedTokens } : {}
   };
 }
 function mergeTokenSummaries(items) {
@@ -18896,7 +19578,7 @@ function computeProjectActiveMs(steps, tools, fallbackTopActiveMsList) {
       activeIntervals.push({ start: ps.createdAtMs, end });
     }
   for (let tc of tools)
-    if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
+    if (!isIdleWaitTool(tc.toolName) && tc.startedAtMs !== null && tc.startedAtMs > 0) {
       let end = Math.max(
         tc.startedAtMs,
         tc.completedAtMs ?? tc.startedAtMs + tc.durationMs
@@ -19055,6 +19737,7 @@ function buildProjectDetail(db, projectPath, options, internalOpts) {
         projectName: projectDisplayName(projectPath),
         chatCount: 0,
         subagentCount: 0,
+        swarmCount: 0,
         firstActivityMs: 0,
         lastActivityMs: 0,
         models: [],
@@ -19164,11 +19847,14 @@ function buildProjectDetail(db, projectPath, options, internalOpts) {
   ), diagnostics = projectRows.flatMap((r2) => (projEff.diagnosticsByConv.get(r2.conversationId) ?? r2.diagnostics).map((d2) => ({
     ...d2,
     citation: `${r2.title.slice(0, 32)} \xB7 ${d2.citation}`
-  }))).sort((a, b) => (b.impactTokens ?? 0) - (a.impactTokens ?? 0)).slice(0, 12), summary = {
+  }))).sort((a, b) => (b.impactTokens ?? 0) - (a.impactTokens ?? 0)).slice(0, 12), swarmCount = projectRows.filter(
+    (r2) => r2.swarmRole === "coordinator"
+  ).length, summary = {
     projectPath,
     projectName: projectDisplayName(projectPath),
     chatCount: topLevel.length,
     subagentCount: subagents.length,
+    swarmCount,
     firstActivityMs,
     lastActivityMs,
     models,
@@ -19228,7 +19914,7 @@ function buildDashboardData(db, options) {
     0
   ), totalsTokens = projects.length > 0 ? mergeTokenSummaries(projects.map((p2) => p2.tokens)) : emptyTokenSummary(), totalsModelBreakdown = mergeModelBreakdowns(
     projects.map((p2) => p2.modelBreakdown)
-  ), totalActiveMs = projects.reduce((s, p2) => s + p2.time.activeMs, 0), totalChatCount = projects.reduce((s, p2) => s + p2.chatCount, 0), totalSubagentCount = projects.reduce((s, p2) => s + p2.subagentCount, 0), totalCompactionEvents = projects.reduce(
+  ), totalActiveMs = projects.reduce((s, p2) => s + p2.time.activeMs, 0), totalChatCount = projects.reduce((s, p2) => s + p2.chatCount, 0), totalSubagentCount = projects.reduce((s, p2) => s + p2.subagentCount, 0), totalSwarmCount = projects.reduce((s, p2) => s + (p2.swarmCount ?? 0), 0), totalCompactionEvents = projects.reduce(
     (sum, p2) => sum + p2.contextHealth.compactionEventCount,
     0
   ), totalsContextHealth = computeContextHealth(
@@ -19285,7 +19971,7 @@ function buildDashboardData(db, options) {
       pricingRules,
       children
     );
-  }), totalToolWall = projects.reduce((s, p2) => s + p2.time.toolWallMs, 0), totalToolSum = projects.reduce((s, p2) => s + p2.time.toolSumMs, 0);
+  }), totalToolWall = projects.reduce((s, p2) => s + p2.time.toolWallMs, 0), totalToolSum = projects.reduce((s, p2) => s + p2.time.toolSumMs, 0), { signals: modelSignals, latestGlobalActivityMs } = db.getModelAvailabilitySignals();
   return {
     generatedAtMs: Date.now(),
     timeRange: {
@@ -19300,6 +19986,7 @@ function buildDashboardData(db, options) {
       projectCount: projects.length,
       chatCount: totalChatCount,
       subagentCount: totalSubagentCount,
+      swarmCount: totalSwarmCount,
       tokens: totalsTokens,
       time: {
         activeMs: totalActiveMs,
@@ -19319,44 +20006,25 @@ function buildDashboardData(db, options) {
     pluginSkillMetrics,
     recentChats,
     pricingRules,
-    unpricedModels: totalsTokens.unpricedModels
+    unpricedModels: totalsTokens.unpricedModels,
+    modelSignals,
+    latestGlobalActivityMs
   };
 }
 
 // src/server/hookIngestor.ts
 import crypto from "node:crypto";
-import fs4 from "node:fs";
-
-// src/shared/redact.ts
-function stripControlAndAnsi(input) {
-  return input ? input.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "").replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "") : "";
-}
-function redactSecrets(input) {
-  return input ? input.replace(/(https?:\/\/)([^/\s:@]+:[^/\s@]+)@/gi, "$1[REDACTED]@").replace(/\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1[REDACTED]").replace(
-    /\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]{20,}|sk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g,
-    "[REDACTED]"
-  ).replace(
-    /\b([A-Za-z0-9_]{0,64}?(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|AUTH[_-]?TOKEN|CLIENT[_-]?SECRET|SESSION[_-]?ID|COOKIE)[A-Za-z0-9_]{0,64})((?:["'])?\s*[=:]\s*)(?!(?:[0-9]+(?:\.[0-9]+)?|true|false|null)\b)("[^"\r\n]{0,512}"|'[^'\r\n]{0,512}'|[^\s"',;}\]]{1,512})/gi,
-    (_m, k2, sep, val) => val.startsWith('"') && val.endsWith('"') ? `${k2}${sep}"[REDACTED]"` : `${k2}${sep}[REDACTED]`
-  ) : "";
-}
-function sanitizePreviewText(input, maxChars) {
-  if (!input) return "";
-  let bounded = maxChars !== void 0 && input.length > Math.max(4096, maxChars * 8) ? input.slice(0, Math.max(4096, maxChars * 8)) : input, cleaned = redactSecrets(stripControlAndAnsi(bounded)).replace(/\s+/g, " ").trim();
-  return maxChars !== void 0 && maxChars > 3 && cleaned.length > maxChars ? cleaned.slice(0, maxChars - 3) + "..." : cleaned;
-}
-
-// src/server/hookIngestor.ts
+import fs5 from "node:fs";
 var DEFAULT_MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 function ingestHookEvents(db, eventsPath, options = {}) {
-  if (!fs4.existsSync(eventsPath))
+  if (!fs5.existsSync(eventsPath))
     return { ingestedCount: 0, touchedConversationIds: [] };
   if (process.platform !== "win32")
     try {
-      fs4.chmodSync(eventsPath, 384);
+      fs5.chmodSync(eventsPath, 384);
     } catch {
     }
-  let stat = fs4.statSync(eventsPath);
+  let stat = fs5.statSync(eventsPath);
   if (stat.size === 0)
     return { ingestedCount: 0, touchedConversationIds: [] };
   let startOffset = db.getIndexedFile(eventsPath)?.lastOffset ?? 0;
@@ -19365,10 +20033,10 @@ function ingestHookEvents(db, eventsPath, options = {}) {
   let maxChunkBytes = Math.max(
     64,
     options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES
-  ), hardCapBytes = 64 * 1024 * 1024, windowBytes = Math.min(stat.size - startOffset, maxChunkBytes), fd = fs4.openSync(eventsPath, "r"), chunkBuf = Buffer.alloc(0), lastNewlineIdx = -1;
+  ), hardCapBytes = 64 * 1024 * 1024, windowBytes = Math.min(stat.size - startOffset, maxChunkBytes), fd = fs5.openSync(eventsPath, "r"), chunkBuf = Buffer.alloc(0), lastNewlineIdx = -1;
   try {
     for (; ; ) {
-      let buf = Buffer.alloc(windowBytes), bytesRead = fs4.readSync(fd, buf, 0, windowBytes, startOffset);
+      let buf = Buffer.alloc(windowBytes), bytesRead = fs5.readSync(fd, buf, 0, windowBytes, startOffset);
       if (bytesRead <= 0)
         return { ingestedCount: 0, touchedConversationIds: [] };
       if (chunkBuf = buf.subarray(0, bytesRead), lastNewlineIdx = chunkBuf.lastIndexOf(10), lastNewlineIdx >= 0 || startOffset + bytesRead >= stat.size || windowBytes >= hardCapBytes)
@@ -19376,7 +20044,7 @@ function ingestHookEvents(db, eventsPath, options = {}) {
       windowBytes = Math.min(stat.size - startOffset, windowBytes * 2, hardCapBytes);
     }
   } finally {
-    fs4.closeSync(fd);
+    fs5.closeSync(fd);
   }
   if (lastNewlineIdx < 0)
     return { ingestedCount: 0, touchedConversationIds: [] };
@@ -19426,347 +20094,6 @@ function ingestHookEvents(db, eventsPath, options = {}) {
   };
 }
 
-// src/server/transcriptParser.ts
-import fs5 from "node:fs";
-import readline from "node:readline";
-function parseTimestampMs(raw) {
-  if (!raw || typeof raw != "string") return null;
-  let trimmed = raw.trim();
-  if (!trimmed) return null;
-  let ms = Date.parse(trimmed);
-  return Number.isFinite(ms) ? ms : null;
-}
-function unwrapStringValue(val) {
-  if (typeof val != "string") return val;
-  let trimmed = val.trim();
-  if (trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("{") && trimmed.endsWith("}") || trimmed.startsWith("[") && trimmed.endsWith("]"))
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return val;
-    }
-  return val;
-}
-function normalizeArgs(rawArgs) {
-  let unwrapped = unwrapStringValue(rawArgs);
-  if (!unwrapped || typeof unwrapped != "object" || Array.isArray(unwrapped))
-    return unwrapped != null ? { value: unwrapped } : {};
-  let out = {};
-  for (let [k2, v2] of Object.entries(unwrapped))
-    out[k2] = unwrapStringValue(v2);
-  return out;
-}
-function extractUserRequest(content) {
-  let text = content, reqMatch = content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-  reqMatch ? text = reqMatch[1].trim() : text = content.trim();
-  let slashCommand = null, slashMatch = text.match(/^(\/[a-zA-Z][a-zA-Z0-9_-]*)(?:\s|$)/);
-  if (slashMatch)
-    slashCommand = slashMatch[1];
-  else {
-    let metaSlash = content.match(/(\/[a-zA-Z][a-zA-Z0-9_-]*)\s+is a \[Slash Command\]/);
-    metaSlash && (slashCommand = metaSlash[1]);
-  }
-  return { promptText: text, slashCommand };
-}
-function makePreview(text, maxLen) {
-  return sanitizePreviewText(text, maxLen);
-}
-function extractGenericHeaders(content) {
-  let lines = content.split(/\r?\n/), createdAtMs = null, completedAtMs = null, bodyStartLine = 0, limit = Math.min(lines.length, 8);
-  for (let i = 0; i < limit; i++) {
-    let line = lines[i].trim();
-    if (line.startsWith("Created At:")) {
-      let parsed = parseTimestampMs(line.slice(11));
-      parsed !== null && createdAtMs === null && (createdAtMs = parsed), bodyStartLine = i + 1;
-      continue;
-    }
-    if (line.startsWith("Completed At:")) {
-      let parsed = parseTimestampMs(line.slice(13));
-      parsed !== null && completedAtMs === null && (completedAtMs = parsed), bodyStartLine = i + 1;
-      continue;
-    }
-    if (line === "") {
-      bodyStartLine === i && (bodyStartLine = i + 1);
-      continue;
-    }
-    break;
-  }
-  let body = lines.slice(bodyStartLine).join(`
-`);
-  return { createdAtMs, completedAtMs, body };
-}
-function detectToolError(status, body) {
-  return status === "ERROR" ? {
-    isError: !0,
-    errorPreview: makePreview(body || "Step status ERROR", 180)
-  } : body.match(/Command exited with code ([1-9]\d*)/) ? {
-    isError: !0,
-    errorPreview: makePreview(body, 180)
-  } : body.startsWith("Encountered error in tool execution") || /"isError"\s*:\s*true/.test(body) || /isError:\s*true/.test(body) ? {
-    isError: !0,
-    errorPreview: makePreview(body, 180)
-  } : { isError: !1, errorPreview: null };
-}
-var skillFrontmatterCache = /* @__PURE__ */ new Map();
-function extractYamlName(text) {
-  let fmMatch = text.match(/^(?:\d+:\s*)?---\s*\r?\n([\s\S]*?)\r?\n(?:\d+:\s*)?---/), nameMatch = (fmMatch ? fmMatch[1] : text.slice(0, 600)).match(/(?:^|\n)\s*(?:\d+:\s*)?name:\s*["']?([a-zA-Z0-9_.-]+)["']?/);
-  return nameMatch ? nameMatch[1].trim() : null;
-}
-function lookupCanonicalSkillName(skillRootDir) {
-  if (skillFrontmatterCache.has(skillRootDir))
-    return skillFrontmatterCache.get(skillRootDir) ?? null;
-  let skillMdPath = `${skillRootDir}/SKILL.md`, resolved = null;
-  try {
-    if (fs5.existsSync(skillMdPath) && fs5.statSync(skillMdPath).isFile()) {
-      let content = fs5.readFileSync(skillMdPath, "utf8");
-      resolved = extractYamlName(content);
-    }
-  } catch {
-    resolved = null;
-  }
-  return skillFrontmatterCache.set(skillRootDir, resolved), resolved;
-}
-function extractSkillMetadata(targetPath, body) {
-  let norm = targetPath.replace(/\\/g, "/"), skillPlugin = null, pluginMatch = norm.match(/\/(?:builtin\/)?plugins\/([^/]+)\//);
-  pluginMatch ? skillPlugin = pluginMatch[1] : norm.includes("/builtin/skills/") && (skillPlugin = "builtin");
-  let skillDirMatch = norm.match(/^(.*\/skills\/([^/]+))\//), skillName = skillDirMatch ? skillDirMatch[2] : null;
-  if (/\/SKILL\.md$/i.test(norm)) {
-    let parsedName = extractYamlName(body);
-    parsedName && (skillName = parsedName, skillDirMatch && skillFrontmatterCache.set(skillDirMatch[1], parsedName));
-  } else if (skillDirMatch) {
-    let canonical = lookupCanonicalSkillName(skillDirMatch[1]);
-    canonical && (skillName = canonical);
-  }
-  return { skillName, skillPlugin };
-}
-function extractPathFromArgs(args) {
-  let candidates = [
-    args.Path,
-    args.TargetFile,
-    args.AbsolutePath,
-    args.ScriptPath,
-    args.path,
-    args.file_path,
-    args.uri,
-    args.Cwd
-  ];
-  for (let c of candidates)
-    if (typeof c == "string" && c.trim()) {
-      let unwrapped = unwrapFileUri(c.trim());
-      if (isAbsoluteLocalPath(unwrapped))
-        return unwrapped;
-    }
-  return null;
-}
-function extractCommandPathHints(cmd) {
-  let posixMatches = cmd.match(/\/[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)+/g) ?? [], winMatches = cmd.match(/[a-zA-Z]:[\\/][a-zA-Z0-9_.\-\\/]+/g) ?? [], combined = [...posixMatches, ...winMatches];
-  return combined.length > 0 ? Array.from(new Set(combined)) : [];
-}
-function extractChildConversationId(body) {
-  let explicitMatch = body.match(
-    /(?:conversationId|conversation_id|conversation:\/\/)["'\s:=]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
-  );
-  if (explicitMatch)
-    return explicitMatch[1];
-  let anyUuid = body.match(
-    /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i
-  );
-  return anyUuid ? anyUuid[1] : null;
-}
-function classifyTool(toolName, args, body) {
-  let targetPath = extractPathFromArgs(args), category = "other", mcpServer = null, skillName = null, skillPlugin = null, childConversationId = null, commandPathHints = [], normTarget = targetPath ? targetPath.replace(/\\/g, "/") : null;
-  if (targetPath && normTarget && (toolName === "read_file" || toolName === "view_file") && (/\/SKILL\.md$/i.test(normTarget) || /\/skills\/[^/]+\//i.test(normTarget))) {
-    let skillMeta = extractSkillMetadata(targetPath, body);
-    skillMeta.skillName && (category = "skill", skillName = skillMeta.skillName, skillPlugin = skillMeta.skillPlugin);
-  }
-  if (category !== "skill")
-    if (toolName === "call_mcp_tool")
-      category = "mcp", mcpServer = typeof args.ServerName == "string" ? args.ServerName : "mcp";
-    else if (toolName.startsWith("mcp_"))
-      category = "mcp", mcpServer = toolName.slice(4).split("_")[0] || "mcp";
-    else if (toolName === "invoke_subagent" || toolName === "swarm" || toolName === "run_workflow")
-      category = "subagent", toolName === "invoke_subagent" && (childConversationId = extractChildConversationId(body));
-    else if (toolName === "run_command") {
-      category = "command";
-      let cmd = typeof args.CommandLine == "string" ? args.CommandLine : "";
-      commandPathHints = extractCommandPathHints(cmd);
-    } else toolName === "read_file" || toolName === "view_file" || toolName === "list_dir" || toolName === "read_resource" ? category = "file_read" : toolName === "edit_file" || toolName === "write_file" || toolName === "replace_file_content" || toolName === "multi_replace_file_content" ? category = "file_write" : toolName === "search_web" || toolName === "grep_search" || toolName === "find_by_name" ? category = "search" : toolName.startsWith("browser_") && (category = "browser");
-  let argsPreview = "";
-  if (toolName === "run_command" && typeof args.CommandLine == "string")
-    argsPreview = makePreview(args.CommandLine, 160);
-  else if (toolName === "invoke_subagent") {
-    let typeName = typeof args.TypeName == "string" ? args.TypeName : "subagent", role = typeof args.Role == "string" ? args.Role : "";
-    argsPreview = `Type: ${typeName}${role ? ` | Role: ${role}` : ""}`;
-  } else toolName === "call_mcp_tool" ? argsPreview = `${String(args.ServerName ?? "")}/${String(args.ToolName ?? "")}` : targetPath ? argsPreview = targetPath : typeof args.query == "string" ? argsPreview = makePreview(args.query, 140) : argsPreview = makePreview(JSON.stringify(args), 140);
-  return {
-    category,
-    mcpServer,
-    skillName,
-    skillPlugin,
-    targetPath,
-    childConversationId,
-    argsPreview,
-    commandPathHints
-  };
-}
-async function parseTranscriptFile(transcriptPath, conversationId) {
-  let turns = [], plannerSteps = [], toolCalls = [], candidatePaths = [], modelsSet = /* @__PURE__ */ new Set(), slashSet = /* @__PURE__ */ new Set(), pendingQueue = [], currentTurnIndex = -1, minTs = Number.POSITIVE_INFINITY, maxTs = 0, hasTokenTelemetry = !1, firstSystemMessage = null, flushPendingTools = () => {
-    for (; pendingQueue.length > 0; ) {
-      let pending = pendingQueue.shift(), classified = classifyTool(pending.toolName, pending.args, "");
-      classified.targetPath && candidatePaths.push(classified.targetPath);
-      for (let hint of classified.commandPathHints) candidatePaths.push(hint);
-      toolCalls.push({
-        stepIndex: pending.plannerStepIndex,
-        plannerStepIndex: pending.plannerStepIndex,
-        turnIndex: pending.turnIndex,
-        toolCallId: pending.toolCallId,
-        toolName: pending.toolName,
-        category: classified.category,
-        mcpServer: classified.mcpServer,
-        skillName: classified.skillName,
-        skillPlugin: classified.skillPlugin,
-        targetPath: classified.targetPath,
-        childConversationId: classified.childConversationId,
-        startedAtMs: pending.plannerCreatedAtMs,
-        completedAtMs: null,
-        durationMs: 0,
-        argsPreview: classified.argsPreview,
-        commandPathHints: classified.commandPathHints,
-        resultBytes: 0,
-        estResultTokens: 0,
-        isError: !1,
-        errorPreview: null
-      });
-    }
-  }, stream = fs5.createReadStream(transcriptPath, { encoding: "utf8" }), rl = readline.createInterface({ input: stream, crlfDelay: 1 / 0 });
-  for await (let line of rl) {
-    let trimmed = line.trim();
-    if (!trimmed) continue;
-    let raw;
-    try {
-      raw = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    let stepIndex = typeof raw.step_index == "number" ? raw.step_index : 0, stepCreatedAtMs = parseTimestampMs(raw.created_at) ?? 0;
-    if (stepCreatedAtMs > 0 && (stepCreatedAtMs < minTs && (minTs = stepCreatedAtMs), stepCreatedAtMs > maxTs && (maxTs = stepCreatedAtMs)), raw.type === "SYSTEM_MESSAGE") {
-      firstSystemMessage === null && typeof raw.content == "string" && raw.content.trim() && (firstSystemMessage = raw.content);
-      continue;
-    }
-    if (raw.type === "USER_INPUT") {
-      flushPendingTools(), currentTurnIndex += 1;
-      let content = typeof raw.content == "string" ? raw.content : "", { promptText, slashCommand } = extractUserRequest(content);
-      slashCommand && slashSet.add(slashCommand), turns.push({
-        turnIndex: currentTurnIndex,
-        stepIndex,
-        createdAtMs: stepCreatedAtMs,
-        promptText,
-        promptPreview: makePreview(promptText || "(empty prompt)", 140),
-        promptBytes: Buffer.byteLength(promptText, "utf8"),
-        slashCommand
-      });
-      continue;
-    }
-    if (raw.type === "PLANNER_RESPONSE") {
-      flushPendingTools(), currentTurnIndex < 0 && (currentTurnIndex = 0, turns.push({
-        turnIndex: 0,
-        stepIndex: 0,
-        createdAtMs: stepCreatedAtMs,
-        promptText: "(implicit start)",
-        promptPreview: "(implicit start)",
-        promptBytes: 0,
-        slashCommand: null
-      }));
-      let model = typeof raw.model == "string" && raw.model.trim() ? raw.model.trim() : "unknown";
-      model !== "unknown" && modelsSet.add(model), (Object.prototype.hasOwnProperty.call(raw, "input_tokens") || Object.prototype.hasOwnProperty.call(raw, "cache_read_tokens") || Object.prototype.hasOwnProperty.call(raw, "output_tokens")) && (hasTokenTelemetry = !0);
-      let inputTokens = Number(raw.input_tokens ?? 0), cacheReadTokens = Number(raw.cache_read_tokens ?? 0), outputTokens = Number(raw.output_tokens ?? 0), totalContextTokens = inputTokens + cacheReadTokens, calls = Array.isArray(raw.tool_calls) ? raw.tool_calls : [];
-      plannerSteps.push({
-        stepIndex,
-        turnIndex: currentTurnIndex,
-        model,
-        createdAtMs: stepCreatedAtMs,
-        thinkingChars: typeof raw.thinking == "string" ? raw.thinking.length : 0,
-        contentChars: typeof raw.content == "string" ? raw.content.length : 0,
-        inputTokens,
-        cacheReadTokens,
-        outputTokens,
-        totalContextTokens,
-        toolCallCount: calls.length,
-        status: typeof raw.status == "string" ? raw.status : "DONE"
-      });
-      for (let tc of calls) {
-        let toolName = typeof tc?.name == "string" && tc.name.trim() ? tc.name.trim() : "unknown_tool";
-        pendingQueue.push({
-          plannerStepIndex: stepIndex,
-          turnIndex: currentTurnIndex,
-          plannerCreatedAtMs: stepCreatedAtMs,
-          toolCallId: typeof tc?.id == "string" ? tc.id : null,
-          toolName,
-          args: normalizeArgs(tc?.args)
-        });
-      }
-      continue;
-    }
-    if (raw.type === "GENERIC" && raw.source === "MODEL" && pendingQueue.length > 0) {
-      let pending = pendingQueue.shift(), content = typeof raw.content == "string" ? raw.content : "", { createdAtMs, completedAtMs, body } = extractGenericHeaders(content), startedAtMs2 = createdAtMs ?? (stepCreatedAtMs || pending.plannerCreatedAtMs), endMs = completedAtMs ?? startedAtMs2, durationMs = completedAtMs !== null && startedAtMs2 !== null ? Math.max(0, completedAtMs - startedAtMs2) : 0;
-      endMs > maxTs && (maxTs = endMs), startedAtMs2 > 0 && startedAtMs2 < minTs && (minTs = startedAtMs2);
-      let resultBytes = Buffer.byteLength(body, "utf8"), estResultTokens = Math.ceil(resultBytes / 4), { isError, errorPreview } = detectToolError(raw.status, body), classified = classifyTool(pending.toolName, pending.args, body);
-      classified.targetPath && candidatePaths.push(classified.targetPath);
-      for (let hint of classified.commandPathHints) candidatePaths.push(hint);
-      toolCalls.push({
-        stepIndex,
-        plannerStepIndex: pending.plannerStepIndex,
-        turnIndex: pending.turnIndex,
-        toolCallId: pending.toolCallId,
-        toolName: pending.toolName,
-        category: classified.category,
-        mcpServer: classified.mcpServer,
-        skillName: classified.skillName,
-        skillPlugin: classified.skillPlugin,
-        targetPath: classified.targetPath,
-        childConversationId: classified.childConversationId,
-        startedAtMs: startedAtMs2,
-        completedAtMs: endMs,
-        durationMs,
-        argsPreview: classified.argsPreview,
-        commandPathHints: classified.commandPathHints,
-        resultBytes,
-        estResultTokens,
-        isError,
-        errorPreview
-      });
-    }
-  }
-  flushPendingTools();
-  let firstPrompt = turns.find((t) => t.promptText && t.promptText !== "(implicit start)"), hasExplicitUserPrompt = !!firstPrompt, title = conversationId.slice(0, 8);
-  if (firstPrompt) {
-    let cleaned = firstPrompt.promptText.replace(/^\/[a-zA-Z0-9_-]+\s*/, "").trim();
-    title = makePreview(cleaned || firstPrompt.promptText, 76);
-  }
-  let systemTaskPreview = null;
-  if (!hasExplicitUserPrompt && firstSystemMessage) {
-    let cleanedSys = firstSystemMessage.replace(/The following is a <SYSTEM_MESSAGE>[\s\S]*?pay attention to\./gi, " ").replace(/<\/?[A-Z_]+>/g, " ").replace(/\[Notice\][\s\S]*$/gi, " ").replace(/\s+/g, " ").trim();
-    cleanedSys.length >= 4 && (systemTaskPreview = makePreview(cleanedSys, 60));
-  }
-  let startedAtMs = Number.isFinite(minTs) ? minTs : 0, endedAtMs = maxTs >= startedAtMs ? maxTs : startedAtMs;
-  return {
-    conversationId,
-    transcriptPath,
-    title,
-    hasExplicitUserPrompt,
-    systemTaskPreview,
-    hasTokenTelemetry,
-    startedAtMs,
-    endedAtMs,
-    models: Array.from(modelsSet),
-    slashCommands: Array.from(slashSet),
-    turns,
-    plannerSteps,
-    toolCalls,
-    candidatePaths
-  };
-}
-
 // src/server/scanner.ts
 var IGNORED_PATH_PREFIXES = [
   "/tmp/",
@@ -19808,6 +20135,38 @@ function isIgnoredSystemPath(p2, homeOverride) {
     norm
   ) || lower.includes("/appdata/local/temp/") || lower.endsWith("/appdata/local/temp") ? !0 : IGNORED_PATH_PREFIXES.some((prefix) => norm.startsWith(prefix));
 }
+var UUID_EXACT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function resolveWorktreeMainRoot(repoDir, options = {}) {
+  if (!(!!options.readFileFn || !options.existsFn && !options.isFileFn)) return repoDir;
+  let isFileFn = options.isFileFn ?? ((p2) => {
+    try {
+      return fs6.existsSync(p2) && fs6.statSync(p2).isFile();
+    } catch {
+      return !1;
+    }
+  }), readFileFn = options.readFileFn ?? ((p2) => {
+    try {
+      return fs6.existsSync(p2) && fs6.statSync(p2).isFile() ? fs6.readFileSync(p2, "utf8") : null;
+    } catch {
+      return null;
+    }
+  }), dotGit = pathJoin(repoDir, ".git");
+  if (!isFileFn(dotGit)) return repoDir;
+  let pointer = readFileFn(dotGit);
+  if (!pointer) return repoDir;
+  let gitDirMatch = pointer.match(/^gitdir:\s*(.+)$/im);
+  if (!gitDirMatch || !gitDirMatch[1].trim()) return repoDir;
+  let rawTarget = gitDirMatch[1].trim(), resolvedGitDir = isAbsoluteLocalPath(rawTarget) ? rawTarget : path4.resolve(repoDir, rawTarget), commonDirText = readFileFn(pathJoin(resolvedGitDir, "commondir"));
+  if (commonDirText && commonDirText.trim()) {
+    let commonRaw = commonDirText.trim(), cleanedCommon = (isAbsoluteLocalPath(commonRaw) ? commonRaw : path4.resolve(resolvedGitDir, commonRaw)).replace(/[\\/]+$/, "");
+    if (pathBaseName(cleanedCommon).toLowerCase() === ".git") {
+      let parent = pathDirName(cleanedCommon);
+      if (parent && parent !== ".") return parent;
+    }
+  }
+  let wtMatch = resolvedGitDir.replace(/[\\/]+$/, "").match(/^(.+)[\\/]\.git[\\/]worktrees[\\/][^\\/]+$/i);
+  return wtMatch && wtMatch[1] ? wtMatch[1] : repoDir;
+}
 function findProjectRootForPath(rawCandidatePath, options = {}) {
   let candidatePath = unwrapFileUri(rawCandidatePath);
   if (!candidatePath || !isAbsoluteLocalPath(candidatePath)) return null;
@@ -19833,7 +20192,7 @@ function findProjectRootForPath(rawCandidatePath, options = {}) {
     for (let marker of PROJECT_MARKERS)
       try {
         if (existsFn(pathJoin(dir, marker))) {
-          if (marker === ".git") return dir;
+          if (marker === ".git") return resolveWorktreeMainRoot(dir, options);
           fallbackCandidate || (fallbackCandidate = dir);
         }
       } catch {
@@ -19867,6 +20226,115 @@ function inferProjectFromPaths(candidatePaths) {
     score > bestScore && (bestScore = score, bestRoot = root);
   return bestRoot;
 }
+function getSwarmMetaMtimeMs(convDir) {
+  let swarmDir = path4.join(convDir, ".system_generated", "swarm");
+  try {
+    if (!fs6.existsSync(swarmDir) || !fs6.statSync(swarmDir).isDirectory()) return 0;
+    let maxMtime = 0;
+    for (let entry of fs6.readdirSync(swarmDir, { withFileTypes: !0 })) {
+      if (!entry.isFile() || !/\.(?:json|jsonl)$/i.test(entry.name)) continue;
+      let st = fs6.statSync(path4.join(swarmDir, entry.name));
+      st.mtimeMs > maxMtime && (maxMtime = st.mtimeMs);
+    }
+    return maxMtime;
+  } catch {
+    return 0;
+  }
+}
+function collectRosterLinksFromObject(node, selfConversationId, out, depth = 0) {
+  if (!node || typeof node != "object" || depth > 6) return;
+  if (Array.isArray(node)) {
+    for (let item of node)
+      collectRosterLinksFromObject(item, selfConversationId, out, depth + 1);
+    return;
+  }
+  let obj = node, idCand = obj.conversationId ?? obj.conversation_id ?? obj.convId ?? obj.conv_id ?? obj.id;
+  if (typeof idCand == "string" && UUID_EXACT_RE.test(idCand.trim()) && idCand.trim() !== selfConversationId) {
+    let cid = idCand.trim(), roleCand = typeof obj.name == "string" && obj.name.trim() ? obj.name.trim() : typeof obj.role == "string" && obj.role.trim() ? obj.role.trim() : typeof obj.worker == "string" && obj.worker.trim() ? obj.worker.trim() : typeof obj.roster_name == "string" && obj.roster_name.trim() ? obj.roster_name.trim() : null;
+    (!out.has(cid) || roleCand && !out.get(cid).role) && out.set(cid, {
+      conversationId: cid,
+      role: roleCand ? sanitizePreviewText(roleCand, 40) : null,
+      typeName: "swarm"
+    });
+  }
+  for (let val of Object.values(obj))
+    val && typeof val == "object" && collectRosterLinksFromObject(val, selfConversationId, out, depth + 1);
+}
+function readSwarmDirMetadata(convDir, selfConversationId) {
+  if (!convDir) return null;
+  let swarmDir = path4.join(convDir, ".system_generated", "swarm");
+  try {
+    if (!fs6.existsSync(swarmDir) || !fs6.statSync(swarmDir).isDirectory())
+      return null;
+  } catch {
+    return null;
+  }
+  let hasPlan = !1, planTitle = null, tasks = {}, rosterMap = /* @__PURE__ */ new Map(), latestMtimeMs = 0, entries;
+  try {
+    entries = fs6.readdirSync(swarmDir, { withFileTypes: !0 });
+  } catch {
+    return null;
+  }
+  let MAX_META_BYTES = 1024 * 1024, extraFilesScanned = 0;
+  for (let entry of entries) {
+    if (!entry.isFile()) continue;
+    let fullPath = path4.join(swarmDir, entry.name), st;
+    try {
+      st = fs6.statSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (st.mtimeMs > latestMtimeMs && (latestMtimeMs = st.mtimeMs), !(st.size === 0 || st.size > MAX_META_BYTES)) {
+      if (entry.name.toLowerCase() === "plan.json") {
+        try {
+          let parsed = JSON.parse(fs6.readFileSync(fullPath, "utf8"));
+          if (hasPlan = !0, typeof parsed?.goal?.title == "string" && parsed.goal.title.trim() && (planTitle = sanitizePreviewText(parsed.goal.title.trim(), 80)), parsed?.tasks && typeof parsed.tasks == "object" && !Array.isArray(parsed.tasks))
+            for (let [workerKey, desc] of Object.entries(parsed.tasks))
+              typeof desc == "string" && desc.trim() && (tasks[workerKey] = sanitizePreviewText(desc.trim(), 120));
+        } catch {
+        }
+        continue;
+      }
+      if (!(!/\.(?:json|jsonl)$/i.test(entry.name) || extraFilesScanned >= 8)) {
+        extraFilesScanned += 1;
+        try {
+          let text = fs6.readFileSync(fullPath, "utf8");
+          if (entry.name.toLowerCase().endsWith(".jsonl"))
+            for (let line of text.split(/\r?\n/)) {
+              let trimmed = line.trim();
+              if (trimmed)
+                try {
+                  collectRosterLinksFromObject(
+                    JSON.parse(trimmed),
+                    selfConversationId,
+                    rosterMap
+                  );
+                } catch {
+                }
+            }
+          else
+            collectRosterLinksFromObject(
+              JSON.parse(text),
+              selfConversationId,
+              rosterMap
+            );
+        } catch {
+        }
+      }
+    }
+  }
+  return {
+    hasPlan,
+    planTitle,
+    tasks,
+    rosterLinks: Array.from(rosterMap.values()),
+    latestMtimeMs
+  };
+}
+function inferConvDirFromTranscriptPath(transcriptPath) {
+  let idx = transcriptPath.replace(/\\/g, "/").lastIndexOf("/.system_generated/logs/");
+  return idx > 0 ? transcriptPath.slice(0, idx) : path4.dirname(transcriptPath);
+}
 function discoverTranscripts(roots, db) {
   let byConv = /* @__PURE__ */ new Map();
   for (let root of roots) {
@@ -19893,9 +20361,11 @@ function discoverTranscripts(roots, db) {
           byConv.has(convId) || byConv.set(convId, {
             conversationId: convId,
             transcriptPath: candidate,
+            convDir,
             surface: root.surface,
             size: st.size,
-            mtimeMs: st.mtimeMs
+            mtimeMs: st.mtimeMs,
+            swarmMetaMtimeMs: getSwarmMetaMtimeMs(convDir)
           });
           break;
         } catch {
@@ -19913,12 +20383,15 @@ function discoverTranscripts(roots, db) {
       if (!fs6.existsSync(candidate)) continue;
       let st = fs6.statSync(candidate);
       if (!st.isFile() || st.size === 0) continue;
+      let convDir = inferConvDirFromTranscriptPath(candidate);
       byConv.set(hk.conversationId, {
         conversationId: hk.conversationId,
         transcriptPath: candidate,
+        convDir,
         surface: inferSurfaceFromPath(candidate),
         size: st.size,
-        mtimeMs: st.mtimeMs
+        mtimeMs: st.mtimeMs,
+        swarmMetaMtimeMs: convDir ? getSwarmMetaMtimeMs(convDir) : 0
       });
     } catch {
     }
@@ -19935,25 +20408,6 @@ function resolveProject(conversationId, parsed, hookEvents, db, subagentLinks) {
       subagentRole,
       subagentType
     };
-  for (let ev of hookEvents) {
-    for (let wp of ev.workspacePaths)
-      if (wp && !isIgnoredSystemPath(wp))
-        return {
-          projectPath: wp,
-          projectSource: "hook",
-          parentConversationId,
-          subagentRole,
-          subagentType
-        };
-    if (ev.cwd && !isIgnoredSystemPath(ev.cwd))
-      return {
-        projectPath: ev.cwd,
-        projectSource: "hook",
-        parentConversationId,
-        subagentRole,
-        subagentType
-      };
-  }
   if (parentConversationId) {
     let parentOverride = db.getProjectOverride(parentConversationId);
     if (parentOverride)
@@ -19973,6 +20427,31 @@ function resolveProject(conversationId, parsed, hookEvents, db, subagentLinks) {
         subagentRole,
         subagentType
       };
+  }
+  for (let ev of hookEvents) {
+    for (let wp of ev.workspacePaths)
+      if (wp) {
+        let normalizedWp = resolveWorktreeMainRoot(wp);
+        if (!isIgnoredSystemPath(normalizedWp))
+          return {
+            projectPath: normalizedWp,
+            projectSource: "hook",
+            parentConversationId,
+            subagentRole,
+            subagentType
+          };
+      }
+    if (ev.cwd) {
+      let normalizedCwd = resolveWorktreeMainRoot(ev.cwd);
+      if (!isIgnoredSystemPath(normalizedCwd))
+        return {
+          projectPath: normalizedCwd,
+          projectSource: "hook",
+          parentConversationId,
+          subagentRole,
+          subagentType
+        };
+    }
   }
   if (parsed) {
     let inferred = inferProjectFromPaths(parsed.candidatePaths);
@@ -20005,13 +20484,19 @@ function runScan(options) {
 async function runScanInternal(options) {
   let { db, dataDir } = options, eventsPath = options.eventsPath ?? path4.join(dataDir, "events.jsonl"), brainRoots = options.brainRoots ?? defaultBrainRoots(), hookResult = ingestHookEvents(db, eventsPath), touchedByHooks = new Set(hookResult.touchedConversationIds), discovered = discoverTranscripts(brainRoots, db), toProcess = [], skipped = 0;
   for (let item of discovered) {
-    let indexed = db.getIndexedFile(item.transcriptPath), existingConv = db.getConversationRecord(item.conversationId), latestHookTs = db.getLatestHookTsForConversation(item.conversationId), override = db.getProjectOverride(item.conversationId), fileUnchanged = indexed !== null && indexed.fileSize === item.size && Math.abs(indexed.mtimeMs - item.mtimeMs) < 1, hookUnchanged = !touchedByHooks.has(item.conversationId) && (!existingConv || latestHookTs <= existingConv.indexedAtMs), overrideUnchanged = !override || !existingConv || override.updatedAtMs <= existingConv.indexedAtMs;
+    let indexed = db.getIndexedFile(item.transcriptPath), existingConv = db.getConversationRecord(item.conversationId), latestHookTs = db.getLatestHookTsForConversation(item.conversationId), override = db.getProjectOverride(item.conversationId), fileUnchanged = indexed !== null && indexed.fileSize === item.size && Math.abs(indexed.mtimeMs - item.mtimeMs) < 1 && (!existingConv || item.swarmMetaMtimeMs <= existingConv.indexedAtMs), hookUnchanged = !touchedByHooks.has(item.conversationId) && (!existingConv || latestHookTs <= existingConv.indexedAtMs), overrideUnchanged = !override || !existingConv || override.updatedAtMs <= existingConv.indexedAtMs;
     if (fileUnchanged && hookUnchanged && overrideUnchanged && existingConv) {
       skipped += 1;
       continue;
     }
     toProcess.push(item);
   }
+  let swarmMetaMap = /* @__PURE__ */ new Map();
+  for (let item of discovered)
+    if (item.swarmMetaMtimeMs > 0 || item.convDir) {
+      let meta = readSwarmDirMetadata(item.convDir, item.conversationId);
+      meta && swarmMetaMap.set(item.conversationId, meta);
+    }
   let parsedMap = /* @__PURE__ */ new Map();
   for (let item of toProcess)
     try {
@@ -20024,15 +20509,33 @@ async function runScanInternal(options) {
     }
   let subagentLinks = db.getSubagentLinkMap();
   for (let [convId, parsed] of parsedMap.entries())
-    for (let tc of parsed.toolCalls)
-      if (tc.childConversationId) {
-        let roleMatch = tc.argsPreview.match(/Role:\s*([^|]+)/i), typeMatch = tc.argsPreview.match(/Type:\s*([^|]+)/i);
-        subagentLinks.set(tc.childConversationId, {
+    for (let tc of parsed.toolCalls) {
+      let links = tc.childLinks && tc.childLinks.length > 0 ? tc.childLinks : tc.childConversationId ? [{ conversationId: tc.childConversationId, role: null, typeName: null }] : [];
+      if (links.length === 0) continue;
+      let roleMatch = tc.argsPreview.match(/Role:\s*([^|]+)/i), typeMatch = tc.argsPreview.match(/Type:\s*([^|]+)/i), fallbackRole = roleMatch ? roleMatch[1].trim() : null, fallbackType = typeMatch ? typeMatch[1].trim() : null;
+      for (let link of links)
+        subagentLinks.set(link.conversationId, {
           parentConversationId: convId,
-          role: roleMatch ? roleMatch[1].trim() : null,
-          typeName: typeMatch ? typeMatch[1].trim() : null
+          role: link.role ?? fallbackRole,
+          typeName: link.typeName ?? fallbackType
         });
-      }
+    }
+  for (let [convId, swarmMeta] of swarmMetaMap.entries())
+    for (let link of swarmMeta.rosterLinks) {
+      let existing = subagentLinks.get(link.conversationId);
+      existing ? !existing.role && link.role && subagentLinks.set(link.conversationId, {
+        ...existing,
+        role: link.role,
+        typeName: existing.typeName ?? "swarm"
+      }) : subagentLinks.set(link.conversationId, {
+        parentConversationId: convId,
+        role: link.role,
+        typeName: "swarm"
+      });
+    }
+  let swarmParentsSet = /* @__PURE__ */ new Set();
+  for (let link of subagentLinks.values())
+    link.typeName === "swarm" && swarmParentsSet.add(link.parentConversationId);
   toProcess.sort((a, b) => {
     let aIsChild = subagentLinks.has(a.conversationId) ? 1 : 0, bIsChild = subagentLinks.has(b.conversationId) ? 1 : 0;
     return aIsChild - bIsChild;
@@ -20048,9 +20551,12 @@ async function runScanInternal(options) {
           hookEvents,
           db,
           subagentLinks
-        ), analyzed = analyzeConversation(parsed, hookEvents, {
+        ), swarmMeta = swarmMetaMap.get(item.conversationId), swarmRole = meta.subagentType === "swarm" || parsed.detectedSwarmRole === "worker" ? "worker" : swarmMeta?.hasPlan || swarmParentsSet.has(item.conversationId) || parsed.detectedSwarmRole === "coordinator" ? "coordinator" : null, swarmTitle = parsed.swarmTitle || swarmMeta?.planTitle || null, swarmTasks = swarmMeta?.tasks && Object.keys(swarmMeta.tasks).length > 0 ? swarmMeta.tasks : void 0, analyzed = analyzeConversation(parsed, hookEvents, {
           surface: item.surface,
-          ...meta
+          ...meta,
+          swarmRole,
+          swarmTitle,
+          swarmTasks
         });
         db.upsertConversation(analyzed), db.upsertIndexedFile({
           path: item.transcriptPath,
@@ -20069,20 +20575,22 @@ async function runScanInternal(options) {
   for (let [childId, link] of subagentLinks.entries()) {
     let childRow = db.getConversationRecord(childId), parentRow = db.getConversationRecord(link.parentConversationId);
     if (!childRow || !parentRow) continue;
-    let needsLinkUpdate = childRow.parentConversationId !== link.parentConversationId || childRow.subagentRole !== link.role || childRow.subagentType !== link.typeName, needsProjectInherit = (childRow.projectSource === "unassigned" || childRow.projectSource === "parent") && parentRow.projectPath !== "Unassigned" && childRow.projectPath !== parentRow.projectPath, needsTitleUpdate = (childRow.title === childId.slice(0, 8) || !childRow.title) && !!(link.role || link.typeName);
-    (needsLinkUpdate || needsProjectInherit || needsTitleUpdate) && db.db.prepare(`
+    let needsLinkUpdate = childRow.parentConversationId !== link.parentConversationId || childRow.subagentRole !== link.role || childRow.subagentType !== link.typeName, needsProjectInherit = childRow.projectSource !== "manual" && parentRow.projectPath !== "Unassigned" && childRow.projectPath !== parentRow.projectPath, needsTitleUpdate = (childRow.title === childId.slice(0, 8) || !childRow.title) && !!(link.role || link.typeName), needsSwarmWorkerRole = link.typeName === "swarm" && childRow.swarmRole !== "worker";
+    (needsLinkUpdate || needsProjectInherit || needsTitleUpdate || needsSwarmWorkerRole) && db.db.prepare(`
           UPDATE conversations
           SET parent_conversation_id = ?,
               subagent_role = COALESCE(?, subagent_role),
               subagent_type = COALESCE(?, subagent_type),
+              swarm_role = CASE WHEN ? = 'swarm' THEN 'worker' ELSE swarm_role END,
               title = CASE WHEN title = ? OR title = '' THEN COALESCE(?, ?, title) ELSE title END,
-              project_path = CASE WHEN project_source IN ('unassigned', 'parent') AND ? != 'Unassigned' THEN ? ELSE project_path END,
-              project_source = CASE WHEN project_source IN ('unassigned', 'parent') AND ? != 'Unassigned' THEN 'parent' ELSE project_source END
+              project_path = CASE WHEN project_source != 'manual' AND ? != 'Unassigned' THEN ? ELSE project_path END,
+              project_source = CASE WHEN project_source != 'manual' AND ? != 'Unassigned' THEN 'parent' ELSE project_source END
           WHERE conversation_id = ?
         `).run(
       link.parentConversationId,
       link.role,
       link.typeName,
+      link.typeName ?? "",
       childId.slice(0, 8),
       link.role,
       link.typeName,
@@ -20090,7 +20598,7 @@ async function runScanInternal(options) {
       parentRow.projectPath,
       parentRow.projectPath,
       childId
-    );
+    ), link.typeName === "swarm" && !parentRow.swarmRole && db.db.prepare("UPDATE conversations SET swarm_role = 'coordinator' WHERE conversation_id = ?").run(parentRow.conversationId);
   }
   return {
     hookEventsIngested: hookResult.ingestedCount,
@@ -26284,7 +26792,7 @@ function buildGitPullCommand(pluginRoot, platform = process.platform) {
 }
 
 // src/server/updateCheck.ts
-var FALLBACK_PLUGIN_VERSION = "0.3.0", REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json", REPO_URL = "https://github.com/fmedery/antigravity-plugin-flight-recorder", MAX_MANIFEST_BYTES = 65536, DEFAULT_TIMEOUT_MS = 5e3, DEFAULT_CACHE_TTL_MS = 3e4, checkCache = /* @__PURE__ */ new Map();
+var FALLBACK_PLUGIN_VERSION = "0.3.0", REPO_URL = "https://github.com/fmedery/antigravity-plugin-flight-recorder", REMOTE_RELEASE_URL = "https://api.github.com/repos/fmedery/antigravity-plugin-flight-recorder/releases/latest", REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json", MAX_RESPONSE_BYTES = 131072, DEFAULT_TIMEOUT_MS = 5e3, DEFAULT_CACHE_TTL_MS = 3e4, checkCache = /* @__PURE__ */ new Map();
 function readInstalledVersion(pluginRoot) {
   if (!pluginRoot) return FALLBACK_PLUGIN_VERSION;
   try {
@@ -26300,10 +26808,93 @@ function readInstalledVersion(pluginRoot) {
 function detectInstallMethod(pluginRoot) {
   if (!pluginRoot) return "zip";
   try {
-    return fs7.existsSync(path5.join(pluginRoot, ".git")) ? "git" : "zip";
+    if (fs7.existsSync(path5.join(pluginRoot, ".git")))
+      return "git";
+    let dirName = path5.basename(pluginRoot);
+    if (/^-?\d{10,}$/.test(dirName))
+      return "marketplace";
+    for (let marker of [
+      ".marketplace",
+      ".antigravity-marketplace",
+      "install_metadata.json"
+    ])
+      if (fs7.existsSync(path5.join(pluginRoot, marker)))
+        return "marketplace";
+    let manifestPath = path5.join(pluginRoot, "plugin.json");
+    if (fs7.existsSync(manifestPath)) {
+      let raw = JSON.parse(fs7.readFileSync(manifestPath, "utf8"));
+      if (typeof raw.source == "string" && /(?:marketplace|antigravity-plugins-)/i.test(raw.source))
+        return "marketplace";
+    }
+    return "zip";
   } catch {
     return "zip";
   }
+}
+async function readBoundedJson(res) {
+  let contentLength = Number(res.headers.get("content-length") || "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES)
+    return { ok: !1, message: "Remote manifest exceeded expected size." };
+  let rawText = await res.text();
+  if (Buffer.byteLength(rawText, "utf8") > MAX_RESPONSE_BYTES)
+    return { ok: !1, message: "Remote manifest exceeded expected size." };
+  try {
+    let parsed = JSON.parse(rawText);
+    return !parsed || typeof parsed != "object" || Array.isArray(parsed) ? { ok: !1, message: "Remote manifest did not contain a valid version." } : { ok: !0, data: parsed };
+  } catch {
+    return { ok: !1, message: "Remote manifest did not contain a valid version." };
+  }
+}
+function sanitizeReleaseUrl(candidate, tagName) {
+  return typeof candidate == "string" && candidate.startsWith(`${REPO_URL}/`) ? candidate : `${REPO_URL}/releases/tag/${encodeURIComponent(tagName)}`;
+}
+async function fetchLatestVersionInfo(fetchImpl, timeoutMs) {
+  let relRes = await fetchImpl(REMOTE_RELEASE_URL, {
+    headers: {
+      "User-Agent": "flight-recorder",
+      Accept: "application/vnd.github+json"
+    },
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (relRes.ok) {
+    let body = await readBoundedJson(relRes);
+    if (!body.ok) return body;
+    let d2 = body.data;
+    if (typeof d2.tag_name == "string" && d2.draft !== !0 && d2.prerelease !== !0 && parseSemver(d2.tag_name)) {
+      let cleanTag = d2.tag_name.trim();
+      return {
+        ok: !0,
+        latestVersion: cleanTag.replace(/^v/i, ""),
+        releaseUrl: sanitizeReleaseUrl(d2.html_url, cleanTag),
+        source: "github_release"
+      };
+    }
+    return { ok: !1, message: "Remote release did not contain a valid version." };
+  }
+  if (relRes.status === 404 || relRes.status === 403 || relRes.status === 429) {
+    let manRes = await fetchImpl(REMOTE_MANIFEST_URL, {
+      headers: {
+        "User-Agent": "flight-recorder",
+        Accept: "application/json"
+      },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!manRes.ok)
+      return { ok: !1, message: `GitHub returned HTTP ${manRes.status}.` };
+    let body = await readBoundedJson(manRes);
+    if (!body.ok) return body;
+    let d2 = body.data;
+    return d2.name !== "flight-recorder" || typeof d2.version != "string" || !parseSemver(d2.version) ? {
+      ok: !1,
+      message: "Remote manifest did not contain a valid version."
+    } : {
+      ok: !0,
+      latestVersion: d2.version.trim().replace(/^v/i, ""),
+      releaseUrl: REPO_URL,
+      source: "manifest"
+    };
+  }
+  return { ok: !1, message: `GitHub returned HTTP ${relRes.status}.` };
 }
 async function checkForUpdate(opts = {}) {
   let pluginRoot = opts.pluginRoot ?? null, platform = opts.platform ?? process.platform, fetchImpl = opts.fetchImpl ?? globalThis.fetch, timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, cacheTtlMs = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS, nowMs = opts.nowMs ?? Date.now(), useCache = cacheTtlMs > 0 && fetchImpl === globalThis.fetch, cacheKey = `${pluginRoot ?? ""}::${platform}`;
@@ -26321,55 +26912,15 @@ async function checkForUpdate(opts = {}) {
     checkedAtMs: nowMs
   };
   try {
-    let res = await fetchImpl(REMOTE_MANIFEST_URL, {
-      headers: {
-        "User-Agent": "flight-recorder",
-        Accept: "application/json"
-      },
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!res.ok)
+    let fetched = await fetchLatestVersionInfo(fetchImpl, timeoutMs);
+    if (!fetched.ok)
       return {
         ...baseResult,
         status: "error",
         latestVersion: null,
-        message: `GitHub returned HTTP ${res.status}.`
+        message: fetched.message
       };
-    let contentLength = Number(res.headers.get("content-length") || "0");
-    if (Number.isFinite(contentLength) && contentLength > MAX_MANIFEST_BYTES)
-      return {
-        ...baseResult,
-        status: "error",
-        latestVersion: null,
-        message: "Remote manifest exceeded expected size."
-      };
-    let rawText = await res.text();
-    if (Buffer.byteLength(rawText, "utf8") > MAX_MANIFEST_BYTES)
-      return {
-        ...baseResult,
-        status: "error",
-        latestVersion: null,
-        message: "Remote manifest exceeded expected size."
-      };
-    let parsed;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      return {
-        ...baseResult,
-        status: "error",
-        latestVersion: null,
-        message: "Remote manifest did not contain a valid version."
-      };
-    }
-    if (parsed.name !== "flight-recorder" || typeof parsed.version != "string" || !parseSemver(parsed.version))
-      return {
-        ...baseResult,
-        status: "error",
-        latestVersion: null,
-        message: "Remote manifest did not contain a valid version."
-      };
-    let latestVersion = parsed.version.trim().replace(/^v/i, ""), cmp = compareSemver(currentVersion, latestVersion);
+    let cmp = compareSemver(currentVersion, fetched.latestVersion);
     if (cmp === null)
       return {
         ...baseResult,
@@ -26380,7 +26931,9 @@ async function checkForUpdate(opts = {}) {
     let result = {
       ...baseResult,
       status: cmp < 0 ? "update_available" : "up_to_date",
-      latestVersion
+      latestVersion: fetched.latestVersion,
+      releaseUrl: fetched.releaseUrl,
+      source: fetched.source
     };
     return useCache && checkCache.set(cacheKey, {
       expiresAtMs: nowMs + cacheTtlMs,
@@ -26419,7 +26972,7 @@ function fmtTokenTotal(tokens) {
 }
 function fmtCost(usd, unpriced) {
   if (usd === null)
-    return unpriced.length > 0 ? `Unpriced (${unpriced.join(", ")})` : "Unpriced";
+    return unpriced.length > 0 ? `Unpriced (${unpriced.join(", ")})` : "N/A";
   let base = `$${usd.toFixed(usd < 0.1 ? 4 : 2)} est.`;
   return unpriced.length > 0 ? `${base} (+ ${unpriced.length} unpriced model)` : base;
 }
@@ -26577,9 +27130,9 @@ function createTrackerMcpServer(ctx) {
           projects: slimProjects,
           recentChats: dashboard.recentChats.slice(0, 20)
         }
-      }, globalMix = dashboard.totals.modelBreakdown.length > 0 ? `, model mix: ${fmtModelMix(dashboard.totals.modelBreakdown, 4)}` : "", ctxSummary = fmtContextHealth(dashboard.totals.contextHealth), cmpSummary = fmtPeriodComparison(dashboard.periodComparison);
+      }, globalMix = dashboard.totals.modelBreakdown.length > 0 ? `, model mix: ${fmtModelMix(dashboard.totals.modelBreakdown, 4)}` : "", ctxSummary = fmtContextHealth(dashboard.totals.contextHealth), cmpSummary = fmtPeriodComparison(dashboard.periodComparison), swarmCount = dashboard.totals.swarmCount ?? 0, swarmPart = swarmCount > 0 ? `, ${swarmCount} swarm${swarmCount === 1 ? "" : "s"}` : "";
       return {
-        content: [{ type: "text", text: `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.` }],
+        content: [{ type: "text", text: `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents${swarmPart}), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.` }],
         structuredContent: structured
       };
     }
@@ -26595,9 +27148,10 @@ function createTrackerMcpServer(ctx) {
     },
     async ({ limit, timeRange }) => {
       await scanNow();
-      let dash = buildDashboardData(ctx.db, { preset: timeRange }), list = dash.projects.slice(0, limit ?? 30), lines = list.map(
-        (p2) => `- **${p2.projectName}** (\`${p2.projectPath}\`): ${p2.chatCount} chats (+${p2.subagentCount} subagents), ${fmtTokenTotal(p2.tokens)}, ${fmtDur(p2.time.activeMs)} active, ${fmtCost(p2.tokens.estimatedCostUsd, p2.tokens.unpricedModels)}, models: [${fmtModelMix(p2.modelBreakdown, 3)}], plugins/skills: [${p2.topPluginsSkills.join(", ") || "none"}]`
-      ), pluginSection = dash.pluginSkillMetrics.length > 0 ? `
+      let dash = buildDashboardData(ctx.db, { preset: timeRange }), list = dash.projects.slice(0, limit ?? 30), lines = list.map((p2) => {
+        let sc = p2.swarmCount ?? 0, swarmStr = sc > 0 ? `, ${sc} swarm${sc === 1 ? "" : "s"}` : "";
+        return `- **${p2.projectName}** (\`${p2.projectPath}\`): ${p2.chatCount} chats (+${p2.subagentCount} subagents${swarmStr}), ${fmtTokenTotal(p2.tokens)}, ${fmtDur(p2.time.activeMs)} active, ${fmtCost(p2.tokens.estimatedCostUsd, p2.tokens.unpricedModels)}, models: [${fmtModelMix(p2.modelBreakdown, 3)}], plugins/skills: [${p2.topPluginsSkills.join(", ") || "none"}]`;
+      }), pluginSection = dash.pluginSkillMetrics.length > 0 ? `
 
 Most Token-Hungry Plugins & Skills (All Projects):
 ${fmtPluginSkillLines(dash.pluginSkillMetrics, !0).join(`
@@ -26651,13 +27205,15 @@ ${lines.join(`
         };
       let s = detail.summary, totalTok = s.tokens.inputTokens + s.tokens.cacheReadTokens + s.tokens.outputTokens, topMetrics = detail.skillToolMetrics.slice(0, 10).map(
         (m2) => `  - ${m2.category} \`${m2.name}\`: ${m2.calls} calls, ${fmtDur(m2.totalDurationMs)}, +${fmtK(m2.directTokens)} direct / +${fmtK(m2.compoundedCacheTokens)} cache carry`
-      ), topChats = detail.chats.slice(0, 10).map(
-        (c) => `  - \`${c.conversationId}\` "${c.title}": ${c.tokens.hasTokenTelemetry ? `${fmtK(c.tokens.inputTokens + c.tokens.cacheReadTokens + c.tokens.outputTokens)} tok (${Math.round(c.tokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"}, ${fmtDur(c.time.activeMs)} active`
-      ), ctxSummary = fmtContextHealth(s.contextHealth), cmpSummary = fmtPeriodComparison(detail.periodComparison);
+      ), topChats = detail.chats.slice(0, 10).map((c) => {
+        let modeTag = c.swarmRole === "coordinator" ? "[Swarm] " : c.swarmRole === "worker" || c.subagentType === "swarm" ? `[Swarm Worker: ${c.subagentRole || "worker"}] ` : "";
+        return `  - \`${c.conversationId}\` ${modeTag}"${c.title}": ${c.tokens.hasTokenTelemetry ? `${fmtK(c.tokens.inputTokens + c.tokens.cacheReadTokens + c.tokens.outputTokens)} tok (${Math.round(c.tokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"}, ${fmtDur(c.time.activeMs)} active`;
+      }), ctxSummary = fmtContextHealth(s.contextHealth), cmpSummary = fmtPeriodComparison(detail.periodComparison), projSwarmCount = s.swarmCount ?? 0;
       return {
         content: [{ type: "text", text: [
           `# Project: ${s.projectName} (\`${s.projectPath}\`)`,
-          `- **Chats**: ${s.chatCount} top-level, ${s.subagentCount} subagents`,
+          `- **Chats**: ${s.chatCount} top-level, ${s.subagentCount} subagents${projSwarmCount > 0 ? ` (${projSwarmCount} swarm${projSwarmCount === 1 ? "" : "s"})` : ""}`,
+          ...projSwarmCount > 0 ? [`- **Swarm Runs**: ${projSwarmCount}`] : [],
           `- **Model Mix**: ${fmtModelMix(s.modelBreakdown, 6)}`,
           "- **Model Breakdown**:",
           ...fmtModelBreakdownLines(s.modelBreakdown, !0),
@@ -26722,14 +27278,36 @@ ${lines.join(`
         (p2) => `  - Step ${p2.stepIndex} (${p2.model}): ${s.tokens.hasTokenTelemetry ? `${fmtK(p2.inputTokens)} in, ${fmtK(p2.cacheReadTokens)} cache (${Math.round(p2.cacheHitRatio * 100)}%), ${fmtK(p2.outputTokens)} out` : "N/A (legacy)"}, ${fmtDur(p2.modelDurationMs)}${p2.isCacheMiss ? ` [CACHE MISS: ${p2.cacheMissCause}]` : ""} \u2014 ${p2.attributedSummary}`
       ), switchLines = detail.modelSwitches.slice(0, 20).map(
         (sw) => `  - Step ${sw.stepIndex} (Turn ${sw.turnIndex + 1}): \`${sw.fromModel}\` \u2192 \`${sw.toModel}\` \u2014 ${sw.trigger}${sw.isCacheMiss ? ` [CACHE MISS, +${fmtK(sw.inputTokensAfter)} uncached]` : ""}`
-      );
+      ), isSwarmCoordinator = s.swarmRole === "coordinator", isSwarmWorker = s.swarmRole === "worker" || s.subagentType === "swarm", hasSwarmWorkers = detail.subagents.some(
+        (sub) => sub.swarmRole === "worker" || sub.subagentType === "swarm"
+      ), isSwarmParent = isSwarmCoordinator || hasSwarmWorkers, subagentLines = detail.subagents.slice(0, 20).map((sub) => {
+        let subTok = sub.tokens.inputTokens + sub.tokens.cacheReadTokens + sub.tokens.outputTokens, subLabel = sub.subagentRole || (sub.subagentType === "swarm" ? "worker" : sub.subagentType) || sub.title, subModels = fmtModelMix(sub.modelBreakdown, 3), tokPart = sub.tokens.hasTokenTelemetry ? fmtK(subTok) : "N/A (legacy)", swarmTag = sub.swarmRole === "worker" || sub.subagentType === "swarm" ? " `[swarm]`" : "", taskDesc = sub.subagentRole ? detail.swarmTasks?.[sub.subagentRole] : void 0, taskPart = taskDesc ? ` \u2014 ${taskDesc}` : "";
+        return `  - **${subLabel}**${swarmTag} (\`${sub.conversationId.slice(0, 8)}\`): ${subModels} \xB7 ${tokPart} tok \xB7 ${fmtDur(sub.time.activeMs)}${taskPart}`;
+      }), modeLine = isSwarmCoordinator ? `- **Mode**: Swarm coordinator${s.swarmTitle ? ` ("${s.swarmTitle}")` : ""}` : isSwarmWorker ? `- **Mode**: Swarm worker (${s.subagentRole ?? "worker"}${s.parentConversationId ? `, parent \`${s.parentConversationId.slice(0, 8)}\`` : ""})` : null, combinedSwarmLines = [];
+      if (isSwarmParent && detail.subagents.length > 0 && detail.combinedTokens) {
+        let cTok = detail.combinedTokens.inputTokens + detail.combinedTokens.cacheReadTokens + detail.combinedTokens.outputTokens;
+        combinedSwarmLines.push(
+          `- **Combined Swarm Totals (Coordinator + ${detail.subagents.length} workers)**: ${detail.combinedTokens.hasTokenTelemetry ? `${fmtK(cTok)} tokens (${Math.round(detail.combinedTokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"} \xB7 ${fmtCost(detail.combinedTokens.estimatedCostUsd, detail.combinedTokens.unpricedModels)} \xB7 ${fmtDur(detail.scopeActiveMs ?? s.time.activeMs)} merged active time`
+        );
+      }
       return {
         content: [{ type: "text", text: [
           `# Chat: ${s.title} (\`${s.conversationId}\`)`,
           `- **Project**: ${s.projectName} (\`${s.projectPath}\`, source: ${s.projectSource})`,
+          ...modeLine ? [modeLine] : [],
+          ...combinedSwarmLines,
           `- **Model Mix**: ${fmtModelMix(s.modelBreakdown, 6)}`,
           "- **Model Breakdown**:",
           ...fmtModelBreakdownLines(s.modelBreakdown, !1),
+          ...detail.subagents.length > 0 ? [
+            `- **Combined Model Mix (${isSwarmParent ? "Coordinator" : "Parent"} + ${detail.subagents.length} ${isSwarmParent ? "workers" : "subagents"})**: ${fmtModelMix(detail.combinedModelBreakdown ?? s.modelBreakdown, 6)}`,
+            ...(detail.subagentModelBreakdown?.length ?? 0) > 0 ? [
+              `- **${isSwarmParent ? "Swarm Worker" : "Subagent"} Model Breakdown**:`,
+              ...fmtModelBreakdownLines(detail.subagentModelBreakdown, !0)
+            ] : [],
+            `- **${isSwarmParent ? "Swarm Workers" : "Spawned Subagents"} (${detail.subagents.length})**:`,
+            ...subagentLines
+          ] : [],
           ...detail.pluginSkillMetrics.length > 0 ? [
             "- **Most Token-Hungry Plugins & Skills**:",
             ...fmtPluginSkillLines(detail.pluginSkillMetrics, !1)
@@ -26749,10 +27327,14 @@ ${lines.join(`
           turns: detail.turns,
           plannerSteps: detail.plannerSteps.slice(0, 60),
           modelSwitches: detail.modelSwitches,
+          combinedModelBreakdown: detail.combinedModelBreakdown,
+          subagentModelBreakdown: detail.subagentModelBreakdown,
           pluginSkillMetrics: detail.pluginSkillMetrics,
           skillToolMetrics: detail.skillToolMetrics.slice(0, 30),
           diagnostics: detail.diagnostics,
-          subagents: detail.subagents
+          subagents: detail.subagents,
+          ...detail.swarmTasks ? { swarmTasks: detail.swarmTasks } : {},
+          ...detail.combinedTokens ? { combinedTokens: detail.combinedTokens } : {}
         }
       };
     }
@@ -27006,7 +27588,8 @@ ${blocks.join(`
       description: "App-only endpoint triggering an immediate incremental rescan.",
       inputSchema: {
         timeRange: timeRangeSchema,
-        sinceMs: sinceMsSchema
+        sinceMs: sinceMsSchema,
+        onlyIfChanged: external_exports2.boolean().optional()
       },
       _meta: {
         ui: {
@@ -27014,8 +27597,18 @@ ${blocks.join(`
         }
       }
     },
-    async ({ timeRange, sinceMs }) => {
-      let stats = await scanNow(), dashboard = buildDashboardData(ctx.db, {
+    async ({ timeRange, sinceMs, onlyIfChanged }) => {
+      let stats = await scanNow(), scannedAtMs = Date.now(), changed = stats.transcriptsIndexed > 0 || stats.hookEventsIngested > 0;
+      if (onlyIfChanged && !changed)
+        return {
+          content: [{ type: "text", text: "ok" }],
+          structuredContent: {
+            stats,
+            changed: !1,
+            scannedAtMs
+          }
+        };
+      let dashboard = buildDashboardData(ctx.db, {
         preset: timeRange,
         sinceMs
       });
@@ -27023,6 +27616,8 @@ ${blocks.join(`
         content: [{ type: "text", text: "ok" }],
         structuredContent: {
           stats,
+          changed,
+          scannedAtMs,
           dashboard
         }
       };
@@ -27042,7 +27637,8 @@ ${blocks.join(`
             inputPer1M: external_exports2.number().finite().min(0).max(1e5),
             cacheReadPer1M: external_exports2.number().finite().min(0).max(1e5),
             outputPer1M: external_exports2.number().finite().min(0).max(1e5),
-            enabled: external_exports2.boolean()
+            enabled: external_exports2.boolean(),
+            retired: external_exports2.boolean().optional()
           })
         ).max(100),
         timeRange: timeRangeSchema,

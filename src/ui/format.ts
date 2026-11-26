@@ -94,6 +94,19 @@ export function fmtDateShort(ms: number): string {
   }
 }
 
+export function fmtRelativeAge(
+  tsMs: number | null | undefined,
+  nowMs = Date.now()
+): string {
+  if (!tsMs || !Number.isFinite(tsMs) || tsMs <= 0) return "";
+  const diffMs = Math.max(0, nowMs - tsMs);
+  if (diffMs < 10_000) return "just now";
+  if (diffMs < 60_000) return `${Math.floor(diffMs / 1000)}s ago`;
+  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
+  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
+  return fmtDateShort(tsMs);
+}
+
 export function fmtDateSpan(
   startMs: number,
   endMs: number,
@@ -191,16 +204,16 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
   projects: {
     title: "Tracked Projects & Sessions",
     meaning:
-      "Distinct workspaces inferred from Antigravity Hub, IDE, and CLI transcripts, broken down into root chats you started and child subagents they spawned.",
+      "Distinct workspaces inferred from Antigravity Hub, IDE, and CLI transcripts, broken down into root chats you started, Swarm coordinator runs, and child subagents or Swarm workers they spawned.",
     impact:
-      "Offloading heavy codebase searches or browser checks to subagents isolates their tokens in separate context windows, keeping your main chat smaller, faster, and less likely to hit context compaction."
+      "Offloading heavy codebase searches, browser checks, or parallel Swarm tasks to workers isolates their tokens in separate context windows, keeping your main chat smaller and less likely to hit context compaction."
   },
   chatsSubagents: {
-    title: "Chats & Spawned Subagents",
+    title: "Chats, Swarms & Spawned Workers",
     meaning:
-      "Top-level conversations you started in this project alongside background research, browser, or coding subagents they launched.",
+      "Top-level conversations you started in this project (including Swarm coordinators) alongside background subagents or Swarm workers they launched.",
     impact:
-      "Subagents run in isolated context windows so heavy searches do not bloat your main chat's prompt cache or push it toward context compaction."
+      "Subagents and Swarm workers run in isolated context windows so parallel edits and searches do not bloat your coordinator chat's prompt cache or push it toward compaction."
   },
   totalTokens: {
     title: "Total Tokens Processed",
@@ -226,7 +239,7 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
   activeAgentTime: {
     title: "Active Agent Time",
     meaning:
-      "Wall-clock time the agent spent thinking and running tools, excluding your idle and approval pauses. Overlapping parallel tools and concurrent subagents are merged into real wall time, so model + tools can sum higher than the merged total.",
+      "Wall-clock time the agent spent thinking and running tools, excluding your idle/approval pauses and Swarm board parking (swarm_wait). Overlapping parallel tools and concurrent workers/subagents are merged into real wall time, so model + tools can sum higher than the merged total.",
     impact:
       "Shows whether slowness comes from model reasoning or tool/command execution—helping you spot sequential tool bottlenecks, slow scripts or MCP servers, or heavier-than-needed models."
   },

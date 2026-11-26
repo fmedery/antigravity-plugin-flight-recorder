@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   aggregateModelUsage,
   aggregatePluginSkillMetrics,
@@ -24,8 +26,16 @@ import {
 } from "../src/server/analytics.js";
 import { TrackerDatabase, type HookEventRow } from "../src/server/db.js";
 import { findProjectRootForPath, inferProjectFromPaths } from "../src/server/scanner.js";
+import { createTrackerMcpServer } from "../src/server/tools.js";
 import type { ParsedTranscript } from "../src/server/transcriptParser.js";
-import { aggregateCosts, DEFAULT_PRICING_RULES } from "../src/shared/pricing.js";
+import {
+  aggregateCosts,
+  DEFAULT_PRICING_RULES,
+  getModelAvailability,
+  isModelRetired,
+  isUnpriceablePlaceholderModel,
+  MODEL_INACTIVE_THRESHOLD_MS
+} from "../src/shared/pricing.js";
 import {
   computeLocalPresetSinceMs,
   computePriorTimeRangeBounds,
@@ -2195,4 +2205,942 @@ test("computePriorTimeRangeBounds, buildDashboardData/buildProjectDetail periodC
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("analyzeConversation prioritizes transcript model > hookEvents[].modelName > USER_SETTINGS_CHANGE > unknown", () => {
+  const t0 = Date.parse("2026-11-20T10:00:00Z");
+  const parsed: ParsedTranscript = {
+    conversationId: "conv-precedence",
+    transcriptPath: "/tmp/precedence.jsonl",
+    title: "Model precedence",
+    startedAtMs: t0,
+    endedAtMs: t0 + 20_000,
+    models: ["gemini-4-neon-xhigh", "gemini-4-carbon-medium"],
+    slashCommands: [],
+    candidatePaths: [],
+    turns: [
+      {
+        turnIndex: 0,
+        stepIndex: 0,
+        createdAtMs: t0,
+        promptText: "Start",
+        promptPreview: "Start",
+        promptBytes: 5,
+        slashCommand: null
+      }
+    ],
+    plannerSteps: [
+      {
+        stepIndex: 1,
+        turnIndex: 0,
+        model: "gemini-4-neon-xhigh",
+        modelSource: "transcript",
+        createdAtMs: t0 + 1_000,
+        thinkingChars: 10,
+        contentChars: 20,
+        inputTokens: 1000,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        totalContextTokens: 1000,
+        toolCallCount: 0,
+        status: "DONE"
+      },
+      {
+        stepIndex: 2,
+        turnIndex: 0,
+        model: "gemini-4-carbon-medium",
+        modelSource: "settings_change",
+        createdAtMs: t0 + 5_000,
+        thinkingChars: 10,
+        contentChars: 20,
+        inputTokens: 1000,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        totalContextTokens: 1000,
+        toolCallCount: 0,
+        status: "DONE"
+      },
+      {
+        stepIndex: 3,
+        turnIndex: 0,
+        model: "gemini-4-carbon-medium",
+        modelSource: "settings_change",
+        createdAtMs: t0 + 9_000,
+        thinkingChars: 10,
+        contentChars: 20,
+        inputTokens: 1000,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        totalContextTokens: 1000,
+        toolCallCount: 0,
+        status: "DONE"
+      },
+      {
+        stepIndex: 4,
+        turnIndex: 0,
+        model: "unknown",
+        modelSource: "unknown",
+        createdAtMs: t0 + 15_000,
+        thinkingChars: 10,
+        contentChars: 20,
+        inputTokens: 1000,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        totalContextTokens: 1000,
+        toolCallCount: 0,
+        status: "DONE"
+      }
+    ],
+    toolCalls: []
+  };
+
+  const makeHook = (
+    id: number,
+    tsMs: number,
+    stepIdx: number | null,
+    modelName: string | null
+  ): HookEventRow => ({
+    id,
+    tsMs,
+    hookEventName: "PostInvocation",
+    conversationId: "conv-precedence",
+    workspacePaths: [],
+    transcriptPath: null,
+    modelName,
+    cwd: null,
+    stepIdx,
+    invocationNum: null,
+    terminationReason: null,
+    error: null,
+    lastUserInput: null,
+    toolCallId: null,
+    toolName: null,
+    argBytes: null
+  });
+
+  const hooks: HookEventRow[] = [
+    // Exact stepIdx=1 tries to set another model, but transcript model must win
+    makeHook(1, t0 + 1_000, 1, "gemini-2.5-flash"),
+    // Exact stepIdx=2 overrides settings_change fallback
+    makeHook(2, t0 + 5_000, 2, "gemini-4-hydrogen-high")
+  ];
+
+  const analyzed = analyzeConversation(parsed, hooks, {
+    surface: "antigravity",
+    projectPath: "/repo/prec",
+    projectSource: "hook",
+    parentConversationId: null,
+    subagentRole: null,
+    subagentType: null
+  });
+
+  assert.equal(analyzed.plannerSteps[0].model, "gemini-4-neon-xhigh");
+  assert.equal(analyzed.plannerSteps[1].model, "gemini-4-hydrogen-high");
+  // Step 3 and Step 4 match latest preceding usable hook event by timestamp
+  assert.equal(analyzed.plannerSteps[2].model, "gemini-4-hydrogen-high");
+  assert.equal(analyzed.plannerSteps[3].model, "gemini-4-hydrogen-high");
+  assert.deepEqual(analyzed.models, [
+    "gemini-4-neon-xhigh",
+    "gemini-4-hydrogen-high"
+  ]);
+
+  // "auto" / "unknown" hook modelNames must be ignored so settings_change and unknown apply
+  const analyzedAutoOnlyHooks = analyzeConversation(
+    parsed,
+    [
+      makeHook(3, t0 + 9_000, 3, "auto"),
+      makeHook(4, t0 + 15_000, 4, "unknown")
+    ],
+    {
+      surface: "antigravity",
+      projectPath: "/repo/prec",
+      projectSource: "hook",
+      parentConversationId: null,
+      subagentRole: null,
+      subagentType: null
+    }
+  );
+  assert.equal(analyzedAutoOnlyHooks.plannerSteps[0].model, "gemini-4-neon-xhigh");
+  assert.equal(analyzedAutoOnlyHooks.plannerSteps[1].model, "gemini-4-carbon-medium");
+  assert.equal(analyzedAutoOnlyHooks.plannerSteps[2].model, "gemini-4-carbon-medium");
+  assert.equal(analyzedAutoOnlyHooks.plannerSteps[3].model, "unknown");
+  assert.deepEqual(analyzedAutoOnlyHooks.models, [
+    "gemini-4-neon-xhigh",
+    "gemini-4-carbon-medium"
+  ]);
+});
+
+test("buildConversationDetail and get_chat_analysis expose combinedModelBreakdown and subagentModelBreakdown", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-orch-submodels-"));
+  const db = new TrackerDatabase(tmpDir);
+  const t0 = Date.parse("2026-11-24T14:00:00Z");
+
+  try {
+    const parentConv = analyzeConversation(
+      {
+        conversationId: "orch-parent",
+        transcriptPath: "/tmp/orch-parent.jsonl",
+        title: "Build Orchestrated Feature",
+        startedAtMs: t0,
+        endedAtMs: t0 + 10_000,
+        models: ["gemini-4-neon-xhigh"],
+        slashCommands: [],
+        candidatePaths: [],
+        turns: [
+          {
+            turnIndex: 0,
+            stepIndex: 0,
+            createdAtMs: t0,
+            promptText: "Build feature",
+            promptPreview: "Build feature",
+            promptBytes: 13,
+            slashCommand: null
+          }
+        ],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: "gemini-4-neon-xhigh",
+            createdAtMs: t0,
+            thinkingChars: 100,
+            contentChars: 50,
+            inputTokens: 10_000,
+            cacheReadTokens: 0,
+            outputTokens: 500,
+            totalContextTokens: 10_000,
+            toolCallCount: 0,
+            status: "DONE"
+          }
+        ],
+        toolCalls: []
+      },
+      [],
+      {
+        surface: "antigravity",
+        projectPath: "/repo/orch",
+        projectSource: "hook",
+        parentConversationId: null,
+        subagentRole: null,
+        subagentType: null
+      }
+    );
+
+    const sub1 = analyzeConversation(
+      {
+        conversationId: "orch-sub-1",
+        transcriptPath: "/tmp/orch-sub-1.jsonl",
+        title: "Implementer",
+        startedAtMs: t0 + 1_000,
+        endedAtMs: t0 + 6_000,
+        models: ["gemini-4-hydrogen-tiered-high"],
+        slashCommands: [],
+        candidatePaths: [],
+        turns: [
+          {
+            turnIndex: 0,
+            stepIndex: 0,
+            createdAtMs: t0 + 1_000,
+            promptText: "Implement",
+            promptPreview: "Implement",
+            promptBytes: 9,
+            slashCommand: null
+          }
+        ],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: "gemini-4-hydrogen-tiered-high",
+            createdAtMs: t0 + 1_000,
+            thinkingChars: 40,
+            contentChars: 100,
+            inputTokens: 20_000,
+            cacheReadTokens: 9_000,
+            outputTokens: 500,
+            totalContextTokens: 29_000,
+            toolCallCount: 0,
+            status: "DONE"
+          }
+        ],
+        toolCalls: []
+      },
+      [],
+      {
+        surface: "antigravity",
+        projectPath: "/repo/orch",
+        projectSource: "parent",
+        parentConversationId: "orch-parent",
+        subagentRole: "Implementer",
+        subagentType: "self"
+      }
+    );
+
+    const sub2 = analyzeConversation(
+      {
+        conversationId: "orch-sub-2",
+        transcriptPath: "/tmp/orch-sub-2.jsonl",
+        title: "Reviewer",
+        startedAtMs: t0 + 6_000,
+        endedAtMs: t0 + 9_000,
+        models: ["gemini-4-carbon-high"],
+        slashCommands: [],
+        candidatePaths: [],
+        turns: [
+          {
+            turnIndex: 0,
+            stepIndex: 0,
+            createdAtMs: t0 + 6_000,
+            promptText: "Review",
+            promptPreview: "Review",
+            promptBytes: 6,
+            slashCommand: null
+          }
+        ],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: "gemini-4-carbon-high",
+            createdAtMs: t0 + 6_000,
+            thinkingChars: 20,
+            contentChars: 60,
+            inputTokens: 9_000,
+            cacheReadTokens: 0,
+            outputTokens: 1_000,
+            totalContextTokens: 9_000,
+            toolCallCount: 0,
+            status: "DONE"
+          }
+        ],
+        toolCalls: []
+      },
+      [],
+      {
+        surface: "antigravity",
+        projectPath: "/repo/orch",
+        projectSource: "parent",
+        parentConversationId: "orch-parent",
+        subagentRole: "Reviewer",
+        subagentType: "self"
+      }
+    );
+
+    db.upsertConversation(parentConv);
+    db.upsertConversation(sub1);
+    db.upsertConversation(sub2);
+
+    const detail = buildConversationDetail(db, "orch-parent");
+    assert.ok(detail);
+    assert.equal(detail.summary.modelBreakdown.length, 1);
+    assert.equal(detail.summary.modelBreakdown[0].model, "gemini-4-neon-xhigh");
+    assert.equal(detail.subagentModelBreakdown?.length, 2);
+    assert.equal(detail.subagentModelBreakdown?.[0].model, "gemini-4-hydrogen-tiered-high");
+    assert.equal(detail.subagentModelBreakdown?.[1].model, "gemini-4-carbon-high");
+    assert.equal(detail.combinedModelBreakdown?.length, 3);
+    assert.equal(detail.combinedModelBreakdown?.[0].model, "gemini-4-hydrogen-tiered-high");
+    assert.equal(detail.combinedModelBreakdown?.[0].totalTokens, 29_500);
+
+    const srv = createTrackerMcpServer({
+      db,
+      dataDir: tmpDir,
+      uiHtmlPath: path.join(tmpDir, "missing.html"),
+      brainRoots: []
+    });
+    const cli = new Client({ name: "orch-test", version: "1.0.0" });
+    const [cTrans, sTrans] = InMemoryTransport.createLinkedPair();
+    await Promise.all([srv.connect(sTrans), cli.connect(cTrans)]);
+    try {
+      const res = await cli.callTool({
+        name: "get_chat_analysis",
+        arguments: { conversationId: "orch-parent" }
+      });
+      const txt =
+        Array.isArray(res.content) && res.content[0]?.type === "text"
+          ? (res.content[0].text ?? "")
+          : "";
+      assert.match(txt, /Combined Model Mix \(Parent \+ 2 subagents\)/);
+      assert.match(txt, /Subagent Model Breakdown/);
+      assert.match(txt, /Spawned Subagents \(2\)/);
+      assert.match(txt, /gemini-4-hydrogen-tiered-high/);
+      assert.match(txt, /gemini-4-carbon-high/);
+      const sc = res.structuredContent as {
+        combinedModelBreakdown?: unknown[];
+        subagentModelBreakdown?: unknown[];
+      };
+      assert.equal(sc.combinedModelBreakdown?.length, 3);
+      assert.equal(sc.subagentModelBreakdown?.length, 2);
+    } finally {
+      await cli.close();
+      await srv.close();
+    }
+  } finally {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("aggregateCosts excludes unknown/auto placeholders from unpricedModels and isModelRetired handles defaults + DB overrides", () => {
+  assert.equal(isUnpriceablePlaceholderModel("unknown"), true);
+  assert.equal(isUnpriceablePlaceholderModel("auto"), true);
+  assert.equal(isUnpriceablePlaceholderModel("  "), true);
+  assert.equal(isUnpriceablePlaceholderModel("gemini-4-neon-high"), false);
+
+  const placeholderOnly = aggregateCosts(
+    [
+      { model: "unknown", inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100 },
+      { model: "auto", inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100 },
+      { model: "", inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100 }
+    ],
+    DEFAULT_PRICING_RULES
+  );
+  assert.equal(placeholderOnly.estimatedCostUsd, null);
+  assert.deepEqual(placeholderOnly.unpricedModels, []);
+
+  const mixed = aggregateCosts(
+    [
+      { model: "unknown", inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100 },
+      { model: "gemini-4-neon-high", inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100 }
+    ],
+    DEFAULT_PRICING_RULES
+  );
+  assert.deepEqual(mixed.unpricedModels, ["gemini-4-neon-high"]);
+
+  // Default retired patterns
+  assert.equal(isModelRetired("gemini-2.5-pro", DEFAULT_PRICING_RULES), true);
+  assert.equal(isModelRetired("gemini-4-argon-medium", DEFAULT_PRICING_RULES), true);
+  assert.equal(isModelRetired("claude-sonnet-4", DEFAULT_PRICING_RULES), true);
+  assert.equal(isModelRetired("gemini-4-neon-xhigh", DEFAULT_PRICING_RULES), false);
+  assert.equal(isModelRetired("claude-opus-5-5-high", DEFAULT_PRICING_RULES), false);
+  assert.equal(isModelRetired("unknown", DEFAULT_PRICING_RULES), false);
+
+  // Manual override + SQLite persistence
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-retired-db-"));
+  const db = new TrackerDatabase(tmpDir);
+  try {
+    const initialRules = db.getPricingRules();
+    assert.equal(
+      initialRules.find((r) => r.id === "gemini-2.5-pro")?.retired,
+      true
+    );
+
+    const updated = [
+      ...initialRules.map((r) =>
+        r.id === "gemini-2.5-pro" ? { ...r, retired: false } : r
+      ),
+      {
+        id: "custom-neon",
+        pattern: "gemini-4-neon*",
+        label: "Gemini 4 Neon",
+        inputPer1M: 1.5,
+        cacheReadPer1M: 0.3,
+        outputPer1M: 10.0,
+        enabled: true,
+        retired: true
+      }
+    ];
+    db.savePricingRules(updated);
+
+    const reloaded = db.getPricingRules();
+    assert.equal(isModelRetired("gemini-2.5-pro", reloaded), false);
+    assert.equal(isModelRetired("gemini-4-neon-xhigh", reloaded), true);
+  } finally {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("getModelAvailability auto-detects Unavailable (self-healing) and 30d Inactive models, merges DB/hook signals, and respects manual overrides", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const latestMs = Date.parse("2026-11-26T12:00:00Z");
+
+  // 1. Unavailable when error is newer than last successful step; self-heals when step is >= error
+  const unavailSig = {
+    "gemini-4-beta": {
+      model: "gemini-4-beta",
+      lastSeenAtMs: latestMs - 2 * dayMs,
+      lastUnavailableErrorAtMs: latestMs - 1 * dayMs,
+      lastUnavailableReason: "models/gemini-4-beta is not found"
+    },
+    "gemini-4-recovered": {
+      model: "gemini-4-recovered",
+      lastSeenAtMs: latestMs,
+      lastUnavailableErrorAtMs: latestMs - 1 * dayMs,
+      lastUnavailableReason: "No capacity available for model gemini-4-recovered"
+    },
+    "gemini-4-old-custom": {
+      model: "gemini-4-old-custom",
+      lastSeenAtMs: latestMs - MODEL_INACTIVE_THRESHOLD_MS - dayMs,
+      lastUnavailableErrorAtMs: null,
+      lastUnavailableReason: null
+    },
+    "gemini-4-recent-custom": {
+      model: "gemini-4-recent-custom",
+      lastSeenAtMs: latestMs - 10 * dayMs,
+      lastUnavailableErrorAtMs: null,
+      lastUnavailableReason: null
+    }
+  };
+
+  assert.equal(
+    getModelAvailability("gemini-4-beta", [], unavailSig, latestMs).status,
+    "unavailable"
+  );
+  assert.equal(
+    getModelAvailability("gemini-4-beta", [], unavailSig, latestMs).badge,
+    "Unavailable"
+  );
+  // Self-healed
+  assert.equal(
+    getModelAvailability("gemini-4-recovered", [], unavailSig, latestMs).status,
+    "active"
+  );
+  // Relative 30d inactivity
+  assert.equal(
+    getModelAvailability("gemini-4-old-custom", [], unavailSig, latestMs).status,
+    "inactive"
+  );
+  assert.equal(
+    getModelAvailability("gemini-4-old-custom", [], unavailSig, latestMs).badge,
+    "Inactive"
+  );
+  assert.equal(
+    getModelAvailability("gemini-4-recent-custom", [], unavailSig, latestMs).status,
+    "active"
+  );
+
+  // Manual rule override: retired === false suppresses auto Unavailable/Inactive
+  const overrideRules = [
+    {
+      id: "r1",
+      pattern: "gemini-4-beta",
+      label: "Beta",
+      inputPer1M: 1,
+      cacheReadPer1M: 0.2,
+      outputPer1M: 5,
+      enabled: true,
+      retired: false
+    },
+    {
+      id: "r2",
+      pattern: "gemini-4-recent-custom",
+      label: "Recent",
+      inputPer1M: 1,
+      cacheReadPer1M: 0.2,
+      outputPer1M: 5,
+      enabled: true,
+      retired: true
+    }
+  ];
+  assert.equal(
+    getModelAvailability("gemini-4-beta", overrideRules, unavailSig, latestMs).status,
+    "active"
+  );
+  assert.equal(
+    getModelAvailability("gemini-4-recent-custom", overrideRules, unavailSig, latestMs).status,
+    "retired"
+  );
+
+  // 2. End-to-end SQLite merging of planner_steps + model_error_signals + hook_events into buildDashboardData
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-avail-signals-"));
+  const db = new TrackerDatabase(tmpDir);
+  try {
+    const conv1 = analyzeConversation(
+      {
+        conversationId: "conv-avail-1",
+        transcriptPath: "/tmp/a1.jsonl",
+        title: "Old & unavailable models",
+        startedAtMs: latestMs - 35 * dayMs,
+        endedAtMs: latestMs - 35 * dayMs,
+        models: ["gemini-4-stale", "gemini-4-beta"],
+        slashCommands: [],
+        candidatePaths: [],
+        turns: [
+          {
+            turnIndex: 0,
+            stepIndex: 0,
+            createdAtMs: latestMs - 35 * dayMs,
+            promptText: "Hi",
+            promptPreview: "Hi",
+            promptBytes: 2,
+            slashCommand: null
+          }
+        ],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: "gemini-4-stale",
+            createdAtMs: latestMs - 35 * dayMs,
+            thinkingChars: 0,
+            contentChars: 10,
+            inputTokens: 100,
+            cacheReadTokens: 0,
+            outputTokens: 10,
+            totalContextTokens: 100,
+            toolCallCount: 0,
+            status: "DONE"
+          },
+          {
+            stepIndex: 2,
+            turnIndex: 0,
+            model: "gemini-4-beta",
+            createdAtMs: latestMs - 5 * dayMs,
+            thinkingChars: 0,
+            contentChars: 10,
+            inputTokens: 100,
+            cacheReadTokens: 0,
+            outputTokens: 10,
+            totalContextTokens: 100,
+            toolCallCount: 0,
+            status: "DONE"
+          }
+        ],
+        toolCalls: [],
+        modelUnavailableErrors: [
+          {
+            model: "gemini-4-beta",
+            tsMs: latestMs - 2 * dayMs,
+            reason: "models/gemini-4-beta is not found"
+          }
+        ]
+      },
+      [],
+      {
+        surface: "antigravity",
+        projectPath: "/repo/avail",
+        projectSource: "hook",
+        parentConversationId: null,
+        subagentRole: null,
+        subagentType: null
+      }
+    );
+
+    const conv2 = analyzeConversation(
+      {
+        conversationId: "conv-avail-2",
+        transcriptPath: "/tmp/a2.jsonl",
+        title: "Recent model",
+        startedAtMs: latestMs,
+        endedAtMs: latestMs,
+        models: ["gemini-4-neon-xhigh"],
+        slashCommands: [],
+        candidatePaths: [],
+        turns: [
+          {
+            turnIndex: 0,
+            stepIndex: 0,
+            createdAtMs: latestMs,
+            promptText: "Now",
+            promptPreview: "Now",
+            promptBytes: 3,
+            slashCommand: null
+          }
+        ],
+        plannerSteps: [
+          {
+            stepIndex: 1,
+            turnIndex: 0,
+            model: "gemini-4-neon-xhigh",
+            createdAtMs: latestMs,
+            thinkingChars: 0,
+            contentChars: 10,
+            inputTokens: 100,
+            cacheReadTokens: 0,
+            outputTokens: 10,
+            totalContextTokens: 100,
+            toolCallCount: 0,
+            status: "DONE"
+          }
+        ],
+        toolCalls: []
+      },
+      [],
+      {
+        surface: "antigravity",
+        projectPath: "/repo/avail",
+        projectSource: "hook",
+        parentConversationId: null,
+        subagentRole: null,
+        subagentType: null
+      }
+    );
+
+    db.upsertConversation(conv1);
+    db.upsertConversation(conv2);
+
+    // Also inject a hook error for a model never seen in planner_steps
+    db.insertHookEvents([
+      {
+        tsMs: latestMs - 1000,
+        hookEventName: "Error",
+        conversationId: "conv-avail-2",
+        workspacePaths: [],
+        transcriptPath: null,
+        modelName: null,
+        cwd: null,
+        stepIdx: null,
+        invocationNum: null,
+        terminationReason: null,
+        error: "No capacity available for model gemini-4-hook-err on the server",
+        lastUserInput: null,
+        toolCallId: null,
+        toolName: null,
+        argBytes: null,
+        dedupKey: "hook-err-1"
+      }
+    ]);
+
+    const dash = buildDashboardData(db);
+    assert.equal(dash.latestGlobalActivityMs, conv2.endedAtMs);
+    assert.ok(dash.modelSignals);
+    assert.equal(
+      getModelAvailability(
+        "gemini-4-stale",
+        dash.pricingRules,
+        dash.modelSignals,
+        dash.latestGlobalActivityMs
+      ).status,
+      "inactive"
+    );
+    assert.equal(
+      getModelAvailability(
+        "gemini-4-beta",
+        dash.pricingRules,
+        dash.modelSignals,
+        dash.latestGlobalActivityMs
+      ).status,
+      "unavailable"
+    );
+    assert.equal(
+      getModelAvailability(
+        "gemini-4-hook-err",
+        dash.pricingRules,
+        dash.modelSignals,
+        dash.latestGlobalActivityMs
+      ).status,
+      "unavailable"
+    );
+    assert.equal(
+      getModelAvailability(
+        "gemini-4-neon-xhigh",
+        dash.pricingRules,
+        dash.modelSignals,
+        dash.latestGlobalActivityMs
+      ).status,
+      "active"
+    );
+  } finally {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("app_rescan_all skips dashboard rebuild when onlyIfChanged is true and nothing changed", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescan-opt-"));
+  const db = new TrackerDatabase(tmpDir);
+  try {
+    const srv = createTrackerMcpServer({
+      db,
+      dataDir: tmpDir,
+      uiHtmlPath: path.join(tmpDir, "missing.html"),
+      brainRoots: [],
+      eventsPath: path.join(tmpDir, "missing-events.jsonl")
+    });
+    const cli = new Client({ name: "rescan-test", version: "1.0.0" });
+    const [cTrans, sTrans] = InMemoryTransport.createLinkedPair();
+    await Promise.all([srv.connect(sTrans), cli.connect(cTrans)]);
+    try {
+      const noChangeRes = await cli.callTool({
+        name: "app_rescan_all",
+        arguments: { onlyIfChanged: true }
+      });
+      const sc1 = noChangeRes.structuredContent as {
+        changed?: boolean;
+        scannedAtMs?: number;
+        dashboard?: unknown;
+      };
+      assert.equal(sc1.changed, false);
+      assert.ok(typeof sc1.scannedAtMs === "number" && sc1.scannedAtMs > 0);
+      assert.equal(sc1.dashboard, undefined);
+
+      const fullRes = await cli.callTool({
+        name: "app_rescan_all",
+        arguments: {}
+      });
+      const sc2 = fullRes.structuredContent as {
+        changed?: boolean;
+        scannedAtMs?: number;
+        dashboard?: unknown;
+      };
+      assert.equal(sc2.changed, false);
+      assert.ok(typeof sc2.scannedAtMs === "number" && sc2.scannedAtMs > 0);
+      assert.ok(sc2.dashboard !== undefined);
+    } finally {
+      await cli.close();
+      await srv.close();
+    }
+  } finally {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("swarm_wait is excluded from activeMs, toolWallMs, toolSumMs, slow_step diagnostics, and userIdleMs; worktrees resolve to main repo; swarm switch trigger is labeled", () => {
+  const t0 = Date.parse("2026-11-25T12:00:00Z");
+  const parsed: ParsedTranscript = {
+    conversationId: "swarm-wait-conv",
+    transcriptPath: "/tmp/swarm-wait.jsonl",
+    title: "Worker check",
+    hasExplicitUserPrompt: false,
+    hasTokenTelemetry: true,
+    startedAtMs: t0,
+    endedAtMs: t0 + 605_000,
+    models: ["gemini-4-neon-high"],
+    slashCommands: [],
+    turns: [
+      {
+        turnIndex: 0,
+        stepIndex: 0,
+        createdAtMs: t0,
+        promptText: "(implicit start)",
+        promptPreview: "(implicit start)",
+        promptBytes: 0,
+        slashCommand: null
+      }
+    ],
+    plannerSteps: [
+      {
+        stepIndex: 1,
+        turnIndex: 0,
+        model: "gemini-4-neon-high",
+        createdAtMs: t0,
+        thinkingChars: 10,
+        contentChars: 20,
+        inputTokens: 1000,
+        cacheReadTokens: 0,
+        outputTokens: 100,
+        totalContextTokens: 1000,
+        toolCallCount: 2,
+        status: "DONE"
+      }
+    ],
+    toolCalls: [
+      {
+        stepIndex: 2,
+        plannerStepIndex: 1,
+        turnIndex: 0,
+        toolCallId: "tc-read",
+        toolName: "read_file",
+        category: "file_read",
+        mcpServer: null,
+        skillName: null,
+        skillPlugin: null,
+        targetPath: "/Users/dev/app/src/index.ts",
+        childConversationId: null,
+        childConversationIds: [],
+        childLinks: [],
+        startedAtMs: t0 + 1000,
+        completedAtMs: t0 + 3000,
+        durationMs: 2000,
+        argsPreview: "/Users/dev/app/src/index.ts",
+        commandPathHints: [],
+        resultBytes: 200,
+        estResultTokens: 50,
+        isError: false,
+        errorPreview: null
+      },
+      {
+        stepIndex: 3,
+        plannerStepIndex: 1,
+        turnIndex: 0,
+        toolCallId: "tc-wait",
+        toolName: "swarm_wait",
+        category: "other",
+        mcpServer: null,
+        skillName: null,
+        skillPlugin: null,
+        targetPath: null,
+        childConversationId: null,
+        childConversationIds: [],
+        childLinks: [],
+        startedAtMs: t0 + 3000,
+        completedAtMs: t0 + 603_000,
+        durationMs: 600_000,
+        argsPreview: "{\"since\":1}",
+        commandPathHints: [],
+        resultBytes: 40,
+        estResultTokens: 10,
+        isError: false,
+        errorPreview: null
+      }
+    ],
+    candidatePaths: [],
+    detectedSwarmRole: "worker"
+  };
+
+  const analyzed = analyzeConversation(parsed, [], {
+    surface: "antigravity",
+    projectPath: "/Users/dev/app",
+    projectSource: "parent",
+    parentConversationId: "coord-1",
+    subagentRole: "worker-1",
+    subagentType: "swarm",
+    swarmRole: "worker"
+  });
+
+  // Model step: t0 -> t0+1000 (1000ms), read_file: 2000ms, swarm_wait (600,000ms) excluded!
+  assert.equal(analyzed.modelMs, 1000);
+  assert.equal(analyzed.toolWallMs, 2000);
+  assert.equal(analyzed.toolSumMs, 2000);
+  assert.equal(analyzed.activeMs, 3000);
+  assert.equal(analyzed.userIdleMs, 0);
+  assert.equal(analyzed.toolCalls.length, 2);
+  assert.equal(
+    analyzed.diagnostics.some((d) => d.category === "slow_step" && d.title.includes("swarm_wait")),
+    false
+  );
+
+  // Worktree .git file resolution back to primary repository root
+  const wtRoot = findProjectRootForPath("/Users/dev/worktrees/wt-1/src/index.ts", {
+    homeDir: "/Users/dev",
+    existsFn: (p) => p === "/Users/dev/worktrees/wt-1/.git",
+    isFileFn: (p) => p === "/Users/dev/worktrees/wt-1/.git",
+    readFileFn: (p) => {
+      if (p === "/Users/dev/worktrees/wt-1/.git") {
+        return "gitdir: /Users/dev/main-repo/.git/worktrees/wt-1\n";
+      }
+      if (p === "/Users/dev/main-repo/.git/worktrees/wt-1/commondir") {
+        return "../..\n";
+      }
+      return null;
+    }
+  });
+  assert.equal(wtRoot, "/Users/dev/main-repo");
+
+  // Swarm model switch trigger label
+  const switches = extractModelSwitches(
+    [
+      {
+        stepIndex: 1,
+        turnIndex: 0,
+        model: "gemini-4-neon-high",
+        createdAtMs: t0,
+        isCacheMiss: false,
+        inputTokens: 1000
+      },
+      {
+        stepIndex: 2,
+        turnIndex: 0,
+        model: "claude-sonnet-5-5-high",
+        createdAtMs: t0 + 1000,
+        isCacheMiss: true,
+        inputTokens: 1200
+      }
+    ],
+    [{ turnIndex: 0, promptPreview: "Run swarm" }],
+    [{ plannerStepIndex: 1, toolName: "swarm" }]
+  );
+  assert.equal(switches.length, 1);
+  assert.equal(switches[0].trigger, "Swarm orchestration / model switch");
 });

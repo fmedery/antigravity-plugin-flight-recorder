@@ -30,19 +30,23 @@ function loadDatabaseSync(): typeof DatabaseSyncType {
 const DatabaseSync = loadDatabaseSync();
 import { DEFAULT_PRICING_RULES } from "../shared/pricing.js";
 import type {
+  ChildConversationLink,
   ConversationDetail,
   ConversationSummary,
   DiagnosticFinding,
   FileTouchRecord,
+  ModelAvailabilitySignal,
   ModelPricingRule,
   PlannerStepRecord,
   ProjectSource,
   SkillToolMetric,
   SurfaceType,
+  SwarmRole,
   ToolCallRecord,
   ToolCategory,
   TurnRecord
 } from "../shared/types.js";
+import { extractUnavailableModelError } from "./transcriptParser.js";
 
 export interface HookEventRow {
   id: number;
@@ -81,6 +85,9 @@ export interface PersistConversationInput {
   parentConversationId: string | null;
   subagentRole: string | null;
   subagentType: string | null;
+  swarmRole?: SwarmRole | null;
+  swarmTitle?: string | null;
+  swarmTasks?: Record<string, string>;
   startedAtMs: number;
   endedAtMs: number;
   terminationReason: string | null;
@@ -105,6 +112,7 @@ export interface PersistConversationInput {
   toolCalls: Array<Omit<ToolCallRecord, "id">>;
   diagnostics: DiagnosticFinding[];
   filesTouched: FileTouchRecord[];
+  modelUnavailableErrors?: Array<{ model: string; tsMs: number; reason: string }>;
   indexedAtMs: number;
 }
 
@@ -163,6 +171,9 @@ export class TrackerDatabase {
         parent_conversation_id TEXT,
         subagent_role TEXT,
         subagent_type TEXT,
+        swarm_role TEXT,
+        swarm_title TEXT,
+        swarm_tasks_json TEXT NOT NULL DEFAULT '{}',
         started_at_ms INTEGER NOT NULL,
         ended_at_ms INTEGER NOT NULL,
         termination_reason TEXT,
@@ -247,6 +258,7 @@ export class TrackerDatabase {
         skill_plugin TEXT,
         target_path TEXT,
         child_conversation_id TEXT,
+        child_conversation_ids_json TEXT NOT NULL DEFAULT '[]',
         started_at_ms INTEGER,
         completed_at_ms INTEGER,
         duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -299,7 +311,17 @@ export class TrackerDatabase {
         cache_read_per_1m REAL NOT NULL,
         output_per_1m REAL NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
+        retired INTEGER,
         sort_order INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS model_error_signals (
+        conversation_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        error_ts_ms INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, model),
+        FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
       );
     `);
 
@@ -344,14 +366,41 @@ export class TrackerDatabase {
         "ALTER TABLE conversations ADD COLUMN has_token_telemetry INTEGER NOT NULL DEFAULT 1;"
       );
     }
+    if (!convCols.some((c) => c.name === "swarm_role")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN swarm_role TEXT;");
+    }
+    if (!convCols.some((c) => c.name === "swarm_title")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN swarm_title TEXT;");
+    }
+    if (!convCols.some((c) => c.name === "swarm_tasks_json")) {
+      this.db.exec(
+        "ALTER TABLE conversations ADD COLUMN swarm_tasks_json TEXT NOT NULL DEFAULT '{}';"
+      );
+    }
+
+    const tcCols = this.db
+      .prepare("PRAGMA table_info(tool_calls)")
+      .all() as Array<{ name: string }>;
+    if (!tcCols.some((c) => c.name === "child_conversation_ids_json")) {
+      this.db.exec(
+        "ALTER TABLE tool_calls ADD COLUMN child_conversation_ids_json TEXT NOT NULL DEFAULT '[]';"
+      );
+    }
+
+    const pricingCols = this.db
+      .prepare("PRAGMA table_info(model_pricing)")
+      .all() as Array<{ name: string }>;
+    if (!pricingCols.some((c) => c.name === "retired")) {
+      this.db.exec("ALTER TABLE model_pricing ADD COLUMN retired INTEGER;");
+    }
 
     const versionRow = this.db
       .prepare("PRAGMA user_version")
       .get() as { user_version: number } | undefined;
-    if (Number(versionRow?.user_version ?? 0) < 6) {
+    if (Number(versionRow?.user_version ?? 0) < 9) {
       this.db.exec(`
         DELETE FROM indexed_files WHERE path LIKE '%transcript%';
-        PRAGMA user_version = 6;
+        PRAGMA user_version = 9;
       `);
     }
   }
@@ -366,8 +415,8 @@ export class TrackerDatabase {
 
     const insert = this.db.prepare(`
       INSERT INTO model_pricing (
-        id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, sort_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, retired, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     DEFAULT_PRICING_RULES.forEach((rule, index) => {
       insert.run(
@@ -378,6 +427,7 @@ export class TrackerDatabase {
         rule.cacheReadPer1M,
         rule.outputPer1M,
         rule.enabled ? 1 : 0,
+        typeof rule.retired === "boolean" ? (rule.retired ? 1 : 0) : null,
         index
       );
     });
@@ -553,7 +603,7 @@ export class TrackerDatabase {
   getPricingRules(): ModelPricingRule[] {
     const rows = this.db
       .prepare(
-        "SELECT id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled FROM model_pricing ORDER BY sort_order ASC, id ASC"
+        "SELECT id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, retired FROM model_pricing ORDER BY sort_order ASC, id ASC"
       )
       .all() as Array<Record<string, unknown>>;
 
@@ -564,7 +614,10 @@ export class TrackerDatabase {
       inputPer1M: Number(r.input_per_1m),
       cacheReadPer1M: Number(r.cache_read_per_1m),
       outputPer1M: Number(r.output_per_1m),
-      enabled: Number(r.enabled) === 1
+      enabled: Number(r.enabled) === 1,
+      ...(r.retired !== null && r.retired !== undefined
+        ? { retired: Number(r.retired) === 1 }
+        : {})
     }));
   }
 
@@ -574,8 +627,8 @@ export class TrackerDatabase {
       this.db.exec("DELETE FROM model_pricing");
       const insert = this.db.prepare(`
         INSERT INTO model_pricing (
-          id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, pattern, label, input_per_1m, cache_read_per_1m, output_per_1m, enabled, retired, sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       rules.forEach((rule, idx) => {
         insert.run(
@@ -586,6 +639,7 @@ export class TrackerDatabase {
           rule.cacheReadPer1M,
           rule.outputPer1M,
           rule.enabled ? 1 : 0,
+          typeof rule.retired === "boolean" ? (rule.retired ? 1 : 0) : null,
           idx
         );
       });
@@ -604,12 +658,13 @@ export class TrackerDatabase {
           INSERT INTO conversations (
             conversation_id, title, surface, transcript_path, project_path, project_source,
             parent_conversation_id, subagent_role, subagent_type,
+            swarm_role, swarm_title, swarm_tasks_json,
             started_at_ms, ended_at_ms, termination_reason,
             models_json, slash_commands_json, skills_used_json, has_live_hooks, has_token_telemetry,
             input_tokens, cache_read_tokens, output_tokens, peak_context_tokens,
             active_ms, model_ms, tool_wall_ms, tool_sum_ms, user_idle_ms, wall_clock_ms,
             error_count, diagnostics_json, files_touched_json, indexed_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(conversation_id) DO UPDATE SET
             title = excluded.title,
             surface = excluded.surface,
@@ -619,6 +674,9 @@ export class TrackerDatabase {
             parent_conversation_id = excluded.parent_conversation_id,
             subagent_role = excluded.subagent_role,
             subagent_type = excluded.subagent_type,
+            swarm_role = excluded.swarm_role,
+            swarm_title = excluded.swarm_title,
+            swarm_tasks_json = excluded.swarm_tasks_json,
             started_at_ms = excluded.started_at_ms,
             ended_at_ms = excluded.ended_at_ms,
             termination_reason = excluded.termination_reason,
@@ -652,6 +710,9 @@ export class TrackerDatabase {
           input.parentConversationId,
           input.subagentRole,
           input.subagentType,
+          input.swarmRole ?? null,
+          input.swarmTitle ?? null,
+          JSON.stringify(input.swarmTasks ?? {}),
           input.startedAtMs,
           input.endedAtMs,
           input.terminationReason,
@@ -679,6 +740,33 @@ export class TrackerDatabase {
       this.db.prepare("DELETE FROM turns WHERE conversation_id = ?").run(input.conversationId);
       this.db.prepare("DELETE FROM planner_steps WHERE conversation_id = ?").run(input.conversationId);
       this.db.prepare("DELETE FROM tool_calls WHERE conversation_id = ?").run(input.conversationId);
+      this.db.prepare("DELETE FROM model_error_signals WHERE conversation_id = ?").run(input.conversationId);
+
+      if (input.modelUnavailableErrors && input.modelUnavailableErrors.length > 0) {
+        const insertErrSignal = this.db.prepare(`
+          INSERT INTO model_error_signals (conversation_id, model, error_ts_ms, reason)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(conversation_id, model) DO UPDATE SET
+            error_ts_ms = CASE
+              WHEN excluded.error_ts_ms >= model_error_signals.error_ts_ms
+              THEN excluded.error_ts_ms
+              ELSE model_error_signals.error_ts_ms
+            END,
+            reason = CASE
+              WHEN excluded.error_ts_ms >= model_error_signals.error_ts_ms
+              THEN excluded.reason
+              ELSE model_error_signals.reason
+            END
+        `);
+        for (const errSig of input.modelUnavailableErrors) {
+          insertErrSignal.run(
+            input.conversationId,
+            errSig.model.trim().toLowerCase(),
+            errSig.tsMs,
+            errSig.reason
+          );
+        }
+      }
 
       const insertTurn = this.db.prepare(`
         INSERT INTO turns (
@@ -741,12 +829,18 @@ export class TrackerDatabase {
         INSERT INTO tool_calls (
           conversation_id, step_index, planner_step_index, turn_index, tool_call_id,
           tool_name, category, mcp_server, skill_name, skill_plugin, target_path,
-          child_conversation_id, started_at_ms, completed_at_ms, duration_ms,
+          child_conversation_id, child_conversation_ids_json, started_at_ms, completed_at_ms, duration_ms,
           args_preview, result_bytes, est_result_tokens, attributed_input_tokens,
           compounded_cache_tokens, is_error, error_preview
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const tc of input.toolCalls) {
+        const serializedLinks =
+          tc.childLinks && tc.childLinks.length > 0
+            ? tc.childLinks
+            : tc.childConversationId
+              ? [{ conversationId: tc.childConversationId, role: null, typeName: null }]
+              : [];
         insertTool.run(
           input.conversationId,
           tc.stepIndex,
@@ -760,6 +854,7 @@ export class TrackerDatabase {
           tc.skillPlugin,
           tc.targetPath,
           tc.childConversationId,
+          JSON.stringify(serializedLinks),
           tc.startedAtMs,
           tc.completedAtMs,
           tc.durationMs,
@@ -860,36 +955,55 @@ export class TrackerDatabase {
     const rows = this.db
       .prepare("SELECT * FROM tool_calls WHERE conversation_id = ? ORDER BY step_index ASC, id ASC")
       .all(conversationId) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
-      id: Number(r.id),
-      stepIndex: Number(r.step_index),
-      plannerStepIndex: Number(r.planner_step_index),
-      turnIndex: Number(r.turn_index),
-      toolCallId: r.tool_call_id ? String(r.tool_call_id) : null,
-      toolName: String(r.tool_name),
-      category: String(r.category) as ToolCategory,
-      mcpServer: r.mcp_server ? String(r.mcp_server) : null,
-      skillName: r.skill_name ? String(r.skill_name) : null,
-      skillPlugin: r.skill_plugin ? String(r.skill_plugin) : null,
-      targetPath: r.target_path ? String(r.target_path) : null,
-      childConversationId: r.child_conversation_id ? String(r.child_conversation_id) : null,
-      startedAtMs:
-        r.started_at_ms !== null && r.started_at_ms !== undefined
-          ? Number(r.started_at_ms)
-          : null,
-      completedAtMs:
-        r.completed_at_ms !== null && r.completed_at_ms !== undefined
-          ? Number(r.completed_at_ms)
-          : null,
-      durationMs: Number(r.duration_ms),
-      argsPreview: String(r.args_preview ?? ""),
-      resultBytes: Number(r.result_bytes),
-      estResultTokens: Number(r.est_result_tokens),
-      attributedInputTokens: Number(r.attributed_input_tokens),
-      compoundedCacheTokens: Number(r.compounded_cache_tokens),
-      isError: Number(r.is_error) === 1,
-      errorPreview: r.error_preview ? String(r.error_preview) : null
-    }));
+    return rows.map((r) => {
+      const childConversationId = r.child_conversation_id
+        ? String(r.child_conversation_id)
+        : null;
+      const parsedLinks = safeJsonParse<ChildConversationLink[]>(
+        r.child_conversation_ids_json,
+        []
+      ).filter((l) => l && typeof l.conversationId === "string" && l.conversationId.length > 0);
+      const childLinks: ChildConversationLink[] =
+        parsedLinks.length > 0
+          ? parsedLinks
+          : childConversationId
+            ? [{ conversationId: childConversationId, role: null, typeName: null }]
+            : [];
+      const childConversationIds = childLinks.map((l) => l.conversationId);
+
+      return {
+        id: Number(r.id),
+        stepIndex: Number(r.step_index),
+        plannerStepIndex: Number(r.planner_step_index),
+        turnIndex: Number(r.turn_index),
+        toolCallId: r.tool_call_id ? String(r.tool_call_id) : null,
+        toolName: String(r.tool_name),
+        category: String(r.category) as ToolCategory,
+        mcpServer: r.mcp_server ? String(r.mcp_server) : null,
+        skillName: r.skill_name ? String(r.skill_name) : null,
+        skillPlugin: r.skill_plugin ? String(r.skill_plugin) : null,
+        targetPath: r.target_path ? String(r.target_path) : null,
+        childConversationId,
+        ...(childConversationIds.length > 0 ? { childConversationIds } : {}),
+        ...(childLinks.length > 0 ? { childLinks } : {}),
+        startedAtMs:
+          r.started_at_ms !== null && r.started_at_ms !== undefined
+            ? Number(r.started_at_ms)
+            : null,
+        completedAtMs:
+          r.completed_at_ms !== null && r.completed_at_ms !== undefined
+            ? Number(r.completed_at_ms)
+            : null,
+        durationMs: Number(r.duration_ms),
+        argsPreview: String(r.args_preview ?? ""),
+        resultBytes: Number(r.result_bytes),
+        estResultTokens: Number(r.est_result_tokens),
+        attributedInputTokens: Number(r.attributed_input_tokens),
+        compoundedCacheTokens: Number(r.compounded_cache_tokens),
+        isError: Number(r.is_error) === 1,
+        errorPreview: r.error_preview ? String(r.error_preview) : null
+      };
+    });
   }
 
   getSubagentLinkMap(): Map<
@@ -898,9 +1012,10 @@ export class TrackerDatabase {
   > {
     const rows = this.db
       .prepare(`
-        SELECT conversation_id, child_conversation_id, args_preview
+        SELECT conversation_id, child_conversation_id, child_conversation_ids_json, args_preview
         FROM tool_calls
-        WHERE child_conversation_id IS NOT NULL AND child_conversation_id != ''
+        WHERE (child_conversation_id IS NOT NULL AND child_conversation_id != '')
+           OR (child_conversation_ids_json IS NOT NULL AND child_conversation_ids_json != '' AND child_conversation_ids_json != '[]')
       `)
       .all() as Array<Record<string, unknown>>;
 
@@ -909,18 +1024,121 @@ export class TrackerDatabase {
       { parentConversationId: string; role: string | null; typeName: string | null }
     >();
     for (const row of rows) {
-      const childId = String(row.child_conversation_id);
       const parentId = String(row.conversation_id);
       const preview = String(row.args_preview ?? "");
       const roleMatch = preview.match(/Role:\s*([^|]+)/i);
       const typeMatch = preview.match(/Type:\s*([^|]+)/i);
-      map.set(childId, {
-        parentConversationId: parentId,
-        role: roleMatch ? roleMatch[1].trim() : null,
-        typeName: typeMatch ? typeMatch[1].trim() : null
-      });
+      const fallbackRole = roleMatch ? roleMatch[1].trim() : null;
+      const fallbackType = typeMatch ? typeMatch[1].trim() : null;
+
+      const parsedLinks = safeJsonParse<ChildConversationLink[]>(
+        row.child_conversation_ids_json,
+        []
+      );
+      const seenInRow = new Set<string>();
+      for (const link of parsedLinks) {
+        if (!link || typeof link.conversationId !== "string" || !link.conversationId) {
+          continue;
+        }
+        seenInRow.add(link.conversationId);
+        map.set(link.conversationId, {
+          parentConversationId: parentId,
+          role: link.role ?? fallbackRole,
+          typeName: link.typeName ?? fallbackType
+        });
+      }
+
+      const legacyChildId = row.child_conversation_id
+        ? String(row.child_conversation_id)
+        : "";
+      if (legacyChildId && !seenInRow.has(legacyChildId)) {
+        map.set(legacyChildId, {
+          parentConversationId: parentId,
+          role: fallbackRole,
+          typeName: fallbackType
+        });
+      }
     }
     return map;
+  }
+
+  getModelAvailabilitySignals(): {
+    signals: Record<string, ModelAvailabilitySignal>;
+    latestGlobalActivityMs: number;
+  } {
+    const signals: Record<string, ModelAvailabilitySignal> = {};
+    let latestGlobalActivityMs = 0;
+
+    const maxConvRow = this.db
+      .prepare("SELECT MAX(ended_at_ms) AS max_ended FROM conversations")
+      .get() as { max_ended?: number | null } | undefined;
+    if (maxConvRow?.max_ended && Number.isFinite(Number(maxConvRow.max_ended))) {
+      latestGlobalActivityMs = Math.max(latestGlobalActivityMs, Number(maxConvRow.max_ended));
+    }
+
+    const seenRows = this.db
+      .prepare(`
+        SELECT LOWER(TRIM(model)) AS model, MAX(created_at_ms) AS last_seen_ms
+        FROM planner_steps
+        WHERE model IS NOT NULL AND TRIM(model) != ''
+        GROUP BY LOWER(TRIM(model))
+      `)
+      .all() as Array<{ model: string; last_seen_ms: number | null }>;
+
+    for (const r of seenRows) {
+      const model = String(r.model || "").trim().toLowerCase();
+      if (!model || model === "unknown" || model === "auto") continue;
+      const lastSeenAtMs = Number(r.last_seen_ms ?? 0);
+      if (lastSeenAtMs > latestGlobalActivityMs) {
+        latestGlobalActivityMs = lastSeenAtMs;
+      }
+      signals[model] = {
+        model,
+        lastSeenAtMs,
+        lastUnavailableErrorAtMs: null,
+        lastUnavailableReason: null
+      };
+    }
+
+    const mergeError = (modelRaw: string, errTsMs: number, reason: string) => {
+      const model = modelRaw.trim().toLowerCase();
+      if (!model || model === "unknown" || model === "auto") return;
+      const existing = signals[model] ?? {
+        model,
+        lastSeenAtMs: 0,
+        lastUnavailableErrorAtMs: null,
+        lastUnavailableReason: null
+      };
+      if (
+        existing.lastUnavailableErrorAtMs === null ||
+        errTsMs >= existing.lastUnavailableErrorAtMs
+      ) {
+        existing.lastUnavailableErrorAtMs = errTsMs;
+        existing.lastUnavailableReason = reason;
+      }
+      signals[model] = existing;
+    };
+
+    const errRows = this.db
+      .prepare(
+        "SELECT LOWER(TRIM(model)) AS model, error_ts_ms, reason FROM model_error_signals ORDER BY error_ts_ms DESC"
+      )
+      .all() as Array<{ model: string; error_ts_ms: number; reason: string }>;
+    for (const r of errRows) {
+      mergeError(String(r.model || ""), Number(r.error_ts_ms ?? 0), String(r.reason ?? ""));
+    }
+
+    const hookErrRows = this.db
+      .prepare("SELECT ts_ms, error FROM hook_events WHERE error IS NOT NULL AND error != ''")
+      .all() as Array<{ ts_ms: number; error: string }>;
+    for (const r of hookErrRows) {
+      const extracted = extractUnavailableModelError(String(r.error || ""));
+      if (extracted) {
+        mergeError(extracted.model, Number(r.ts_ms ?? 0), extracted.reason);
+      }
+    }
+
+    return { signals, latestGlobalActivityMs };
   }
 }
 
@@ -934,6 +1152,9 @@ export interface StoredConversationRow {
   parentConversationId: string | null;
   subagentRole: string | null;
   subagentType: string | null;
+  swarmRole?: SwarmRole | null;
+  swarmTitle?: string | null;
+  swarmTasks?: Record<string, string>;
   startedAtMs: number;
   endedAtMs: number;
   terminationReason: string | null;
@@ -955,6 +1176,7 @@ export interface StoredConversationRow {
   errorCount: number;
   diagnostics: DiagnosticFinding[];
   filesTouched: FileTouchRecord[];
+  modelUnavailableErrors?: Array<{ model: string; tsMs: number; reason: string }>;
   indexedAtMs: number;
 }
 
@@ -969,6 +1191,12 @@ function mapStoredConversationRow(r: Record<string, unknown>): StoredConversatio
     parentConversationId: r.parent_conversation_id ? String(r.parent_conversation_id) : null,
     subagentRole: r.subagent_role ? String(r.subagent_role) : null,
     subagentType: r.subagent_type ? String(r.subagent_type) : null,
+    swarmRole:
+      r.swarm_role === "coordinator" || r.swarm_role === "worker"
+        ? r.swarm_role
+        : null,
+    swarmTitle: r.swarm_title ? String(r.swarm_title) : null,
+    swarmTasks: safeJsonParse<Record<string, string>>(r.swarm_tasks_json, {}),
     startedAtMs: Number(r.started_at_ms),
     endedAtMs: Number(r.ended_at_ms),
     terminationReason: r.termination_reason ? String(r.termination_reason) : null,

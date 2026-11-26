@@ -29,6 +29,7 @@ import type {
   DashboardData,
   SkillToolMetric,
   SurfaceType,
+  SwarmRole,
   TimeSummary,
   TokenSummary,
   ToolCallRecord,
@@ -41,7 +42,7 @@ import type {
   StoredConversationRow,
   TrackerDatabase
 } from "./db.js";
-import type { ParsedTranscript } from "./transcriptParser.js";
+import { isIdleWaitTool, type ParsedTranscript } from "./transcriptParser.js";
 import {
   addErrorSample,
   clearInstalledPluginsCache,
@@ -77,6 +78,9 @@ export interface AnalyzeMeta {
   parentConversationId: string | null;
   subagentRole: string | null;
   subagentType: string | null;
+  swarmRole?: SwarmRole | null;
+  swarmTitle?: string | null;
+  swarmTasks?: Record<string, string>;
 }
 
 interface Interval {
@@ -152,6 +156,55 @@ export function analyzeConversation(
     }
   }
 
+  // Resolve missing step models using hookEvents[].modelName before falling back to settings_change/unknown.
+  const usableHookModels = hookEvents
+    .map((h) => ({
+      tsMs: h.tsMs,
+      stepIdx: h.stepIdx,
+      cleanModel: typeof h.modelName === "string" ? h.modelName.trim() : ""
+    }))
+    .filter((h) => {
+      const lower = h.cleanModel.toLowerCase();
+      return Boolean(lower && lower !== "auto" && lower !== "unknown");
+    });
+
+  const resolvedPlannerSteps = parsed.plannerSteps.map((step) => {
+    const trimmed = typeof step.model === "string" ? step.model.trim() : "";
+    const isExactTranscriptModel =
+      step.modelSource === "transcript" ||
+      (step.modelSource === undefined &&
+        trimmed.length > 0 &&
+        trimmed !== "unknown");
+    if (isExactTranscriptModel) {
+      return { ...step, model: trimmed };
+    }
+
+    let hookMatchModel: string | null = null;
+    let bestStepTs = Number.NEGATIVE_INFINITY;
+    for (const hm of usableHookModels) {
+      if (hm.stepIdx === step.stepIndex && hm.tsMs >= bestStepTs) {
+        bestStepTs = hm.tsMs;
+        hookMatchModel = hm.cleanModel;
+      }
+    }
+    if (!hookMatchModel && step.createdAtMs > 0) {
+      let bestTimeTs = Number.NEGATIVE_INFINITY;
+      for (const hm of usableHookModels) {
+        if (hm.tsMs > 0 && hm.tsMs <= step.createdAtMs + 5000 && hm.tsMs >= bestTimeTs) {
+          bestTimeTs = hm.tsMs;
+          hookMatchModel = hm.cleanModel;
+        }
+      }
+    }
+
+    const resolvedModel =
+      hookMatchModel ??
+      (step.modelSource === "settings_change" && trimmed && trimmed !== "unknown"
+        ? trimmed
+        : "unknown");
+    return { ...step, model: resolvedModel };
+  });
+
   // First pass on planner steps: detect cache misses.
   const plannerStepsAnalyzed: Array<
     Omit<PlannerStepRecord, "estimatedCostUsd"> & {
@@ -159,9 +212,9 @@ export function analyzeConversation(
     }
   > = [];
 
-  for (let i = 0; i < parsed.plannerSteps.length; i++) {
-    const step = parsed.plannerSteps[i];
-    const prev = i > 0 ? parsed.plannerSteps[i - 1] : null;
+  for (let i = 0; i < resolvedPlannerSteps.length; i++) {
+    const step = resolvedPlannerSteps[i];
+    const prev = i > 0 ? resolvedPlannerSteps[i - 1] : null;
     const prevContext = prev ? prev.totalContextTokens : 0;
 
     let isCacheMiss = false;
@@ -231,6 +284,8 @@ export function analyzeConversation(
     skillPlugin: tc.skillPlugin,
     targetPath: tc.targetPath,
     childConversationId: tc.childConversationId,
+    childConversationIds: tc.childConversationIds,
+    childLinks: tc.childLinks,
     startedAtMs: tc.startedAtMs,
     completedAtMs: tc.completedAtMs,
     durationMs: tc.durationMs,
@@ -385,7 +440,12 @@ export function analyzeConversation(
 
     const modelMs = tSteps.reduce((sum, s) => sum + s.modelDurationMs, 0);
     const toolIntervals: Interval[] = tTools
-      .filter((tc) => tc.startedAtMs !== null && tc.startedAtMs > 0)
+      .filter(
+        (tc) =>
+          !isIdleWaitTool(tc.toolName) &&
+          tc.startedAtMs !== null &&
+          tc.startedAtMs > 0
+      )
       .map((tc) => ({
         start: tc.startedAtMs!,
         end: Math.max(tc.startedAtMs!, tc.completedAtMs ?? tc.startedAtMs! + tc.durationMs)
@@ -482,7 +542,9 @@ export function analyzeConversation(
 
   const modelMs = turnRecords.reduce((s, t) => s + t.modelMs, 0);
   const toolWallMs = turnRecords.reduce((s, t) => s + t.toolWallMs, 0);
-  const toolSumMs = analyzedTools.reduce((s, tc) => s + tc.durationMs, 0);
+  const toolSumMs = analyzedTools
+    .filter((tc) => !isIdleWaitTool(tc.toolName))
+    .reduce((s, tc) => s + tc.durationMs, 0);
   const userIdleMs =
     turnRecords.reduce((s, t) => s + t.userIdleBeforeMs, 0) + extraApprovalIdleMs;
   const startedAtMs =
@@ -526,6 +588,17 @@ export function analyzeConversation(
     }
   }
 
+  const resolvedModels =
+    plannerStepsAnalyzed.length > 0
+      ? Array.from(
+          new Set(
+            plannerStepsAnalyzed
+              .map((p) => p.model)
+              .filter((m) => m && m !== "unknown")
+          )
+        )
+      : parsed.models;
+
   return {
     conversationId: parsed.conversationId,
     title,
@@ -536,10 +609,13 @@ export function analyzeConversation(
     parentConversationId: meta.parentConversationId,
     subagentRole: meta.subagentRole,
     subagentType: meta.subagentType,
+    swarmRole: meta.swarmRole ?? null,
+    swarmTitle: meta.swarmTitle ?? null,
+    swarmTasks: meta.swarmTasks,
     startedAtMs,
     endedAtMs,
     terminationReason,
-    models: parsed.models,
+    models: resolvedModels,
     slashCommands: parsed.slashCommands,
     skillsUsed,
     hasLiveHooks: hookEvents.length > 0,
@@ -560,6 +636,7 @@ export function analyzeConversation(
     toolCalls: analyzedTools,
     diagnostics,
     filesTouched,
+    modelUnavailableErrors: parsed.modelUnavailableErrors ?? [],
     indexedAtMs: Date.now()
   };
 }
@@ -629,7 +706,7 @@ function buildDiagnostics(
     ms: number;
   }> = [];
   for (const tc of toolCalls) {
-    if (tc.durationMs >= 1500) {
+    if (tc.durationMs >= 1500 && !isIdleWaitTool(tc.toolName)) {
       slowestCandidates.push({
         id: `slow-tc-${tc.stepIndex}-${tc.toolName}`,
         title: `Slow tool: ${tc.toolName}${tc.argsPreview ? ` (${tc.argsPreview.slice(0, 48)})` : ""}`,
@@ -1389,10 +1466,9 @@ export function extractModelSwitches(
       trigger = "Plan → Execute handoff (exit_plan_mode)";
     } else if (prevTools.includes("enter_plan_mode")) {
       trigger = "Entered Plan Mode (enter_plan_mode)";
-    } else if (
-      prevTools.includes("invoke_subagent") ||
-      prevTools.includes("swarm")
-    ) {
+    } else if (prevTools.includes("swarm")) {
+      trigger = "Swarm orchestration / model switch";
+    } else if (prevTools.includes("invoke_subagent")) {
       trigger = "Orchestrator delegation step";
     } else if (curr.turnIndex > prev.turnIndex) {
       const prompt = turnMap.get(curr.turnIndex);
@@ -1445,6 +1521,8 @@ export function buildConversationSummary(
     parentConversationId: row.parentConversationId,
     subagentRole: row.subagentRole,
     subagentType: row.subagentType,
+    swarmRole: row.swarmRole ?? null,
+    swarmTitle: row.swarmTitle ?? null,
     startedAtMs: row.startedAtMs,
     endedAtMs: row.endedAtMs,
     terminationReason: row.terminationReason,
@@ -1526,10 +1604,16 @@ export function buildConversationDetail(
   });
 
   const subagentEffInputs: ConversationEfficiencyInput[] = [];
+  const subagentSteps: Array<
+    Omit<PlannerStepRecord, "estimatedCostUsd"> & { conversationId?: string }
+  > = [];
   const subagents = subagentRows.map((child) => {
     const cSteps = db.getPlannerStepsForConversation(child.conversationId);
     const cTools = db.getToolCallsForConversation(child.conversationId);
     const cTurns = db.getTurnsForConversation(child.conversationId);
+    for (const st of cSteps) {
+      subagentSteps.push({ ...st, conversationId: child.conversationId });
+    }
     subagentEffInputs.push({
       conversationId: child.conversationId,
       title: child.title,
@@ -1557,6 +1641,25 @@ export function buildConversationDetail(
     pricingRules,
     subagentRows
   );
+
+  const subagentModelBreakdown =
+    subagentSteps.length > 0
+      ? aggregateModelUsage(subagentSteps, pricingRules, subagentRows.length)
+      : [];
+  const combinedModelBreakdown =
+    subagentSteps.length > 0
+      ? aggregateModelUsage(
+          [
+            ...rawSteps.map((st) => ({
+              ...st,
+              conversationId: row.conversationId
+            })),
+            ...subagentSteps
+          ],
+          pricingRules,
+          1 + subagentRows.length
+        )
+      : summary.modelBreakdown;
 
   const skillToolMetrics = aggregateSkillToolMetrics(
     toolCalls.map((tc) => ({
@@ -1600,19 +1703,31 @@ export function buildConversationDetail(
     chatEff.diagnosticsByConv.get(row.conversationId) ?? row.diagnostics;
 
   const modelSwitches = extractModelSwitches(plannerSteps, turns, toolCalls);
+  const combinedTokens =
+    subagents.length > 0
+      ? mergeTokenSummaries([summary.tokens, ...subagents.map((s) => s.tokens)])
+      : undefined;
+  const swarmTasks =
+    row.swarmTasks && Object.keys(row.swarmTasks).length > 0
+      ? row.swarmTasks
+      : undefined;
 
   return {
     summary,
     turns,
     plannerSteps,
     modelSwitches,
+    combinedModelBreakdown,
+    subagentModelBreakdown,
     toolCalls,
     skillToolMetrics,
     pluginSkillMetrics: chatEff.pluginSkillMetrics,
     filesTouched: row.filesTouched,
     diagnostics: liveDiagnostics,
     subagents,
-    scopeActiveMs: chatEff.scopeActiveMs
+    scopeActiveMs: chatEff.scopeActiveMs,
+    ...(swarmTasks ? { swarmTasks } : {}),
+    ...(combinedTokens ? { combinedTokens } : {})
   };
 }
 
@@ -1775,7 +1890,7 @@ function countCompactionEvents(
 
 function computeProjectActiveMs(
   steps: Array<Pick<PlannerStepRecord, "createdAtMs" | "completedAtMs" | "modelDurationMs">>,
-  tools: Array<Pick<ToolCallRecord, "startedAtMs" | "completedAtMs" | "durationMs">>,
+  tools: Array<Pick<ToolCallRecord, "toolName" | "startedAtMs" | "completedAtMs" | "durationMs">>,
   fallbackTopActiveMsList: number[]
 ): number {
   const activeIntervals: Interval[] = [];
@@ -1789,6 +1904,7 @@ function computeProjectActiveMs(
     }
   }
   for (const tc of tools) {
+    if (isIdleWaitTool(tc.toolName)) continue;
     if (tc.startedAtMs !== null && tc.startedAtMs > 0) {
       const end = Math.max(
         tc.startedAtMs,
@@ -2113,6 +2229,7 @@ export function buildProjectDetail(
         projectName: projectDisplayName(projectPath),
         chatCount: 0,
         subagentCount: 0,
+        swarmCount: 0,
         firstActivityMs: 0,
         lastActivityMs: 0,
         models: [],
@@ -2305,11 +2422,16 @@ export function buildProjectDetail(
     .sort((a, b) => (b.impactTokens ?? 0) - (a.impactTokens ?? 0))
     .slice(0, 12);
 
+  const swarmCount = projectRows.filter(
+    (r) => r.swarmRole === "coordinator"
+  ).length;
+
   const summary: ProjectSummary = {
     projectPath,
     projectName: projectDisplayName(projectPath),
     chatCount: topLevel.length,
     subagentCount: subagents.length,
+    swarmCount,
     firstActivityMs,
     lastActivityMs,
     models,
@@ -2402,6 +2524,7 @@ export function buildDashboardData(
   const totalActiveMs = projects.reduce((s, p) => s + p.time.activeMs, 0);
   const totalChatCount = projects.reduce((s, p) => s + p.chatCount, 0);
   const totalSubagentCount = projects.reduce((s, p) => s + p.subagentCount, 0);
+  const totalSwarmCount = projects.reduce((s, p) => s + (p.swarmCount ?? 0), 0);
   const totalCompactionEvents = projects.reduce(
     (sum, p) => sum + p.contextHealth.compactionEventCount,
     0
@@ -2480,6 +2603,8 @@ export function buildDashboardData(
 
   const totalToolWall = projects.reduce((s, p) => s + p.time.toolWallMs, 0);
   const totalToolSum = projects.reduce((s, p) => s + p.time.toolSumMs, 0);
+  const { signals: modelSignals, latestGlobalActivityMs } =
+    db.getModelAvailabilitySignals();
 
   return {
     generatedAtMs: Date.now(),
@@ -2495,6 +2620,7 @@ export function buildDashboardData(
       projectCount: projects.length,
       chatCount: totalChatCount,
       subagentCount: totalSubagentCount,
+      swarmCount: totalSwarmCount,
       tokens: totalsTokens,
       time: {
         activeMs: totalActiveMs,
@@ -2517,6 +2643,8 @@ export function buildDashboardData(
     pluginSkillMetrics,
     recentChats,
     pricingRules,
-    unpricedModels: totalsTokens.unpricedModels
+    unpricedModels: totalsTokens.unpricedModels,
+    modelSignals,
+    latestGlobalActivityMs
   };
 }

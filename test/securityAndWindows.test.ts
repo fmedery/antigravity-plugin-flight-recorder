@@ -35,6 +35,7 @@ import {
   buildErrorTroubleshootingPrompt,
   describeErrorBadge,
   describePluginWarning,
+  fmtRelativeAge,
   fmtUsd,
   fmtUsdCompact,
   groupProjectChats,
@@ -493,19 +494,35 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(readme, /Download ZIP/i);
     assert.match(readme, /agy plugin install/);
 
-    // 4. Server version & plain .mjs script syntax checks (no TypeScript syntax in .mjs!)
+    // 4. Server version, lockfile parity, exact dist/ markers, & plain .mjs script syntax checks
     const expectedPluginVersion = JSON.parse(
       fs.readFileSync(path.join(repoRoot, "plugin.json"), "utf8")
     ).version;
-    const expectedPackageVersion = JSON.parse(
+    const pkgJson = JSON.parse(
       fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")
-    ).version;
-    assert.equal(expectedPackageVersion, expectedPluginVersion);
+    );
+    const lockJson = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "package-lock.json"), "utf8")
+    );
+    assert.equal(pkgJson.version, expectedPluginVersion);
+    assert.equal(pkgJson.name, pluginJson.name);
+    assert.equal(lockJson.version, expectedPluginVersion);
+    assert.equal(lockJson.name, pluginJson.name);
+    assert.equal(lockJson.packages?.[""]?.version, expectedPluginVersion);
+    assert.equal(lockJson.packages?.[""]?.name, pluginJson.name);
     assert.equal(client.getServerVersion()?.version, expectedPluginVersion);
+    assert.ok(
+      serverCode.includes(`/* flight-recorder v${expectedPluginVersion} */`),
+      `Expected dist/server/index.js banner to match v${expectedPluginVersion}`
+    );
     for (const mjsRel of [
       "scripts/install-plugin.mjs",
       "scripts/build-server.mjs",
+      "scripts/version-utils.mjs",
+      "scripts/check-version.mjs",
       "scripts/bump-version.mjs",
+      "scripts/extract-changelog.mjs",
+      "scripts/release.mjs",
       "hooks/record-event.mjs"
     ]) {
       const chk = spawnSync(process.execPath, ["--check", path.join(repoRoot, mjsRel)], {
@@ -544,8 +561,10 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(uiHtml, /app_check_update/);
     assert.match(uiHtml, /app-version/);
     assert.ok(
-      uiHtml.includes(String(pluginJson.version)),
-      `Expected UI bundle to include version ${pluginJson.version}`
+      uiHtml.includes(
+        `<meta name="flight-recorder-version" content="${String(pluginJson.version)}"`
+      ),
+      `Expected UI bundle meta tag to match version ${pluginJson.version}`
     );
     assert.doesNotMatch(uiHtml, /Copy Optimization Prompt|Optimize With Agent/);
     assert.match(uiHtml, /time-range-toolbar/);
@@ -656,13 +675,13 @@ test("Windows backslash SKILL.md paths, JSON/custom *_TOKEN redaction, SQLite v6
     );
     assert.equal(eff.pluginSkillMetrics[0]?.children[0]?.duplicateReads, 1);
 
-    // 3. SQLite PRAGMA user_version === 6 + Windows case/slash/URI MCP projectPath lookup
+    // 3. SQLite PRAGMA user_version === 9 + Windows case/slash/URI MCP projectPath lookup
     const db = new TrackerDatabase(path.join(tmp, "db"));
     try {
       const ver = db.db.prepare("PRAGMA user_version").get() as {
         user_version: number;
       };
-      assert.equal(ver.user_version, 6);
+      assert.equal(ver.user_version, 9);
 
       db.upsertConversation(
         analyzeConversation(
@@ -932,4 +951,15 @@ test("fmtUsdCompact omits est. suffix while fmtUsd preserves prose estimate word
   assert.equal(fmtUsdCompact(0.0042), "$0.0042");
   assert.equal(fmtUsdCompact(9.28), "$9.28");
   assert.equal(fmtUsd(9.28), "$9.28 est.");
+});
+
+test("fmtRelativeAge formats recent scan timestamps clearly", () => {
+  const now = 1_795_000_000_000;
+  assert.equal(fmtRelativeAge(null, now), "");
+  assert.equal(fmtRelativeAge(0, now), "");
+  assert.equal(fmtRelativeAge(now - 3_000, now), "just now");
+  assert.equal(fmtRelativeAge(now - 25_000, now), "25s ago");
+  assert.equal(fmtRelativeAge(now - 5 * 60_000, now), "5m ago");
+  assert.equal(fmtRelativeAge(now - 2 * 3_600_000, now), "2h ago");
+  assert.notEqual(fmtRelativeAge(now - 48 * 3_600_000, now), "—");
 });

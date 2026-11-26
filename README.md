@@ -287,8 +287,10 @@ If you're modifying Flight Recorder's TypeScript or React source:
 npm install
 npm run build          # Type-checks & bundles dist/server/index.js + dist/ui/index.html
 npm test               # Unit, Windows path, security, and zero-node_modules stdio tests
-npm run install-plugin # Links this checkout into ~/.gemini/config/plugins/flight-recorder (junction on Windows)
-npm run version:bump -- patch  # Bumps plugin.json + package.json (patch | minor | major | X.Y.Z)
+npm run install-plugin         # Links this checkout into ~/.gemini/config/plugins/flight-recorder (junction on Windows)
+npm run version:check          # Verifies plugin.json, package.json, package-lock.json, and dist/ version parity
+npm run version:bump -- patch  # Bumps plugin.json + package.json + package-lock.json (patch | minor | major | X.Y.Z[-pre.N])
+npm run release -- minor --dry-run  # Previews bump, CHANGELOG.md entry, build, tests, validation, and git tag
 ```
 
 Remember to commit the rebuilt `dist/` — users run the prebuilt bundles directly.

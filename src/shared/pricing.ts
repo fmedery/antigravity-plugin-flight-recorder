@@ -1,4 +1,27 @@
-import type { ModelPricingRule } from "./types.js";
+import type {
+  ModelAvailabilitySignal,
+  ModelAvailabilityStatus,
+  ModelPricingRule
+} from "./types.js";
+
+export const MODEL_INACTIVE_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const DEFAULT_RETIRED_MODEL_PATTERNS: readonly string[] = [
+  "gemini-1.*",
+  "gemini-2.0-*",
+  "gemini-2.5-*",
+  "gemini-3.*",
+  "gemini-3-*",
+  "gemini-4-argon*",
+  "claude-3*",
+  "claude-sonnet-4*",
+  "claude-opus-4*"
+];
+
+export function isUnpriceablePlaceholderModel(model: string): boolean {
+  const normalized = (model || "").trim().toLowerCase();
+  return !normalized || normalized === "auto" || normalized === "unknown";
+}
 
 export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
   {
@@ -8,7 +31,8 @@ export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
     inputPer1M: 1.25,
     cacheReadPer1M: 0.3125,
     outputPer1M: 10.0,
-    enabled: true
+    enabled: true,
+    retired: true
   },
   {
     id: "gemini-2.5-flash",
@@ -17,7 +41,8 @@ export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
     inputPer1M: 0.15,
     cacheReadPer1M: 0.0375,
     outputPer1M: 0.6,
-    enabled: true
+    enabled: true,
+    retired: true
   },
   {
     id: "gemini-2.0-flash",
@@ -26,7 +51,8 @@ export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
     inputPer1M: 0.1,
     cacheReadPer1M: 0.025,
     outputPer1M: 0.4,
-    enabled: true
+    enabled: true,
+    retired: true
   },
   {
     id: "claude-sonnet-4",
@@ -35,7 +61,8 @@ export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
     inputPer1M: 3.0,
     cacheReadPer1M: 0.3,
     outputPer1M: 15.0,
-    enabled: true
+    enabled: true,
+    retired: true
   },
   {
     id: "claude-opus-4",
@@ -44,7 +71,8 @@ export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
     inputPer1M: 15.0,
     cacheReadPer1M: 1.5,
     outputPer1M: 75.0,
-    enabled: true
+    enabled: true,
+    retired: true
   }
 ];
 
@@ -84,33 +112,130 @@ function wildcardMatch(text: string, rawPattern: string): boolean {
   return pIdx === pat.length;
 }
 
-export function matchPricingRule(
-  model: string,
-  rules: ModelPricingRule[]
-): ModelPricingRule | null {
-  const normalized = (model || "").trim().toLowerCase();
-  if (!normalized || normalized === "auto" || normalized === "unknown") {
-    return null;
-  }
+export function matchesModelPattern(model: string, pattern: string): boolean {
+  const cleanModel = (model || "").trim().toLowerCase();
+  const cleanPat = (pattern || "").trim().toLowerCase();
+  if (!cleanModel || !cleanPat) return false;
+  return wildcardMatch(cleanModel, cleanPat);
+}
 
-  // Exact match first, then longest specific pattern match.
-  const enabled = rules.filter((r) => r.enabled && r.pattern.trim().length > 0);
-  const exact = enabled.find(
-    (r) => r.pattern.trim().toLowerCase() === normalized
+function findBestRuleMatch(
+  normalizedModel: string,
+  candidates: ModelPricingRule[]
+): ModelPricingRule | null {
+  const nonEmpty = candidates.filter((r) => r.pattern.trim().length > 0);
+  const exact = nonEmpty.find(
+    (r) => r.pattern.trim().toLowerCase() === normalizedModel
   );
   if (exact) {
     return exact;
   }
 
-  const sorted = [...enabled].sort(
+  const sorted = [...nonEmpty].sort(
     (a, b) => b.pattern.replace(/\*/g, "").length - a.pattern.replace(/\*/g, "").length
   );
   for (const rule of sorted) {
-    if (wildcardMatch(normalized, rule.pattern)) {
+    if (wildcardMatch(normalizedModel, rule.pattern)) {
       return rule;
     }
   }
   return null;
+}
+
+export function isDefaultRetiredModelPattern(modelOrPattern: string): boolean {
+  const normalized = (modelOrPattern || "").trim().toLowerCase();
+  if (isUnpriceablePlaceholderModel(normalized)) {
+    return false;
+  }
+  return DEFAULT_RETIRED_MODEL_PATTERNS.some((pat) =>
+    wildcardMatch(normalized, pat)
+  );
+}
+
+export function getModelAvailability(
+  model: string,
+  rules: ModelPricingRule[] = [],
+  signals?: Record<string, ModelAvailabilitySignal>,
+  latestGlobalActivityMs = 0
+): ModelAvailabilityStatus {
+  if (isUnpriceablePlaceholderModel(model)) {
+    return { status: "active", badge: null, reason: null };
+  }
+  const normalized = model.trim().toLowerCase();
+  const matched = findBestRuleMatch(normalized, rules);
+  if (matched?.retired === true) {
+    return {
+      status: "retired",
+      badge: "Retired",
+      reason: "Marked as retired / no longer available"
+    };
+  }
+  if (matched?.retired === false) {
+    return { status: "active", badge: null, reason: null };
+  }
+
+  if (isDefaultRetiredModelPattern(normalized)) {
+    return {
+      status: "retired",
+      badge: "Retired",
+      reason: "Legacy model family — no longer available"
+    };
+  }
+
+  const sig = signals?.[normalized];
+  if (
+    sig &&
+    sig.lastUnavailableErrorAtMs !== null &&
+    sig.lastUnavailableErrorAtMs > sig.lastSeenAtMs
+  ) {
+    return {
+      status: "unavailable",
+      badge: "Unavailable",
+      reason: `Auto-detected: server reported unavailable (${sig.lastUnavailableReason || "model error"})`
+    };
+  }
+
+  if (
+    latestGlobalActivityMs > 0 &&
+    sig &&
+    sig.lastSeenAtMs > 0 &&
+    latestGlobalActivityMs - sig.lastSeenAtMs >= MODEL_INACTIVE_THRESHOLD_MS
+  ) {
+    const days = Math.floor(
+      (latestGlobalActivityMs - sig.lastSeenAtMs) / (24 * 60 * 60 * 1000)
+    );
+    return {
+      status: "inactive",
+      badge: "Inactive",
+      reason: `Not used for ${days}d before latest activity — may no longer be available`
+    };
+  }
+
+  return { status: "active", badge: null, reason: null };
+}
+
+export function isModelRetired(
+  model: string,
+  rules: ModelPricingRule[] = [],
+  signals?: Record<string, ModelAvailabilitySignal>,
+  latestGlobalActivityMs = 0
+): boolean {
+  return (
+    getModelAvailability(model, rules, signals, latestGlobalActivityMs).status !==
+    "active"
+  );
+}
+
+export function matchPricingRule(
+  model: string,
+  rules: ModelPricingRule[]
+): ModelPricingRule | null {
+  if (isUnpriceablePlaceholderModel(model)) {
+    return null;
+  }
+  const normalized = model.trim().toLowerCase();
+  const enabled = rules.filter((r) => r.enabled && r.pattern.trim().length > 0);
+  return findBestRuleMatch(normalized, enabled);
 }
 
 export interface StepCostEstimate {
@@ -187,10 +312,8 @@ export function aggregateCosts(
   for (const step of steps) {
     const est = estimateStepCost(step, step.model, rules);
     if (est.unpriced || est.totalUsd === null) {
-      if (step.model && step.model.trim()) {
+      if (!isUnpriceablePlaceholderModel(step.model)) {
         unpricedSet.add(step.model.trim());
-      } else {
-        unpricedSet.add("unknown");
       }
     } else {
       anyPriced = true;

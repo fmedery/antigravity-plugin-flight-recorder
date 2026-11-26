@@ -396,3 +396,315 @@ test("full scanner + parent/subagent linkage + MCP server tools/resources + CSP 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("end-to-end Swarm coordinator + plan.json + multi-worker linkage + isolated workspace + swarm_wait + MCP output", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-swarm-int-"));
+  const brainDir = path.join(tmpDir, "brain");
+  const dataDir = path.join(tmpDir, "data");
+  const eventsPath = path.join(dataDir, "events.jsonl");
+
+  const coordId = "cccccccc-1111-2222-3333-444444444440";
+  const worker1Id = "cccccccc-1111-2222-3333-444444444441";
+  const worker2Id = "cccccccc-1111-2222-3333-444444444442";
+
+  const coordLogDir = path.join(brainDir, coordId, ".system_generated", "logs");
+  const coordSwarmDir = path.join(brainDir, coordId, ".system_generated", "swarm");
+  const w1LogDir = path.join(brainDir, worker1Id, ".system_generated", "logs");
+  const w2LogDir = path.join(brainDir, worker2Id, ".system_generated", "logs");
+  fs.mkdirSync(coordLogDir, { recursive: true });
+  fs.mkdirSync(coordSwarmDir, { recursive: true });
+  fs.mkdirSync(w1LogDir, { recursive: true });
+  fs.mkdirSync(w2LogDir, { recursive: true });
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  fs.writeFileSync(
+    path.join(coordSwarmDir, "plan.json"),
+    JSON.stringify({
+      goal: { title: "Refactor auth module", line: "Split and test auth." },
+      tasks: {
+        "worker-1": "Refactor auth handlers",
+        "worker-2": "Add integration tests"
+      },
+      threads: [
+        {
+          id: "t-auth",
+          title: "Auth refactor",
+          goal: "Clean modular auth",
+          tasks: ["worker-1", "worker-2"]
+        }
+      ]
+    }),
+    "utf8"
+  );
+
+  const coordLines = [
+    {
+      step_index: 0,
+      source: "USER_EXPLICIT",
+      type: "USER_INPUT",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:00Z",
+      content: "<USER_REQUEST>\n/swarm Refactor auth module\n</USER_REQUEST>"
+    },
+    {
+      step_index: 1,
+      source: "MODEL",
+      type: "PLANNER_RESPONSE",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:00Z",
+      model: "gemini-4-neon-high",
+      input_tokens: 10_000,
+      cache_read_tokens: 0,
+      output_tokens: 400,
+      tool_calls: [
+        {
+          id: "sw-title",
+          name: "swarm",
+          args: { action: "title", title: "Refactor auth" }
+        },
+        {
+          id: "sw-add",
+          name: "swarm",
+          args: {
+            action: "add",
+            name: "worker",
+            tasks: ["auth", "tests"],
+            workspace: "share"
+          }
+        }
+      ]
+    },
+    {
+      step_index: 2,
+      source: "MODEL",
+      type: "GENERIC",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:01Z",
+      content: "Created At: 2026-11-25T15:00:01Z\nCompleted At: 2026-11-25T15:00:02Z\nTitle set."
+    },
+    {
+      step_index: 3,
+      source: "MODEL",
+      type: "GENERIC",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:02Z",
+      content: `Created At: 2026-11-25T15:00:02Z\nCompleted At: 2026-11-25T15:00:04Z\nworker-1 conversationId: ${worker1Id}\nworker-2 conversationId: ${worker2Id}`
+    }
+  ];
+
+  const w1Lines = [
+    {
+      step_index: 0,
+      source: "SYSTEM",
+      type: "SYSTEM_MESSAGE",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:03Z",
+      content: "<swarm_worker>\nHandle auth refactor.\n</swarm_worker>"
+    },
+    {
+      step_index: 1,
+      source: "MODEL",
+      type: "PLANNER_RESPONSE",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:04Z",
+      model: "gemini-4-neon-high",
+      input_tokens: 4_000,
+      cache_read_tokens: 0,
+      output_tokens: 200,
+      tool_calls: [
+        { id: "w1-read", name: "read_file", args: { Path: "/Users/dev/swarm-repo/src/auth.ts" } }
+      ]
+    },
+    {
+      step_index: 2,
+      source: "MODEL",
+      type: "GENERIC",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:05Z",
+      content: "Created At: 2026-11-25T15:00:05Z\nCompleted At: 2026-11-25T15:00:07Z\nexport const auth = true;"
+    }
+  ];
+
+  const w2Lines = [
+    {
+      step_index: 0,
+      source: "SYSTEM",
+      type: "SYSTEM_MESSAGE",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:03Z",
+      content: "<swarm_worker>\nHandle tests.\n</swarm_worker>"
+    },
+    {
+      step_index: 1,
+      source: "MODEL",
+      type: "PLANNER_RESPONSE",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:04Z",
+      model: "gemini-2.5-flash",
+      input_tokens: 3_000,
+      cache_read_tokens: 0,
+      output_tokens: 150,
+      tool_calls: [
+        { id: "w2-board", name: "read_board", args: { since: 0 } },
+        { id: "w2-wait", name: "swarm_wait", args: { since: 1 } }
+      ]
+    },
+    {
+      step_index: 2,
+      source: "MODEL",
+      type: "GENERIC",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:05Z",
+      content: "Created At: 2026-11-25T15:00:05Z\nCompleted At: 2026-11-25T15:00:06Z\n[]"
+    },
+    {
+      step_index: 3,
+      source: "MODEL",
+      type: "GENERIC",
+      status: "DONE",
+      created_at: "2026-11-25T15:00:06Z",
+      content: "Created At: 2026-11-25T15:00:06Z\nCompleted At: 2026-11-25T15:05:06Z\nMessage posted"
+    }
+  ];
+
+  fs.writeFileSync(
+    path.join(coordLogDir, "transcript_full.jsonl"),
+    coordLines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(w1LogDir, "transcript_full.jsonl"),
+    w1Lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(w2LogDir, "transcript_full.jsonl"),
+    w2Lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+    "utf8"
+  );
+
+  // Worker 1 reports an isolated share worktree path in hooks — should still fold under coordinator's project!
+  fs.writeFileSync(
+    eventsPath,
+    [
+      JSON.stringify({
+        tsMs: Date.parse("2026-11-25T15:00:00Z"),
+        hookEventName: "SessionStart",
+        conversationId: coordId,
+        workspacePaths: ["/Users/dev/swarm-repo"]
+      }),
+      JSON.stringify({
+        tsMs: Date.parse("2026-11-25T15:00:03Z"),
+        hookEventName: "SessionStart",
+        conversationId: worker1Id,
+        workspacePaths: ["/Users/dev/swarm-repo-share-wt1"]
+      })
+    ].join("\n") + "\n",
+    "utf8"
+  );
+
+  const db = new TrackerDatabase(dataDir);
+  const uiHtmlPath = path.resolve(
+    import.meta.dirname,
+    "..",
+    "..",
+    "dist",
+    "ui",
+    "index.html"
+  );
+
+  try {
+    const stats = await runScan({
+      db,
+      dataDir,
+      brainRoots: [{ surface: "antigravity", dir: brainDir }],
+      eventsPath
+    });
+    assert.equal(stats.transcriptsDiscovered, 3);
+    assert.equal(stats.transcriptsIndexed, 3);
+
+    const dash = buildDashboardData(db);
+    assert.equal(dash.totals.projectCount, 1);
+    assert.equal(dash.totals.chatCount, 1);
+    assert.equal(dash.totals.subagentCount, 2);
+    assert.equal(dash.totals.swarmCount, 1);
+    assert.equal(dash.projects[0].projectPath, "/Users/dev/swarm-repo");
+    assert.equal(dash.projects[0].swarmCount, 1);
+
+    const coordDetail = buildConversationDetail(db, coordId);
+    assert.ok(coordDetail);
+    assert.equal(coordDetail.summary.swarmRole, "coordinator");
+    assert.equal(coordDetail.summary.swarmTitle, "Refactor auth");
+    assert.deepEqual(coordDetail.swarmTasks, {
+      "worker-1": "Refactor auth handlers",
+      "worker-2": "Add integration tests"
+    });
+    assert.equal(coordDetail.subagents.length, 2);
+    assert.ok(coordDetail.subagents.every((s) => s.swarmRole === "worker"));
+    assert.ok(coordDetail.subagents.every((s) => s.projectPath === "/Users/dev/swarm-repo"));
+    assert.deepEqual(
+      coordDetail.subagents.map((s) => s.subagentRole).sort(),
+      ["worker-1", "worker-2"]
+    );
+    assert.ok(coordDetail.combinedTokens);
+    const combinedTokTotal =
+      coordDetail.combinedTokens.inputTokens +
+      coordDetail.combinedTokens.cacheReadTokens +
+      coordDetail.combinedTokens.outputTokens;
+    assert.equal(combinedTokTotal, 10_400 + 4_200 + 3_150);
+
+    // Worker 2's 5-minute (300,000ms) swarm_wait must NOT inflate activeMs or userIdleMs
+    const w2Detail = buildConversationDetail(db, worker2Id);
+    assert.ok(w2Detail);
+    assert.equal(w2Detail.summary.swarmRole, "worker");
+    assert.equal(w2Detail.summary.time.userIdleMs, 0);
+    assert.ok(
+      w2Detail.summary.time.activeMs < 10_000,
+      `Expected worker2 activeMs (${w2Detail.summary.time.activeMs}) < 10s with 5m swarm_wait excluded`
+    );
+
+    const mcpServer = createTrackerMcpServer({
+      db,
+      dataDir,
+      uiHtmlPath,
+      brainRoots: [{ surface: "antigravity", dir: brainDir }],
+      eventsPath
+    });
+    const client = new Client({ name: "swarm-test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      mcpServer.connect(serverTransport),
+      client.connect(clientTransport)
+    ]);
+
+    try {
+      const listRes = await client.callTool({ name: "list_projects", arguments: {} });
+      const listText = ((listRes.content as Array<{ text?: string }>)?.[0]?.text ?? "");
+      assert.match(listText, /1 swarm/);
+
+      const projRes = await client.callTool({
+        name: "get_project_summary",
+        arguments: { projectPath: "/Users/dev/swarm-repo" }
+      });
+      const projText = ((projRes.content as Array<{ text?: string }>)?.[0]?.text ?? "");
+      assert.match(projText, /\*\*Swarm Runs\*\*: 1/);
+      assert.match(projText, /\[Swarm\]/);
+
+      const chatRes = await client.callTool({
+        name: "get_chat_analysis",
+        arguments: { conversationId: coordId }
+      });
+      const chatText = ((chatRes.content as Array<{ text?: string }>)?.[0]?.text ?? "");
+      assert.match(chatText, /\*\*Mode\*\*: Swarm coordinator \("Refactor auth"\)/);
+      assert.match(chatText, /\*\*Combined Swarm Totals/);
+      assert.match(chatText, /\*\*Swarm Workers \(2\)\*\*/);
+      assert.match(chatText, /`\[swarm\]`/);
+    } finally {
+      await client.close();
+      await mcpServer.close();
+    }
+  } finally {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

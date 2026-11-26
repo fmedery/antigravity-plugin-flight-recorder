@@ -72,7 +72,7 @@ function fmtTokenTotal(tokens: {
 
 function fmtCost(usd: number | null, unpriced: string[]): string {
   if (usd === null) {
-    return unpriced.length > 0 ? `Unpriced (${unpriced.join(", ")})` : "Unpriced";
+    return unpriced.length > 0 ? `Unpriced (${unpriced.join(", ")})` : "N/A";
   }
   const base = `$${usd.toFixed(usd < 0.1 ? 4 : 2)} est.`;
   return unpriced.length > 0 ? `${base} (+ ${unpriced.length} unpriced model)` : base;
@@ -332,7 +332,12 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           : "";
       const ctxSummary = fmtContextHealth(dashboard.totals.contextHealth);
       const cmpSummary = fmtPeriodComparison(dashboard.periodComparison);
-      const summaryText = `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.`;
+      const swarmCount = dashboard.totals.swarmCount ?? 0;
+      const swarmPart =
+        swarmCount > 0
+          ? `, ${swarmCount} swarm${swarmCount === 1 ? "" : "s"}`
+          : "";
+      const summaryText = `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents${swarmPart}), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.`;
 
       return {
         content: [{ type: "text", text: summaryText }],
@@ -358,10 +363,11 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       const dash = buildDashboardData(ctx.db, { preset: timeRange });
       const list = dash.projects.slice(0, limit ?? 30);
 
-      const lines = list.map(
-        (p) =>
-          `- **${p.projectName}** (\`${p.projectPath}\`): ${p.chatCount} chats (+${p.subagentCount} subagents), ${fmtTokenTotal(p.tokens)}, ${fmtDur(p.time.activeMs)} active, ${fmtCost(p.tokens.estimatedCostUsd, p.tokens.unpricedModels)}, models: [${fmtModelMix(p.modelBreakdown, 3)}], plugins/skills: [${p.topPluginsSkills.join(", ") || "none"}]`
-      );
+      const lines = list.map((p) => {
+        const sc = p.swarmCount ?? 0;
+        const swarmStr = sc > 0 ? `, ${sc} swarm${sc === 1 ? "" : "s"}` : "";
+        return `- **${p.projectName}** (\`${p.projectPath}\`): ${p.chatCount} chats (+${p.subagentCount} subagents${swarmStr}), ${fmtTokenTotal(p.tokens)}, ${fmtDur(p.time.activeMs)} active, ${fmtCost(p.tokens.estimatedCostUsd, p.tokens.unpricedModels)}, models: [${fmtModelMix(p.modelBreakdown, 3)}], plugins/skills: [${p.topPluginsSkills.join(", ") || "none"}]`;
+      });
 
       const pluginSection =
         dash.pluginSkillMetrics.length > 0
@@ -432,16 +438,25 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         (m) =>
           `  - ${m.category} \`${m.name}\`: ${m.calls} calls, ${fmtDur(m.totalDurationMs)}, +${fmtK(m.directTokens)} direct / +${fmtK(m.compoundedCacheTokens)} cache carry`
       );
-      const topChats = detail.chats.slice(0, 10).map(
-        (c) =>
-          `  - \`${c.conversationId}\` "${c.title}": ${c.tokens.hasTokenTelemetry ? `${fmtK(c.tokens.inputTokens + c.tokens.cacheReadTokens + c.tokens.outputTokens)} tok (${Math.round(c.tokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"}, ${fmtDur(c.time.activeMs)} active`
-      );
+      const topChats = detail.chats.slice(0, 10).map((c) => {
+        const modeTag =
+          c.swarmRole === "coordinator"
+            ? "[Swarm] "
+            : c.swarmRole === "worker" || c.subagentType === "swarm"
+              ? `[Swarm Worker: ${c.subagentRole || "worker"}] `
+              : "";
+        return `  - \`${c.conversationId}\` ${modeTag}"${c.title}": ${c.tokens.hasTokenTelemetry ? `${fmtK(c.tokens.inputTokens + c.tokens.cacheReadTokens + c.tokens.outputTokens)} tok (${Math.round(c.tokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"}, ${fmtDur(c.time.activeMs)} active`;
+      });
 
       const ctxSummary = fmtContextHealth(s.contextHealth);
       const cmpSummary = fmtPeriodComparison(detail.periodComparison);
+      const projSwarmCount = s.swarmCount ?? 0;
       const text = [
         `# Project: ${s.projectName} (\`${s.projectPath}\`)`,
-        `- **Chats**: ${s.chatCount} top-level, ${s.subagentCount} subagents`,
+        `- **Chats**: ${s.chatCount} top-level, ${s.subagentCount} subagents${projSwarmCount > 0 ? ` (${projSwarmCount} swarm${projSwarmCount === 1 ? "" : "s"})` : ""}`,
+        ...(projSwarmCount > 0
+          ? [`- **Swarm Runs**: ${projSwarmCount}`]
+          : []),
         `- **Model Mix**: ${fmtModelMix(s.modelBreakdown, 6)}`,
         `- **Model Breakdown**:`,
         ...fmtModelBreakdownLines(s.modelBreakdown, true),
@@ -531,13 +546,71 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         (sw) =>
           `  - Step ${sw.stepIndex} (Turn ${sw.turnIndex + 1}): \`${sw.fromModel}\` → \`${sw.toModel}\` — ${sw.trigger}${sw.isCacheMiss ? ` [CACHE MISS, +${fmtK(sw.inputTokensAfter)} uncached]` : ""}`
       );
+      const isSwarmCoordinator = s.swarmRole === "coordinator";
+      const isSwarmWorker = s.swarmRole === "worker" || s.subagentType === "swarm";
+      const hasSwarmWorkers = detail.subagents.some(
+        (sub) => sub.swarmRole === "worker" || sub.subagentType === "swarm"
+      );
+      const isSwarmParent = isSwarmCoordinator || hasSwarmWorkers;
+      const subagentLines = detail.subagents.slice(0, 20).map((sub) => {
+        const subTok =
+          sub.tokens.inputTokens +
+          sub.tokens.cacheReadTokens +
+          sub.tokens.outputTokens;
+        const subLabel =
+          sub.subagentRole ||
+          (sub.subagentType === "swarm" ? "worker" : sub.subagentType) ||
+          sub.title;
+        const subModels = fmtModelMix(sub.modelBreakdown, 3);
+        const tokPart = sub.tokens.hasTokenTelemetry ? fmtK(subTok) : "N/A (legacy)";
+        const isSwarmChild =
+          sub.swarmRole === "worker" || sub.subagentType === "swarm";
+        const swarmTag = isSwarmChild ? " `[swarm]`" : "";
+        const taskDesc = sub.subagentRole
+          ? detail.swarmTasks?.[sub.subagentRole]
+          : undefined;
+        const taskPart = taskDesc ? ` — ${taskDesc}` : "";
+        return `  - **${subLabel}**${swarmTag} (\`${sub.conversationId.slice(0, 8)}\`): ${subModels} · ${tokPart} tok · ${fmtDur(sub.time.activeMs)}${taskPart}`;
+      });
+
+      const modeLine = isSwarmCoordinator
+        ? `- **Mode**: Swarm coordinator${s.swarmTitle ? ` ("${s.swarmTitle}")` : ""}`
+        : isSwarmWorker
+          ? `- **Mode**: Swarm worker (${s.subagentRole ?? "worker"}${s.parentConversationId ? `, parent \`${s.parentConversationId.slice(0, 8)}\`` : ""})`
+          : null;
+
+      const combinedSwarmLines: string[] = [];
+      if (isSwarmParent && detail.subagents.length > 0 && detail.combinedTokens) {
+        const cTok =
+          detail.combinedTokens.inputTokens +
+          detail.combinedTokens.cacheReadTokens +
+          detail.combinedTokens.outputTokens;
+        combinedSwarmLines.push(
+          `- **Combined Swarm Totals (Coordinator + ${detail.subagents.length} workers)**: ${detail.combinedTokens.hasTokenTelemetry ? `${fmtK(cTok)} tokens (${Math.round(detail.combinedTokens.cacheHitRatio * 100)}% cache)` : "N/A (legacy)"} · ${fmtCost(detail.combinedTokens.estimatedCostUsd, detail.combinedTokens.unpricedModels)} · ${fmtDur(detail.scopeActiveMs ?? s.time.activeMs)} merged active time`
+        );
+      }
 
       const textParts = [
         `# Chat: ${s.title} (\`${s.conversationId}\`)`,
         `- **Project**: ${s.projectName} (\`${s.projectPath}\`, source: ${s.projectSource})`,
+        ...(modeLine ? [modeLine] : []),
+        ...combinedSwarmLines,
         `- **Model Mix**: ${fmtModelMix(s.modelBreakdown, 6)}`,
         `- **Model Breakdown**:`,
         ...fmtModelBreakdownLines(s.modelBreakdown, false),
+        ...(detail.subagents.length > 0
+          ? [
+              `- **Combined Model Mix (${isSwarmParent ? "Coordinator" : "Parent"} + ${detail.subagents.length} ${isSwarmParent ? "workers" : "subagents"})**: ${fmtModelMix(detail.combinedModelBreakdown ?? s.modelBreakdown, 6)}`,
+              ...((detail.subagentModelBreakdown?.length ?? 0) > 0
+                ? [
+                    `- **${isSwarmParent ? "Swarm Worker" : "Subagent"} Model Breakdown**:`,
+                    ...fmtModelBreakdownLines(detail.subagentModelBreakdown!, true)
+                  ]
+                : []),
+              `- **${isSwarmParent ? "Swarm Workers" : "Spawned Subagents"} (${detail.subagents.length})**:`,
+              ...subagentLines
+            ]
+          : []),
         ...(detail.pluginSkillMetrics.length > 0
           ? [
               `- **Most Token-Hungry Plugins & Skills**:`,
@@ -563,10 +636,14 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           turns: detail.turns,
           plannerSteps: detail.plannerSteps.slice(0, 60),
           modelSwitches: detail.modelSwitches,
+          combinedModelBreakdown: detail.combinedModelBreakdown,
+          subagentModelBreakdown: detail.subagentModelBreakdown,
           pluginSkillMetrics: detail.pluginSkillMetrics,
           skillToolMetrics: detail.skillToolMetrics.slice(0, 30),
           diagnostics: detail.diagnostics,
-          subagents: detail.subagents
+          subagents: detail.subagents,
+          ...(detail.swarmTasks ? { swarmTasks: detail.swarmTasks } : {}),
+          ...(detail.combinedTokens ? { combinedTokens: detail.combinedTokens } : {})
         }
       };
     }
@@ -955,7 +1032,8 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
       description: "App-only endpoint triggering an immediate incremental rescan.",
       inputSchema: {
         timeRange: timeRangeSchema,
-        sinceMs: sinceMsSchema
+        sinceMs: sinceMsSchema,
+        onlyIfChanged: z.boolean().optional()
       },
       _meta: {
         ui: {
@@ -963,8 +1041,21 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         }
       }
     },
-    async ({ timeRange, sinceMs }) => {
+    async ({ timeRange, sinceMs, onlyIfChanged }) => {
       const stats = await scanNow();
+      const scannedAtMs = Date.now();
+      const changed =
+        stats.transcriptsIndexed > 0 || stats.hookEventsIngested > 0;
+      if (onlyIfChanged && !changed) {
+        return {
+          content: [{ type: "text", text: "ok" }],
+          structuredContent: {
+            stats,
+            changed: false,
+            scannedAtMs
+          }
+        };
+      }
       const dashboard = buildDashboardData(ctx.db, {
         preset: timeRange,
         sinceMs
@@ -973,6 +1064,8 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         content: [{ type: "text", text: "ok" }],
         structuredContent: {
           stats,
+          changed,
+          scannedAtMs,
           dashboard
         }
       };
@@ -996,7 +1089,8 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
               inputPer1M: z.number().finite().min(0).max(100_000),
               cacheReadPer1M: z.number().finite().min(0).max(100_000),
               outputPer1M: z.number().finite().min(0).max(100_000),
-              enabled: z.boolean()
+              enabled: z.boolean(),
+              retired: z.boolean().optional()
             })
           )
           .max(100),

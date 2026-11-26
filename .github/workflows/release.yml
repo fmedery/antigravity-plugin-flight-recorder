@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    name: Verify Tag & Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches plugin.json, package.json, lockfile, and dist/
+        run: node scripts/check-version.mjs --tag="${GITHUB_REF_NAME}"
+
+      - name: Rebuild and verify committed dist/ is fresh
+        run: |
+          npm run build
+          git diff --exit-code -- dist/
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          if node scripts/extract-changelog.mjs "${GITHUB_REF_NAME}" /tmp/release-notes.md; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARGS=("${GITHUB_REF_NAME}" --title "Flight Recorder ${GITHUB_REF_NAME}" --verify-tag)
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            ARGS+=(--prerelease)
+          fi
+          if [[ "${{ steps.notes.outputs.has_notes }}" == "true" ]]; then
+            ARGS+=(--notes-file /tmp/release-notes.md)
+          else
+            ARGS+=(--generate-notes)
+          fi
+          gh release create "${ARGS[@]}"

@@ -22,13 +22,17 @@ import {
   ProjectDetailView
 } from "./components/ProjectOverview";
 import { SettingsModal } from "./components/SettingsModal";
+import { fmtRelativeAge } from "./format";
 
 declare const __FLIGHT_RECORDER_VERSION__: string | undefined;
 
 const APP_VERSION =
   typeof __FLIGHT_RECORDER_VERSION__ !== "undefined"
     ? __FLIGHT_RECORDER_VERSION__
-    : "0.2.0";
+    : "0.0.0-dev";
+
+const AUTO_REFRESH_INTERVAL_MS = 30_000;
+const RELATIVE_TIME_TICK_MS = 10_000;
 
 type ViewMode = "projects" | "project" | "chat";
 
@@ -73,6 +77,26 @@ export const AppRoot: React.FC = () => {
   const rangeReqIdRef = useRef(0);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [lastScanAtMs, setLastScanAtMs] = useState<number | null>(null);
+  const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now());
+  const [autoRefreshing, setAutoRefreshing] = useState(false);
+
+  const scanInFlightRef = useRef(false);
+  const viewRef = useRef<ViewMode>(view);
+  const selectedProjectPathRef = useRef<string | null>(selectedProjectPath);
+  const selectedConversationIdRef = useRef<string | null>(selectedConversationId);
+  const showSettingsRef = useRef(showSettings);
+  const savingPricingRef = useRef(savingPricing);
+  const updatingRangeRef = useRef(updatingRange);
+  const lastScanAtMsRef = useRef<number | null>(lastScanAtMs);
+
+  viewRef.current = view;
+  selectedProjectPathRef.current = selectedProjectPath;
+  selectedConversationIdRef.current = selectedConversationId;
+  showSettingsRef.current = showSettings;
+  savingPricingRef.current = savingPricing;
+  updatingRangeRef.current = updatingRange;
+  lastScanAtMsRef.current = lastScanAtMs;
 
   const callAppTool = useCallback(
     async <T,>(name: string, args: Record<string, unknown> = {}): Promise<T> => {
@@ -102,7 +126,10 @@ export const AppRoot: React.FC = () => {
         "app_get_dashboard_data",
         buildClientTimeRangeArgs(timeRangeRef.current)
       );
+      const ts = data?.generatedAtMs || Date.now();
       setDashboard(data);
+      setLastScanAtMs(ts);
+      setNowTickMs(Date.now());
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -179,7 +206,10 @@ export const AppRoot: React.FC = () => {
           timeRangeRef.current = sc.dashboard.timeRange.preset;
           setTimeRange(sc.dashboard.timeRange.preset);
         }
+        const ts = sc.dashboard.generatedAtMs || Date.now();
         setDashboard(sc.dashboard);
+        setLastScanAtMs(ts);
+        setNowTickMs(Date.now());
         setLoading(false);
       }
       if (sc.selectedConversationId) {
@@ -225,16 +255,119 @@ export const AppRoot: React.FC = () => {
     };
   }, [loadDashboard, openChat, openProject]);
 
-  const handleRescan = async () => {
+  const runAutoRefresh = useCallback(async () => {
+    if (!connected || scanInFlightRef.current) return;
+    if (
+      showSettingsRef.current ||
+      savingPricingRef.current ||
+      updatingRangeRef.current
+    ) {
+      return;
+    }
+    if (
+      typeof document !== "undefined" &&
+      document.visibilityState !== "visible"
+    ) {
+      return;
+    }
+
     const rangeArgs = buildClientTimeRangeArgs(timeRangeRef.current);
+    scanInFlightRef.current = true;
+    setAutoRefreshing(true);
+    try {
+      const res = await callAppTool<{
+        stats: { transcriptsIndexed: number; hookEventsIngested: number };
+        changed?: boolean;
+        scannedAtMs?: number;
+        dashboard?: DashboardData;
+      }>("app_rescan_all", { ...rangeArgs, onlyIfChanged: true });
+
+      const scanTs = res.scannedAtMs ?? res.dashboard?.generatedAtMs ?? Date.now();
+      setLastScanAtMs(scanTs);
+      setNowTickMs(Date.now());
+
+      if (res.changed && res.dashboard) {
+        setDashboard(res.dashboard);
+        if (viewRef.current === "project" && selectedProjectPathRef.current) {
+          const pDetail = await callAppTool<ProjectDetail>(
+            "app_get_project_detail",
+            { projectPath: selectedProjectPathRef.current, ...rangeArgs }
+          );
+          setProjectDetail(pDetail);
+        } else if (
+          viewRef.current === "chat" &&
+          selectedConversationIdRef.current
+        ) {
+          const cDetail = await callAppTool<ConversationDetail>(
+            "app_get_chat_detail",
+            { conversationId: selectedConversationIdRef.current }
+          );
+          setChatDetail(cDetail);
+        }
+      }
+    } catch {
+      // Periodic background refresh ignores transient errors; manual Rescan surfaces errors.
+    } finally {
+      scanInFlightRef.current = false;
+      setAutoRefreshing(false);
+    }
+  }, [callAppTool, connected]);
+
+  const hasDashboard = dashboard !== null;
+  useEffect(() => {
+    if (!connected || !hasDashboard) return;
+
+    const refreshTimer = window.setInterval(() => {
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      ) {
+        void runAutoRefresh();
+      }
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    const tickTimer = window.setInterval(() => {
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      ) {
+        setNowTickMs(Date.now());
+      }
+    }, RELATIVE_TIME_TICK_MS);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      setNowTickMs(now);
+      if (now - (lastScanAtMsRef.current ?? 0) >= AUTO_REFRESH_INTERVAL_MS) {
+        void runAutoRefresh();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(refreshTimer);
+      window.clearInterval(tickTimer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [connected, hasDashboard, runAutoRefresh]);
+
+  const handleRescan = async () => {
+    if (scanInFlightRef.current) return;
+    const rangeArgs = buildClientTimeRangeArgs(timeRangeRef.current);
+    scanInFlightRef.current = true;
     try {
       setRescanning(true);
       setErrorMsg(null);
       const res = await callAppTool<{
         stats: { transcriptsIndexed: number; hookEventsIngested: number };
+        scannedAtMs?: number;
         dashboard: DashboardData;
       }>("app_rescan_all", rangeArgs);
       if (res.dashboard) setDashboard(res.dashboard);
+      const scanTs = res.scannedAtMs ?? res.dashboard?.generatedAtMs ?? Date.now();
+      setLastScanAtMs(scanTs);
+      setNowTickMs(Date.now());
       if (view === "project" && selectedProjectPath) {
         const pDetail = await callAppTool<ProjectDetail>(
           "app_get_project_detail",
@@ -255,6 +388,7 @@ export const AppRoot: React.FC = () => {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      scanInFlightRef.current = false;
       setRescanning(false);
     }
   };
@@ -475,7 +609,7 @@ export const AppRoot: React.FC = () => {
       : null);
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-app-version={APP_VERSION}>
       <header className="topbar">
         <div className="topbar-left">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -525,6 +659,20 @@ export const AppRoot: React.FC = () => {
         </div>
 
         <div className="topbar-actions">
+          {(rescanning || autoRefreshing || lastScanAtMs !== null) && (
+            <span
+              className="last-scan-meta tabular"
+              title={
+                lastScanAtMs
+                  ? `Last scan: ${new Date(lastScanAtMs).toLocaleTimeString()} · Auto-refreshes every 30s while visible`
+                  : "Scanning transcripts & hooks…"
+              }
+            >
+              {rescanning || autoRefreshing
+                ? "Scanning…"
+                : `Last scan: ${fmtRelativeAge(lastScanAtMs, nowTickMs)}`}
+            </span>
+          )}
           <button
             type="button"
             className="btn"
@@ -594,9 +742,16 @@ export const AppRoot: React.FC = () => {
               <button
                 type="button"
                 className="btn btn-sm"
-                onClick={() => void handleOpenRepoLink(updateResult.repoUrl)}
+                onClick={() =>
+                  void handleOpenRepoLink(
+                    updateResult.releaseUrl ?? updateResult.repoUrl
+                  )
+                }
               >
-                View on GitHub
+                {updateResult.releaseUrl &&
+                updateResult.releaseUrl !== updateResult.repoUrl
+                  ? "View Release"
+                  : "View on GitHub"}
               </button>
               <button
                 type="button"
@@ -608,8 +763,18 @@ export const AppRoot: React.FC = () => {
             </div>
           </div>
           <div className="update-banner-body">
-            {updateResult.installMethod === "git" &&
-            updateResult.updateCommand ? (
+            {updateResult.installMethod === "marketplace" ? (
+              <div>
+                Managed by the Antigravity Marketplace — update from{" "}
+                <strong>Customizations → Installed</strong> in Antigravity (or
+                run{" "}
+                <code>
+                  agy plugin install flight-recorder@antigravity-plugins-partners
+                </code>
+                ).
+              </div>
+            ) : updateResult.installMethod === "git" &&
+              updateResult.updateCommand ? (
               <>
                 <div className="update-banner-cmd-row">
                   <code className="update-banner-cmd">
@@ -635,7 +800,10 @@ export const AppRoot: React.FC = () => {
               </>
             ) : (
               <div>
-                Download the latest ZIP from GitHub and replace your{" "}
+                If installed via Antigravity Marketplace or CLI, update from{" "}
+                <strong>Customizations → Installed</strong> (or re-run{" "}
+                <code>agy plugin install</code>). For manual ZIP installs,
+                download the latest release from GitHub and replace your{" "}
                 <code>flight-recorder</code> plugins folder, then restart
                 Antigravity.
               </div>
@@ -668,6 +836,9 @@ export const AppRoot: React.FC = () => {
             <ProjectDetailView
               key={projectDetail.summary.projectPath}
               detail={projectDetail}
+              pricingRules={dashboard.pricingRules}
+              modelSignals={dashboard.modelSignals}
+              latestGlobalActivityMs={dashboard.latestGlobalActivityMs}
               canSendMessage={canMessage}
               timeRange={timeRange}
               updatingRange={updatingRange}
@@ -683,6 +854,9 @@ export const AppRoot: React.FC = () => {
             <ChatDetailView
               key={chatDetail.summary.conversationId}
               detail={chatDetail}
+              pricingRules={dashboard.pricingRules}
+              modelSignals={dashboard.modelSignals}
+              latestGlobalActivityMs={dashboard.latestGlobalActivityMs}
               knownProjects={dashboard.projects.map((p) => p.projectPath)}
               canSendMessage={canMessage}
               initialHighlightStep={initialChatStep}
@@ -699,6 +873,8 @@ export const AppRoot: React.FC = () => {
         <SettingsModal
           rules={dashboard.pricingRules}
           unpricedModels={dashboard.unpricedModels}
+          modelSignals={dashboard.modelSignals}
+          latestGlobalActivityMs={dashboard.latestGlobalActivityMs}
           saving={savingPricing}
           onClose={() => setShowSettings(false)}
           onSave={handleSavePricing}

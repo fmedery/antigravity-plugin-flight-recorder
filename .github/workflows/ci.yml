@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build, Version Check & Test (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify manifest & dist version parity
+        run: npm run version:check
+
+      - name: Rebuild server and UI bundles
+        run: npm run build
+
+      - name: Verify committed dist/ bundles are up to date
+        run: git diff --exit-code -- dist/
+
+      - name: Run test suite
+        run: npm test
+
+  test-windows:
+    name: Cross-Platform Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify manifest & dist version parity
+        run: npm run version:check
+
+      - name: Run test suite
+        run: npm test

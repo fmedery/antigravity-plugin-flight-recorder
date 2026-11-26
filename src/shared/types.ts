@@ -1,5 +1,13 @@
 export type SurfaceType = "antigravity" | "cli" | "ide" | "unknown";
 
+export type SwarmRole = "coordinator" | "worker";
+
+export interface ChildConversationLink {
+  conversationId: string;
+  role: string | null;
+  typeName: string | null;
+}
+
 export type ProjectSource =
   | "manual"
   | "hook"
@@ -43,6 +51,20 @@ export interface ModelPricingRule {
   cacheReadPer1M: number;
   outputPer1M: number;
   enabled: boolean;
+  retired?: boolean;
+}
+
+export interface ModelAvailabilitySignal {
+  model: string;
+  lastSeenAtMs: number;
+  lastUnavailableErrorAtMs: number | null;
+  lastUnavailableReason: string | null;
+}
+
+export interface ModelAvailabilityStatus {
+  status: "active" | "retired" | "unavailable" | "inactive";
+  badge: string | null;
+  reason: string | null;
 }
 
 export interface ModelUsageMetric {
@@ -108,6 +130,8 @@ export interface ToolCallRecord {
   skillPlugin: string | null;
   targetPath: string | null;
   childConversationId: string | null;
+  childConversationIds?: string[];
+  childLinks?: ChildConversationLink[];
   startedAtMs: number | null;
   completedAtMs: number | null;
   durationMs: number;
@@ -266,6 +290,8 @@ export interface ConversationSummary {
   parentConversationId: string | null;
   subagentRole: string | null;
   subagentType: string | null;
+  swarmRole?: SwarmRole | null;
+  swarmTitle?: string | null;
   startedAtMs: number;
   endedAtMs: number;
   terminationReason: string | null;
@@ -288,6 +314,8 @@ export interface ConversationDetail {
   turns: TurnRecord[];
   plannerSteps: PlannerStepRecord[];
   modelSwitches: ModelSwitchEvent[];
+  combinedModelBreakdown?: ModelUsageMetric[];
+  subagentModelBreakdown?: ModelUsageMetric[];
   toolCalls: ToolCallRecord[];
   skillToolMetrics: SkillToolMetric[];
   pluginSkillMetrics: PluginSkillMetric[];
@@ -295,6 +323,8 @@ export interface ConversationDetail {
   diagnostics: DiagnosticFinding[];
   subagents: ConversationSummary[];
   scopeActiveMs?: number;
+  swarmTasks?: Record<string, string>;
+  combinedTokens?: TokenSummary;
 }
 
 export interface ContextHealthSummary {
@@ -334,6 +364,7 @@ export interface ProjectSummary {
   projectName: string;
   chatCount: number;
   subagentCount: number;
+  swarmCount?: number;
   firstActivityMs: number;
   lastActivityMs: number;
   models: string[];
@@ -378,6 +409,7 @@ export interface DashboardData {
     projectCount: number;
     chatCount: number;
     subagentCount: number;
+    swarmCount?: number;
     tokens: TokenSummary;
     time: TimeSummary;
     contextHealth: ContextHealthSummary;
@@ -389,16 +421,22 @@ export interface DashboardData {
   recentChats: ConversationSummary[];
   pricingRules: ModelPricingRule[];
   unpricedModels: string[];
+  modelSignals?: Record<string, ModelAvailabilitySignal>;
+  latestGlobalActivityMs?: number;
 }
+
+export type PluginInstallMethod = "git" | "marketplace" | "zip";
 
 export interface UpdateCheckResult {
   status: "up_to_date" | "update_available" | "error";
   currentVersion: string;
   latestVersion: string | null;
-  installMethod: "git" | "zip";
+  installMethod: PluginInstallMethod;
   pluginRoot: string | null;
   updateCommand: string | null;
   repoUrl: string;
+  releaseUrl?: string;
+  source?: "github_release" | "manifest";
   checkedAtMs: number;
   message?: string;
 }
