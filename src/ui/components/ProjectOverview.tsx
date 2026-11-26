@@ -411,12 +411,12 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
                   tooltip={deltas.cacheHit.tooltip}
                 />
               </>
+            ) : tot.chatCount + tot.subagentCount === 0 ? (
+              <span>No sessions in range</span>
+            ) : tot.tokens.hasTokenTelemetry ? (
+              <span>No input tokens</span>
             ) : (
-              <span>
-                {tot.chatCount + tot.subagentCount === 0
-                  ? "No sessions in range"
-                  : "No token telemetry"}
-              </span>
+              <span>No token telemetry</span>
             )}
           </div>
         </div>
@@ -1186,7 +1186,13 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             <KpiHelpTip helpKey="totalTokens" />
           </div>
           <div className="kpi-value">
-            <span>{s.tokens.hasTokenTelemetry ? fmtK(totalTokens) : "N/A (legacy)"}</span>
+            <span>
+              {detail.chats.length === 0
+                ? "—"
+                : s.tokens.hasTokenTelemetry
+                  ? fmtK(totalTokens)
+                  : "N/A (legacy)"}
+            </span>
             <DeltaPill
               text={deltas.tokens.text}
               tone={deltas.tokens.tone}
@@ -1210,12 +1216,12 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
                   tooltip={deltas.cacheHit.tooltip}
                 />
               </>
+            ) : detail.chats.length === 0 ? (
+              <span>No sessions in range</span>
+            ) : s.tokens.hasTokenTelemetry ? (
+              <span>No input tokens</span>
             ) : (
-              <span>
-                {detail.chats.length === 0
-                  ? "No sessions in range"
-                  : "Legacy transcripts without token counters"}
-              </span>
+              <span>Legacy transcripts without token counters</span>
             )}
           </div>
         </div>
