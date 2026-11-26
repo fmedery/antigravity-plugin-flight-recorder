@@ -31,6 +31,8 @@ import type { ParsedTranscript } from "../src/server/transcriptParser.js";
 import {
   aggregateCosts,
   DEFAULT_PRICING_RULES,
+  DEFAULT_PRICING_SOURCE_INFO,
+  describePricingRuleSource,
   getModelAvailability,
   isModelRetired,
   isUnpriceablePlaceholderModel,
@@ -226,6 +228,36 @@ test("pricing returns Unpriced (null) for unknown models and accurate USD for kn
   assert.ok(proOnly.estimatedCostUsd !== null);
   assert.ok(Math.abs(proOnly.estimatedCostUsd - 11.5625) < 1e-6);
   assert.deepEqual(proOnly.unpricedModels, []);
+
+  // Every built-in default pricing rule must carry explicit source attribution
+  for (const rule of DEFAULT_PRICING_RULES) {
+    assert.ok(
+      DEFAULT_PRICING_SOURCE_INFO[rule.id],
+      `Missing DEFAULT_PRICING_SOURCE_INFO for ${rule.id}`
+    );
+    const builtinSrc = describePricingRuleSource(rule);
+    assert.equal(builtinSrc.kind, "builtin");
+    assert.ok(builtinSrc.label.length > 0);
+    assert.match(builtinSrc.detail, /Not live-fetched/i);
+
+    const editedSrc = describePricingRuleSource({
+      ...rule,
+      inputPer1M: rule.inputPer1M + 1
+    });
+    assert.equal(editedSrc.kind, "edited_default");
+    assert.equal(editedSrc.label, "Custom (edited)");
+  }
+  const customSrc = describePricingRuleSource({
+    id: "custom-123",
+    pattern: "gemini-4-neon*",
+    label: "Gemini 4 Neon",
+    inputPer1M: 0,
+    cacheReadPer1M: 0,
+    outputPer1M: 0,
+    enabled: true
+  });
+  assert.equal(customSrc.kind, "custom");
+  assert.equal(customSrc.label, "Custom");
 });
 
 test("project inference finds .git roots and ignores ~/.gemini and /tmp paths", () => {

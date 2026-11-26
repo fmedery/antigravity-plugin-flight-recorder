@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   DEFAULT_PRICING_RULES,
+  describePricingRuleSource,
   getModelAvailability,
   isDefaultRetiredModelPattern,
   isUnpriceablePlaceholderModel,
@@ -82,9 +83,9 @@ export const SettingsModal: React.FC<Props> = ({
         id,
         pattern: modelName || "gemini-*",
         label: modelName || "Custom Model",
-        inputPer1M: 1.25,
-        cacheReadPer1M: 0.3125,
-        outputPer1M: 10.0,
+        inputPer1M: 0,
+        cacheReadPer1M: 0,
+        outputPer1M: 0,
         enabled: true
       }
     ]);
@@ -137,12 +138,20 @@ export const SettingsModal: React.FC<Props> = ({
           <div>
             <strong style={{ fontSize: 15 }}>Model USD Pricing (per 1M tokens)</strong>
             <div style={{ fontSize: 12, color: "var(--txt-secondary)", marginTop: 2 }}>
-              Costs are local estimates only. Unavailable/retired models are auto-detected from legacy families, server errors, and 30d+ inactivity (use <strong>Retired</strong> to override).
+              Local API-equivalent estimates only — never live-fetched and not Antigravity plan or AI-credit billing. Unavailable/retired models are auto-detected (use <strong>Retired</strong> to override).
             </div>
           </div>
           <button type="button" className="btn btn-sm" onClick={onClose}>
             Close
           </button>
+        </div>
+
+        <div className="pricing-source-note">
+          <strong>Price sources:</strong> Built-in defaults (<code>Gemini API</code>,{" "}
+          <code>Anthropic API</code>) are static public API standard-tier (≤200k)
+          reference rates bundled with Flight Recorder. Unlisted models remain{" "}
+          <code>Unpriced</code>, and newly added rules start at <code>$0</code> so
+          you explicitly enter your own rates.
         </div>
 
         {actionableUnpriced.length > 0 && (
@@ -194,6 +203,7 @@ export const SettingsModal: React.FC<Props> = ({
                 <th title="Optional manual override (auto-detected otherwise)">Retired</th>
                 <th>Model Pattern</th>
                 <th>Label</th>
+                <th title="Whether this rate is a built-in static API reference or user-defined">Source</th>
                 <th className="text-right">Input $/1M</th>
                 <th className="text-right">Cache $/1M</th>
                 <th className="text-right">Output $/1M</th>
@@ -202,6 +212,7 @@ export const SettingsModal: React.FC<Props> = ({
             </thead>
             <tbody>
               {draft.map((rule, idx) => {
+                const sourceMeta = describePricingRuleSource(rule);
                 const autoStatus = resolveRuleAutoStatus(
                   rule.pattern,
                   modelSignals,
@@ -280,6 +291,18 @@ export const SettingsModal: React.FC<Props> = ({
                           </span>
                         )}
                       </div>
+                    </td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          sourceMeta.kind === "builtin"
+                            ? "badge-source-builtin"
+                            : "badge-source-custom"
+                        }`}
+                        title={sourceMeta.detail}
+                      >
+                        {sourceMeta.label}
+                      </span>
                     </td>
                   <td className="text-right">
                     <input

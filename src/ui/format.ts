@@ -260,9 +260,9 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
   estCost: {
     title: "Estimated API Equivalent Cost",
     meaning:
-      "Estimated USD across priced models, billed separately for uncached new input (full rate), cached reads (discounted rate), and output tokens (highest rate). Models without a rule in Pricing are excluded from the total and flagged as unpriced.",
+      "Estimated API-equivalent USD across priced models, billed separately for uncached new input (full rate), cached reads (discounted rate), and output tokens (highest rate). Built-in defaults are static public Google Gemini API (≤200k standard tier) and Anthropic API reference rates—not live-fetched and not official Antigravity subscription or credit billing. Unlisted models are excluded and flagged as Unpriced.",
     impact:
-      "Shows which projects, models, plugins, and skills drive budget or subscription rate-limit usage. Open Pricing (or click the unpriced badge) to add custom per-1M rates so totals cover every model."
+      "Shows which projects, models, plugins, and skills drive budget or subscription rate-limit usage. Open Pricing (or click the unpriced badge) to review rate sources or add your own per-1M rates so totals cover every model."
   }
 };
 

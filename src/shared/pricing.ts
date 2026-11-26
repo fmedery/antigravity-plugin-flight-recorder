@@ -23,6 +23,90 @@ export function isUnpriceablePlaceholderModel(model: string): boolean {
   return !normalized || normalized === "auto" || normalized === "unknown";
 }
 
+export interface DefaultPricingSourceInfo {
+  shortLabel: string;
+  provider: string;
+  detail: string;
+  url: string;
+}
+
+export const DEFAULT_PRICING_SOURCE_INFO: Readonly<
+  Record<string, DefaultPricingSourceInfo>
+> = {
+  "gemini-2.5-pro": {
+    shortLabel: "Gemini API",
+    provider: "Google Gemini API",
+    detail:
+      "Built-in static reference rate from public Google Gemini API standard-tier (≤200k context) pricing. Not live-fetched and not Antigravity plan or credit billing.",
+    url: "https://ai.google.dev/gemini-api/docs/pricing"
+  },
+  "gemini-2.5-flash": {
+    shortLabel: "Gemini API",
+    provider: "Google Gemini API",
+    detail:
+      "Built-in static reference rate from public Google Gemini API standard-tier pricing. Not live-fetched and not Antigravity plan or credit billing.",
+    url: "https://ai.google.dev/gemini-api/docs/pricing"
+  },
+  "gemini-2.0-flash": {
+    shortLabel: "Gemini API",
+    provider: "Google Gemini API",
+    detail:
+      "Built-in static reference rate from public Google Gemini API standard-tier pricing. Not live-fetched and not Antigravity plan or credit billing.",
+    url: "https://ai.google.dev/gemini-api/docs/pricing"
+  },
+  "claude-sonnet-4": {
+    shortLabel: "Anthropic API",
+    provider: "Anthropic API",
+    detail:
+      "Built-in static reference rate from public Anthropic API standard pricing. Not live-fetched and not Antigravity plan or credit billing.",
+    url: "https://docs.anthropic.com/en/docs/about-claude/pricing"
+  },
+  "claude-opus-4": {
+    shortLabel: "Anthropic API",
+    provider: "Anthropic API",
+    detail:
+      "Built-in static reference rate from public Anthropic API standard pricing. Not live-fetched and not Antigravity plan or credit billing.",
+    url: "https://docs.anthropic.com/en/docs/about-claude/pricing"
+  }
+};
+
+export interface PricingRuleSourceBadge {
+  kind: "builtin" | "edited_default" | "custom";
+  label: string;
+  detail: string;
+}
+
+export function describePricingRuleSource(
+  rule: ModelPricingRule
+): PricingRuleSourceBadge {
+  const defaultRule = DEFAULT_PRICING_RULES.find((d) => d.id === rule.id);
+  const sourceInfo = DEFAULT_PRICING_SOURCE_INFO[rule.id];
+  if (defaultRule && sourceInfo) {
+    const unchanged =
+      rule.pattern.trim() === defaultRule.pattern &&
+      rule.inputPer1M === defaultRule.inputPer1M &&
+      rule.cacheReadPer1M === defaultRule.cacheReadPer1M &&
+      rule.outputPer1M === defaultRule.outputPer1M;
+    if (unchanged) {
+      return {
+        kind: "builtin",
+        label: sourceInfo.shortLabel,
+        detail: sourceInfo.detail
+      };
+    }
+    return {
+      kind: "edited_default",
+      label: "Custom (edited)",
+      detail: `User-edited override of built-in ${sourceInfo.provider} reference rule (stored locally in SQLite).`
+    };
+  }
+  return {
+    kind: "custom",
+    label: "Custom",
+    detail: "User-defined rate (stored locally in SQLite)."
+  };
+}
+
 export const DEFAULT_PRICING_RULES: ModelPricingRule[] = [
   {
     id: "gemini-2.5-pro",

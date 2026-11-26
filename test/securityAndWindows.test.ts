@@ -590,6 +590,8 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(uiHtml, /aria-pressed/);
     assert.match(uiHtml, /focusgroup/);
     assert.match(uiHtml, /All time/);
+    assert.match(uiHtml, /Price sources:/);
+    assert.match(uiHtml, /badge-source-builtin/);
   } finally {
     await client.close().catch(() => {});
     fs.rmSync(isolatedRoot, { recursive: true, force: true });

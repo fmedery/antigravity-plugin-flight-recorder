@@ -95,9 +95,22 @@ Track prompt-cache carry step by step against `200k` / `256k` context thresholds
 
 ![Chat Tokens and Models panel with annotated 200k cliff, 256k compaction thresholds, and model switch log](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/chat-tokens-models.png)
 
-### Pricing
+### Pricing & Rate Sources
 
-Costs are estimates based on per-1M **input / cache-read / output** USD rates. Models without a configured rate are honestly labeled **`Unpriced`** rather than guessed — click **Pricing** (or any `Unpriced` badge) to add or edit rates.
+Costs are **local API-equivalent USD estimates** calculated per 1M **uncached input / cached read / output** tokens — they are **never fetched live** and do **not** represent official Antigravity subscription, quota, or AI-credit billing.
+
+On first run (or via **Reset Defaults**), Flight Recorder seeds 5 static reference rules in [src/shared/pricing.ts](./src/shared/pricing.ts) based on public provider API list prices (standard tier, ≤200k context):
+
+| Model Pattern | Input / 1M | Cache Read / 1M | Output / 1M | Static Reference Source |
+|---|---:|---:|---:|---|
+| `gemini-2.5-pro*` | `$1.25` | `$0.3125` | `$10.00` | [Google Gemini API Pricing](https://ai.google.dev/gemini-api/docs/pricing) (≤200k standard tier) |
+| `gemini-2.5-flash*` | `$0.15` | `$0.0375` | `$0.60` | [Google Gemini API Pricing](https://ai.google.dev/gemini-api/docs/pricing) (standard tier) |
+| `gemini-2.0-flash*` | `$0.10` | `$0.025` | `$0.40` | [Google Gemini API Pricing](https://ai.google.dev/gemini-api/docs/pricing) (standard tier) |
+| `claude-sonnet-4*` | `$3.00` | `$0.30` | `$15.00` | [Anthropic API Pricing](https://docs.anthropic.com/en/docs/about-claude/pricing) (standard tier) |
+| `claude-opus-4*` | `$15.00` | `$1.50` | `$75.00` | [Anthropic API Pricing](https://docs.anthropic.com/en/docs/about-claude/pricing) (standard tier) |
+
+- **No guessed prices:** Any model outside those patterns (including newer models) is honestly labeled **`Unpriced`** rather than guessed.
+- **Explicit custom rates:** Click **Pricing** (or any `Unpriced` badge) to view each rule's **Source** (`Gemini API`, `Anthropic API`, `Custom`, or `Custom (edited)`), edit built-in rates, or add new rules (newly added rules start at `$0` so you enter your exact rates). All overrides are stored locally in `${PLUGIN_DATA}/tracker.sqlite`.
 
 ---
 
