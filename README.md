@@ -32,13 +32,13 @@ flowchart LR
 Navigate with the breadcrumb at the top (**All Projects / *project* / *chat***). Two global controls are always available:
 
 - **Time range** — `Today`, `7d`, `30d`, or `All time`; every view, KPI, and leaderboard is filtered to the selected window, and `Today` / `7d` / `30d` display period-over-period delta pills (`vs yesterday`, `vs prior 7d`, `vs prior 30d`).
-- **Top-right buttons** — **Rescan** re-indexes transcripts and hook events on demand; **Pricing** opens per-model USD rates; **Updates** checks GitHub for a newer version on demand (never runs automatically in the background).
+- **Top-right bar** — **`Last scan`** shows when the index last refreshed (automatically checks for changes every 30s while visible); **Rescan** re-indexes transcripts and hook events on demand; **Pricing** opens per-model USD rates; **Updates** checks GitHub for a newer version on demand (never runs automatically in the background).
 
-Every KPI card has a **`?`** tip explaining what the metric means and why it matters, and panel controls (**Tokens / Steps / Model Time**, **Spend & Time / Context Tokens**, **Context Impact / Wall Time**, **Files**, and the step token chart) display an inline one-liner explaining the active view plus hover tooltips on every button.
+Every KPI card has a **`?`** tip explaining what the metric means and why it matters, and **Prompt Cache Hit** (`≥80%` `●` green Healthy, `60–79%` `▲` yellow Watch, `<60%` `◆` red Low) and **Context Health `% <200k`** (`≥85%` `●` green Healthy, `60–84%` `▲` yellow Watch, `<60%` `◆` red High risk) render color-coded status pills — hover or click any pill or **`?`** icon to see the exact breakdown and **Color scale** legend. Panel controls (**Tokens / Steps / Model Time**, **Spend & Time / Context Tokens**, **Context Impact / Wall Time**, **Files**, and the step token chart) also display an inline one-liner explaining the active view plus hover tooltips on every button.
 
 ### 1. All Projects (home)
 
-KPIs: **Projects**, **Total Tokens**, **Active Time**, **Context Health** (avg peak context, `% <200k`, `200k` cliff / `256k` compaction hits, and resets), **Est. Cost**.
+KPIs: **Projects** (with subagent and **Swarm** counts), **Total Tokens** (with color-coded cache-hit status pill), **Active Time**, **Context Health** (avg peak context, color-coded `% <200k` status pill, `200k` cliff / `256k` compaction hits, and resets), **Est. Cost**.
 
 | Tab | What you get |
 |---|---|
@@ -63,24 +63,24 @@ Available globally on the **Plugins & Models** tab as well as per-project and pe
 
 ### 3. Project view
 
-KPIs: **Chats** (incl. subagents), **Total Tokens**, **Active Time**, **Context Health**, **Est. Cost**.
+KPIs: **Chats** (incl. subagents and **Swarms**), **Total Tokens** (with color-coded cache-hit status pill), **Active Time**, **Context Health** (with color-coded `% <200k` status pill), **Est. Cost**.
 
 | Tab | What you get |
 |---|---|
-| **Overview** | Model mix, recent chats, and the project's top plugins & skills. |
-| **Usage** | Sub-tabs for **Plugins & Skills**, **Models** (toggle **Tokens**, **Steps**, or **Model Time** share), **Tools** (sort by **Context Impact** or **Wall Time**), and **Files** (`r` read · `e` edit · `c` create touches and `Context Carry`, click to open). |
-| **Chats** | Every chat and subagent run in the project. |
+| **Overview** | Model mix, recent chats (with inline model pills and expandable subagent / **Swarm** worker rows), and the project's top plugins & skills. |
+| **Usage** | Sub-tabs for **Plugins & Skills**, **Models** (toggle **Tokens**, **Steps**, or **Model Time** share, with auto-detected **Retired / Unavailable** tags), **Tools** (sort by **Context Impact** or **Wall Time**), and **Files** (`r` read · `e` edit · `c` create touches and `Context Carry`, click to open). |
+| **Chats** | Every chat, **Swarm** coordinator/worker run, and subagent in the project with inline model pills. |
 
 ![Project view with annotated KPIs, model mix, and grouped chats with expanded subagents](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/project-view.png)
 
 ### 4. Chat view
 
-KPIs: **Active Time**, **Turns & Wait**, **Tokens & Cache**, **Est. Cost**. Use **Reassign** to move a chat to a different project if it was attributed to the wrong workspace.
+KPIs: **Active Time**, **Turns & Wait**, **Tokens & Cache** (with color-coded cache-hit status pill), **Est. Cost**. Use **Reassign** to move a chat to a different project if it was attributed to the wrong workspace. For **Swarm** sessions, **Swarm Coordinator** / **Swarm Worker** badges, expandable worker chips with inline model pills, and a **Combined Swarm** vs. **Coordinator only** KPI toggle let you inspect team totals or coordinator overhead alone.
 
 | Tab | What you get |
 |---|---|
 | **Timeline** | Turn-by-turn waterfall separating **active agent time** (model + parallel-merged tools + subagents) from **user wait / idle**, with cache-miss and subagent markers. |
-| **Tokens & Models** | Per-step context bars with **`200k` cliff** and **`256k` compaction** thresholds, cache-miss flags, and per-model breakdown (**Tokens**, **Steps**, or **Model Time** share) with **orchestrator model-switch** detection. |
+| **Tokens & Models** | Per-step context bars with **`200k` cliff** and **`256k` compaction** thresholds, cache-miss flags, a **Combined / Orchestrator only / Subagents only** (or **Workers only**) scope toggle, and per-model breakdown (**Tokens**, **Steps**, or **Model Time** share) with **orchestrator model-switch** detection. |
 | **Plugins & Tools** | The chat's plugin & skill leaderboard and per-tool metrics. |
 
 #### Timeline
@@ -91,7 +91,7 @@ Inspect each user turn, parallel tool batch, cache miss, subagent run, and step-
 
 #### Tokens & Models
 
-Track prompt-cache carry step by step against `200k` / `256k` context thresholds, switch between **Tokens**, **Steps**, and **Model Time** model shares, and spot orchestrator model switches.
+Track prompt-cache carry step by step against `200k` / `256k` context thresholds, scope models across **Combined**, **Orchestrator only**, or **Subagents / Workers only**, switch between **Tokens**, **Steps**, and **Model Time** shares, and spot orchestrator model switches.
 
 ![Chat Tokens and Models panel with annotated 200k cliff, 256k compaction thresholds, and model switch log](https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/docs/screenshots/chat-tokens-models.png)
 
