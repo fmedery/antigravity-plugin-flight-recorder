@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-26
+
 ### Changed
 
 - Completed Antigravity Marketplace manifest metadata (`$schema`, `license`, `keywords`, structured `author`, and 144-char card description).
@@ -52,7 +54,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Added secret redaction (`src/shared/redact.ts`), ANSI/OSC control-character stripping, POSIX `0700`/`0600` data permissions, ReDoS-safe pricing glob matching, bounded hook ingestion, `SECURITY.md`, and `MIT` `LICENSE`.
 
-[Unreleased]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/fmedery/antigravity-plugin-flight-recorder/commits/69efe49
 [0.2.0]: https://github.com/fmedery/antigravity-plugin-flight-recorder/commits/0ef1c88

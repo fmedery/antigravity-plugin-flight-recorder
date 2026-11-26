@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "flight-recorder",
   "displayName": "Flight Recorder",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Track and diagnose which plugins, skills, MCP tools, and models drive your tokens, spend, cache hits, and active time across projects and chats.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
