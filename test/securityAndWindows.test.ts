@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -32,7 +34,9 @@ import { parseTranscriptFile } from "../src/server/transcriptParser.js";
 import type { ConversationSummary } from "../src/shared/types.js";
 import {
   KPI_HELP_COPY,
+  PCT_SCALE_BANDS,
   buildErrorTroubleshootingPrompt,
+  classifyPctStatus,
   describeErrorBadge,
   describePluginWarning,
   fmtRelativeAge,
@@ -143,6 +147,49 @@ test("Windows AGY project inference, transcript path extraction, .exe/.cmd plugi
   assert.match(KPI_HELP_COPY.cacheHitRatio.impact, /TTL|compaction/i);
   assert.match(KPI_HELP_COPY.contextHealth.meaning, /200k/i);
   assert.match(KPI_HELP_COPY.contextHealth.impact, /compaction/i);
+
+  // Rounding-consistent thresholds for Context Health (% <200k)
+  assert.deepEqual(classifyPctStatus("contextHealth", 0.85), {
+    pct: 85,
+    tone: "success",
+    glyph: "●",
+    label: "Healthy",
+    colorLabel: "Green"
+  });
+  assert.equal(classifyPctStatus("contextHealth", 0.845).tone, "success"); // rounds to 85%
+  assert.equal(classifyPctStatus("contextHealth", 0.844).tone, "warning"); // rounds to 84%
+  assert.equal(classifyPctStatus("contextHealth", 0.67).tone, "warning");
+  assert.equal(classifyPctStatus("contextHealth", 0.595).tone, "warning"); // rounds to 60%
+  assert.equal(classifyPctStatus("contextHealth", 0.594).tone, "danger"); // rounds to 59%
+
+  // Rounding-consistent thresholds for Cache Hit (%)
+  assert.deepEqual(classifyPctStatus("cacheHit", 0.91), {
+    pct: 91,
+    tone: "success",
+    glyph: "●",
+    label: "Healthy",
+    colorLabel: "Green"
+  });
+  assert.equal(classifyPctStatus("cacheHit", 0.795).tone, "success"); // rounds to 80%
+  assert.equal(classifyPctStatus("cacheHit", 0.794).tone, "warning"); // rounds to 79%
+  assert.equal(classifyPctStatus("cacheHit", 0.595).tone, "warning"); // rounds to 60%
+  assert.equal(classifyPctStatus("cacheHit", 0.594).tone, "danger"); // rounds to 59%
+
+  // Non-finite and out-of-range ratios clamp cleanly to 0..100
+  assert.equal(classifyPctStatus("cacheHit", Number.NaN).pct, 0);
+  assert.equal(classifyPctStatus("cacheHit", Number.NaN).tone, "danger");
+  assert.equal(classifyPctStatus("contextHealth", -0.2).pct, 0);
+  assert.equal(classifyPctStatus("contextHealth", 1.4).pct, 100);
+  assert.equal(classifyPctStatus("contextHealth", 1.4).tone, "success");
+
+  // Legend metadata wired on Total Tokens, Cache Hit, Tokens & Cache, and Context Health
+  assert.equal(PCT_SCALE_BANDS.contextHealth.length, 3);
+  assert.equal(PCT_SCALE_BANDS.cacheHit.length, 3);
+  assert.equal(KPI_HELP_COPY.totalTokens.legend?.bands, PCT_SCALE_BANDS.cacheHit);
+  assert.match(KPI_HELP_COPY.totalTokens.meaning, /cache hit/i);
+  assert.equal(KPI_HELP_COPY.cacheHitRatio.legend?.bands, PCT_SCALE_BANDS.cacheHit);
+  assert.equal(KPI_HELP_COPY.tokensAndCache.legend?.bands, PCT_SCALE_BANDS.cacheHit);
+  assert.equal(KPI_HELP_COPY.contextHealth.legend?.bands, PCT_SCALE_BANDS.contextHealth);
 
   // Windows plugin CLI (.exe / .cmd) + multi-dir builtin discovery + Windows transcript paths
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fr-win-test-"));
@@ -592,6 +639,23 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(uiHtml, /All time/);
     assert.match(uiHtml, /Price sources:/);
     assert.match(uiHtml, /badge-source-builtin/);
+    assert.match(uiHtml, /kpi-status-pill/);
+    assert.match(uiHtml, /kpi-scale-legend/);
+    assert.match(uiHtml, /forced-colors/);
+    assert.match(uiHtml, /Under-200k color scale/);
+    assert.match(uiHtml, /Cache hit color scale/);
+    assert.match(uiHtml, /High risk/);
+    assert.match(uiHtml, /Prompt Cache Hit/);
+    assert.match(uiHtml, /Show color scale/);
+    assert.match(uiHtml, /stayed under 200k peak context/);
+    assert.match(uiHtml, /\.badge\.kpi-status-pill\b/);
+    assert.match(uiHtml, /\.badge\.kpi-status-pop-badge\b/);
+    const baseBadgeIdx = uiHtml.indexOf(".badge{");
+    const statusPillIdx = uiHtml.indexOf(".badge.kpi-status-pill{");
+    assert.ok(
+      baseBadgeIdx > -1 && statusPillIdx > baseBadgeIdx,
+      "Expected .badge.kpi-status-pill rule to appear after .badge in bundled CSS"
+    );
   } finally {
     await client.close().catch(() => {});
     fs.rmSync(isolatedRoot, { recursive: true, force: true });
@@ -983,4 +1047,368 @@ test("fmtRelativeAge formats recent scan timestamps clearly", () => {
   assert.equal(fmtRelativeAge(now - 5 * 60_000, now), "5m ago");
   assert.equal(fmtRelativeAge(now - 2 * 3_600_000, now), "2h ago");
   assert.notEqual(fmtRelativeAge(now - 48 * 3_600_000, now), "—");
+});
+
+test("top KPI cards render percentage status pills, remove single-chat 256k red overrides, and guard empty/zero-input telemetry", async () => {
+  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+  const rootReq = createRequire(path.join(repoRoot, "package.json"));
+  let esbuild: {
+    build: (opts: Record<string, unknown>) => Promise<unknown>;
+  };
+  try {
+    esbuild = rootReq("esbuild");
+  } catch {
+    const viteReq = createRequire(rootReq.resolve("vite/package.json"));
+    esbuild = viteReq("esbuild");
+  }
+
+  const tmpBase = path.join(repoRoot, "dist-test");
+  fs.mkdirSync(tmpBase, { recursive: true });
+  const tmpDir = fs.mkdtempSync(path.join(tmpBase, "fr-ui-render-test-"));
+  const outFile = path.join(tmpDir, "ui-views.mjs");
+  try {
+    await esbuild.build({
+      stdin: {
+        contents: [
+          'export { AllProjectsView, ProjectDetailView } from "./src/ui/components/ProjectOverview.tsx";',
+          'export { ChatDetailView } from "./src/ui/components/ChatDetail.tsx";'
+        ].join("\n"),
+        resolveDir: repoRoot,
+        loader: "tsx"
+      },
+      outfile: outFile,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      external: ["react", "react-dom", "react-dom/*"]
+    });
+
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ui = (await import(pathToFileURL(outFile).href)) as {
+      AllProjectsView: React.ComponentType<Record<string, unknown>>;
+      ProjectDetailView: React.ComponentType<Record<string, unknown>>;
+      ChatDetailView: React.ComponentType<Record<string, unknown>>;
+    };
+
+    const noop = () => {};
+    const noopAsync = async () => {};
+    const baseTime = {
+      activeMs: 60_000,
+      modelMs: 40_000,
+      toolWallMs: 20_000,
+      toolSumMs: 20_000,
+      userIdleMs: 5_000,
+      subagentMs: 0
+    };
+    const makeTokens = (overrides: Record<string, unknown> = {}) => ({
+      inputTokens: 10_000,
+      cacheReadTokens: 90_000,
+      outputTokens: 5_000,
+      peakContextTokens: 120_000,
+      cacheHitRatio: 0.9,
+      hasTokenTelemetry: true,
+      estimatedCostUsd: 0.25,
+      cacheSavingsUsd: 0.4,
+      unpricedModels: [],
+      ...overrides
+    });
+    const makeDashboard = (totalsOverrides: Record<string, unknown>) => ({
+      generatedAtMs: 1_795_000_000_000,
+      totals: {
+        projectCount: 1,
+        chatCount: 10,
+        subagentCount: 0,
+        swarmCount: 0,
+        tokens: makeTokens(),
+        time: baseTime,
+        contextHealth: {
+          measuredChatCount: 10,
+          avgPeakContextTokens: 140_000,
+          maxPeakContextTokens: 270_000,
+          under200kCount: 9,
+          under200kRatio: 0.9,
+          cliff200kChats: 2,
+          compaction256kChats: 1,
+          compactionEventCount: 3
+        },
+        ...totalsOverrides
+      },
+      projects: [],
+      recentChats: [],
+      globalSkills: [],
+      globalPluginsSkills: [],
+      globalTools: [],
+      globalModelBreakdown: [],
+      pricingRules: []
+    });
+
+    // 1. Review Focus #4: 90% <200k with compaction256kChats=1 must render Green (badge-success),
+    //    NOT Red, while keeping "2 ≥200k · 1 ≥256k · 3 resets" visible.
+    const highHealthHtml = renderToStaticMarkup(
+      React.createElement(ui.AllProjectsView, {
+        dashboard: makeDashboard({}),
+        onSelectProject: noop,
+        onSelectChat: noop,
+        onOpenSettings: noop
+      })
+    );
+    assert.match(
+      highHealthHtml,
+      /badge badge-success kpi-status-pill"[^>]*aria-label="90% &lt;200k — Healthy \(Green\)/
+    );
+    assert.doesNotMatch(
+      highHealthHtml,
+      /badge-danger kpi-status-pill"[^>]*90% &lt;200k/
+    );
+    assert.match(highHealthHtml, /2 ≥200k · 1 ≥256k · 3 resets/);
+    assert.match(
+      highHealthHtml,
+      /badge badge-success kpi-status-pill"[^>]*aria-label="90% cache hit — Healthy \(Green\)/
+    );
+
+    // 2. Review Focus #3: AllProjectsView with 0 sessions renders "No sessions in range" and no pill.
+    const emptyDashHtml = renderToStaticMarkup(
+      React.createElement(ui.AllProjectsView, {
+        dashboard: makeDashboard({
+          projectCount: 0,
+          chatCount: 0,
+          subagentCount: 0,
+          tokens: makeTokens({
+            inputTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 0,
+            cacheHitRatio: 0,
+            hasTokenTelemetry: false
+          }),
+          contextHealth: {
+            measuredChatCount: 0,
+            avgPeakContextTokens: 0,
+            maxPeakContextTokens: 0,
+            under200kCount: 0,
+            under200kRatio: 0,
+            cliff200kChats: 0,
+            compaction256kChats: 0,
+            compactionEventCount: 0
+          }
+        }),
+        onSelectProject: noop,
+        onSelectChat: noop,
+        onOpenSettings: noop
+      })
+    );
+    assert.equal(emptyDashHtml.includes("kpi-status-pill"), false);
+    assert.equal(emptyDashHtml.includes("0% cache hit"), false);
+    assert.match(emptyDashHtml, /No sessions in range/);
+
+    // 3. Zero-input telemetry session in AllProjectsView renders "No input tokens" (not "No token telemetry").
+    const zeroInputDashHtml = renderToStaticMarkup(
+      React.createElement(ui.AllProjectsView, {
+        dashboard: makeDashboard({
+          tokens: makeTokens({
+            inputTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 120,
+            cacheHitRatio: 0,
+            hasTokenTelemetry: true
+          }),
+          contextHealth: {
+            measuredChatCount: 0,
+            avgPeakContextTokens: 0,
+            maxPeakContextTokens: 0,
+            under200kCount: 0,
+            under200kRatio: 0,
+            cliff200kChats: 0,
+            compaction256kChats: 0,
+            compactionEventCount: 0
+          }
+        }),
+        onSelectProject: noop,
+        onSelectChat: noop,
+        onOpenSettings: noop
+      })
+    );
+    assert.equal(zeroInputDashHtml.includes("kpi-status-pill"), false);
+    assert.match(zeroInputDashHtml, /No input tokens/);
+    assert.equal(zeroInputDashHtml.includes("No token telemetry"), false);
+
+    // 4. ProjectDetailView with 0 chats renders "—" (not "N/A (legacy)") and "No sessions in range".
+    const makeProjectDetail = (
+      tokenOverrides: Record<string, unknown>,
+      chats: unknown[]
+    ) => ({
+      summary: {
+        projectPath: "/tmp/demo",
+        projectName: "demo",
+        chatCount: chats.length,
+        subagentCount: 0,
+        swarmCount: 0,
+        errorCount: 0,
+        firstActivityMs: 0,
+        lastActivityMs: 0,
+        tokens: makeTokens(tokenOverrides),
+        time: baseTime,
+        contextHealth: {
+          measuredChatCount: 0,
+          avgPeakContextTokens: 0,
+          maxPeakContextTokens: 0,
+          under200kCount: 0,
+          under200kRatio: 0,
+          cliff200kChats: 0,
+          compaction256kChats: 0,
+          compactionEventCount: 0
+        },
+        models: [],
+        modelBreakdown: [],
+        topPluginsSkills: [],
+        topSkills: [],
+        topTools: []
+      },
+      chats,
+      skillToolMetrics: [],
+      pluginSkillMetrics: [],
+      filesTouched: [],
+      diagnostics: [],
+      periodComparison: null
+    });
+
+    const emptyProjHtml = renderToStaticMarkup(
+      React.createElement(ui.ProjectDetailView, {
+        detail: makeProjectDetail(
+          {
+            inputTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 0,
+            cacheHitRatio: 0,
+            hasTokenTelemetry: false
+          },
+          []
+        ),
+        onSelectChat: noop,
+        onOpenSettings: noop
+      })
+    );
+    assert.equal(emptyProjHtml.includes("kpi-status-pill"), false);
+    assert.equal(emptyProjHtml.includes("N/A (legacy)"), false);
+    assert.match(emptyProjHtml, /No sessions in range/);
+
+    // 5. ProjectDetailView with hasTokenTelemetry=true and 0 input+cache tokens renders "No input tokens".
+    const makeChatSummary = (
+      id: string,
+      title: string,
+      tokenOverrides: Record<string, unknown>
+    ) => ({
+      conversationId: id,
+      title,
+      surface: "antigravity",
+      projectPath: "/tmp/demo",
+      projectName: "demo",
+      projectSource: "hook",
+      parentConversationId: null,
+      subagentRole: null,
+      subagentType: null,
+      startedAtMs: 1_795_000_000_000,
+      endedAtMs: 1_795_000_010_000,
+      terminationReason: null,
+      models: [],
+      modelBreakdown: [],
+      slashCommands: [],
+      turnCount: 1,
+      stepCount: 1,
+      toolCallCount: 0,
+      errorCount: 0,
+      skillsUsed: [],
+      topPluginsSkills: [],
+      tokens: makeTokens(tokenOverrides),
+      time: baseTime,
+      hasLiveHooks: false
+    });
+
+    const zeroInputProjHtml = renderToStaticMarkup(
+      React.createElement(ui.ProjectDetailView, {
+        detail: makeProjectDetail(
+          {
+            inputTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 120,
+            cacheHitRatio: 0,
+            hasTokenTelemetry: true
+          },
+          [
+            makeChatSummary("c-zero", "Zero input chat", {
+              inputTokens: 0,
+              cacheReadTokens: 0,
+              outputTokens: 120,
+              cacheHitRatio: 0,
+              hasTokenTelemetry: true
+            })
+          ]
+        ),
+        onSelectChat: noop,
+        onOpenSettings: noop
+      })
+    );
+    assert.equal(zeroInputProjHtml.includes("kpi-status-pill"), false);
+    assert.match(zeroInputProjHtml, /No input tokens/);
+    assert.equal(
+      zeroInputProjHtml.includes("Legacy transcripts without token counters"),
+      false
+    );
+
+    // 6. ChatDetailView renders Watch (Yellow) pill for 75% cache hit and "No input tokens" for 0 input+cache.
+    const makeChatDetail = (tokenOverrides: Record<string, unknown>) => ({
+      summary: makeChatSummary("c-chat", "Demo chat", tokenOverrides),
+      subagents: [],
+      turns: [],
+      plannerSteps: [],
+      toolCalls: [],
+      skillToolMetrics: [],
+      pluginSkillMetrics: [],
+      filesTouched: [],
+      diagnostics: [],
+      modelSwitches: []
+    });
+
+    const watchChatHtml = renderToStaticMarkup(
+      React.createElement(ui.ChatDetailView, {
+        detail: makeChatDetail({
+          inputTokens: 500,
+          cacheReadTokens: 1_500,
+          outputTokens: 200,
+          cacheHitRatio: 0.75,
+          hasTokenTelemetry: true
+        }),
+        knownProjects: [],
+        canSendMessage: false,
+        onAssignProject: noopAsync,
+        onSelectChat: noop,
+        onOpenSettings: noop
+      })
+    );
+    assert.match(
+      watchChatHtml,
+      /badge badge-warning kpi-status-pill"[^>]*aria-label="75% cache — Watch \(Yellow\)/
+    );
+
+    const zeroInputChatHtml = renderToStaticMarkup(
+      React.createElement(ui.ChatDetailView, {
+        detail: makeChatDetail({
+          inputTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: 200,
+          cacheHitRatio: 0,
+          hasTokenTelemetry: true
+        }),
+        knownProjects: [],
+        canSendMessage: false,
+        onAssignProject: noopAsync,
+        onSelectChat: noop,
+        onOpenSettings: noop
+      })
+    );
+    assert.equal(zeroInputChatHtml.includes("kpi-status-pill"), false);
+    assert.match(zeroInputChatHtml, /No input tokens/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

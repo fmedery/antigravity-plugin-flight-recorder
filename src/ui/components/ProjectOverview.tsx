@@ -27,6 +27,7 @@ import {
 } from "../format";
 import { CostCell } from "./CostCell";
 import { KpiHelpTip } from "./KpiHelpTip";
+import { KpiStatusPill } from "./KpiStatusPill";
 import {
   ModelBreakdownPanel,
   ModelInlinePill,
@@ -118,17 +119,6 @@ const ContextHealthCard: React.FC<ContextHealthCardProps> = ({
       ? `${deltaText} avg peak context ${cmp.label} (${fmtK(ch.avgPeakContextTokens)} vs ${fmtK(cmp.priorAvgPeakContextTokens)})`
       : undefined;
 
-  let targetTone: "success" | "warning" | "danger" = "success";
-  if (ch.compaction256kChats > 0 || ch.under200kRatio < 0.6) {
-    targetTone = "danger";
-  } else if (
-    ch.cliff200kChats > 0 ||
-    ch.compactionEventCount > 0 ||
-    ch.under200kRatio < 0.85
-  ) {
-    targetTone = "warning";
-  }
-
   let subDetail = "";
   if (ch.measuredChatCount > 0) {
     if (ch.cliff200kChats === 0 && ch.compactionEventCount === 0) {
@@ -145,6 +135,12 @@ const ContextHealthCard: React.FC<ContextHealthCardProps> = ({
       subDetail = parts.join(" · ");
     }
   }
+
+  const sessionNoun = ch.measuredChatCount === 1 ? "session" : "sessions";
+  const healthDetail =
+    ch.cliff200kChats === 0 && ch.compactionEventCount === 0
+      ? `${fmtPct(ch.under200kRatio)} of ${ch.measuredChatCount} measured ${sessionNoun} stayed under 200k peak context (max ${fmtK(ch.maxPeakContextTokens)}).`
+      : `${fmtPct(ch.under200kRatio)} of ${ch.measuredChatCount} measured ${sessionNoun} stayed under 200k peak context (${subDetail}).`;
 
   return (
     <div className="kpi-card">
@@ -166,9 +162,13 @@ const ContextHealthCard: React.FC<ContextHealthCardProps> = ({
       <div className="kpi-sub">
         {ch.measuredChatCount > 0 ? (
           <>
-            <span className={`badge badge-${targetTone} kpi-health-pill`}>
-              {fmtPct(ch.under200kRatio)} &lt;200k
-            </span>
+            <KpiStatusPill
+              kind="contextHealth"
+              ratio={ch.under200kRatio}
+              pillLabel={`${fmtPct(ch.under200kRatio)} <200k`}
+              title="Context Health"
+              detail={healthDetail}
+            />
             <span>{subDetail}</span>
           </>
         ) : (
@@ -395,14 +395,29 @@ export const AllProjectsView: React.FC<AllProjectsProps> = ({
             />
           </div>
           <div className="kpi-sub">
-            <span style={{ color: "var(--txt-success)", fontWeight: 600 }}>
-              {fmtPct(tot.tokens.cacheHitRatio)} cache hit
-            </span>
-            <DeltaPill
-              text={deltas.cacheHit.text}
-              tone={deltas.cacheHit.tone}
-              tooltip={deltas.cacheHit.tooltip}
-            />
+            {tot.tokens.hasTokenTelemetry &&
+            tot.tokens.inputTokens + tot.tokens.cacheReadTokens > 0 ? (
+              <>
+                <KpiStatusPill
+                  kind="cacheHit"
+                  ratio={tot.tokens.cacheHitRatio}
+                  pillLabel={`${fmtPct(tot.tokens.cacheHitRatio)} cache hit`}
+                  title="Prompt Cache Hit"
+                  detail={`${fmtPct(tot.tokens.cacheHitRatio)} of input context (${fmtK(tot.tokens.cacheReadTokens)} cached ÷ ${fmtK(tot.tokens.cacheReadTokens + tot.tokens.inputTokens)} total input; output excluded) was served from prompt cache.`}
+                />
+                <DeltaPill
+                  text={deltas.cacheHit.text}
+                  tone={deltas.cacheHit.tone}
+                  tooltip={deltas.cacheHit.tooltip}
+                />
+              </>
+            ) : tot.chatCount + tot.subagentCount === 0 ? (
+              <span>No sessions in range</span>
+            ) : tot.tokens.hasTokenTelemetry ? (
+              <span>No input tokens</span>
+            ) : (
+              <span>No token telemetry</span>
+            )}
           </div>
         </div>
         <div className="kpi-card">
@@ -1171,7 +1186,13 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             <KpiHelpTip helpKey="totalTokens" />
           </div>
           <div className="kpi-value">
-            <span>{s.tokens.hasTokenTelemetry ? fmtK(totalTokens) : "N/A (legacy)"}</span>
+            <span>
+              {detail.chats.length === 0
+                ? "—"
+                : s.tokens.hasTokenTelemetry
+                  ? fmtK(totalTokens)
+                  : "N/A (legacy)"}
+            </span>
             <DeltaPill
               text={deltas.tokens.text}
               tone={deltas.tokens.tone}
@@ -1179,19 +1200,28 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
             />
           </div>
           <div className="kpi-sub">
-            {s.tokens.hasTokenTelemetry ? (
+            {s.tokens.hasTokenTelemetry &&
+            s.tokens.inputTokens + s.tokens.cacheReadTokens > 0 ? (
               <>
-                <span style={{ color: "var(--txt-success)", fontWeight: 600 }}>
-                  {fmtPct(s.tokens.cacheHitRatio)} cache hit
-                </span>
+                <KpiStatusPill
+                  kind="cacheHit"
+                  ratio={s.tokens.cacheHitRatio}
+                  pillLabel={`${fmtPct(s.tokens.cacheHitRatio)} cache hit`}
+                  title="Prompt Cache Hit"
+                  detail={`${fmtPct(s.tokens.cacheHitRatio)} of input context (${fmtK(s.tokens.cacheReadTokens)} cached ÷ ${fmtK(s.tokens.cacheReadTokens + s.tokens.inputTokens)} total input; output excluded) was served from prompt cache.`}
+                />
                 <DeltaPill
                   text={deltas.cacheHit.text}
                   tone={deltas.cacheHit.tone}
                   tooltip={deltas.cacheHit.tooltip}
                 />
               </>
+            ) : detail.chats.length === 0 ? (
+              <span>No sessions in range</span>
+            ) : s.tokens.hasTokenTelemetry ? (
+              <span>No input tokens</span>
             ) : (
-              "Legacy transcripts without token counters"
+              <span>Legacy transcripts without token counters</span>
             )}
           </div>
         </div>
