@@ -2,7 +2,7 @@
 
 **See which plugins, skills, MCP servers, tools, and models drive your tokens, prompt-cache carry, estimated USD, and active agent time in Google Antigravity — and pinpoint concrete bottlenecks across projects and chats.**
 
-Flight Recorder is a local-only **Antigravity plugin with an interactive MCP App dashboard**. It works with **Antigravity 2.x (Hub)**, the **Antigravity IDE**, and the **Antigravity CLI (`agy`)** on **Windows, macOS, and Linux**.
+Flight Recorder is a **local-first Antigravity plugin with an interactive MCP App dashboard** — all transcript parsing and SQLite indexing stay on your machine, with zero background network calls or telemetry. It works with the **Antigravity App (2.x)**, **Antigravity IDE**, and **Antigravity CLI (`agy`)** on **Windows, macOS, and Linux**.
 
 [How It Works](#how-it-works) · [Dashboard](#using-the-dashboard) · [Asking in Chat](#asking-in-chat) · [Install](#installation--setup) · [Updating](#updating--uninstalling) · [Privacy](#privacy--security) · [Troubleshooting](#troubleshooting)
 
@@ -129,28 +129,15 @@ You don't have to open the dashboard. Ask your agent and it will call Flight Rec
 
 ### Install
 
-#### Antigravity Marketplace (Recommended once published)
-
-- **Antigravity App:** open **Left Sidebar → Customizations → Marketplace**, search for **Flight Recorder**, and click **Add**.
-- **Antigravity CLI (`agy`):**
-  ```bash
-  agy plugin install flight-recorder@antigravity-plugins-partners
-  ```
-
-#### Manual / GitHub Install
-
-All Antigravity surfaces also auto-discover plugins placed directly in your global plugins folder:
-
-- **macOS / Linux:** `~/.gemini/config/plugins/flight-recorder`
-- **Windows:** `%USERPROFILE%\.gemini\config\plugins\flight-recorder`
-
-##### Option 1: Antigravity CLI (`agy`) from GitHub
+#### Option 1: Antigravity CLI (`agy`) (Recommended)
 
 ```bash
 agy plugin install https://github.com/fmedery/antigravity-plugin-flight-recorder
 ```
 
-##### Option 2: Git Clone
+#### Option 2: Git Clone
+
+All Antigravity surfaces auto-discover plugins placed in your global plugins folder (`~/.gemini/config/plugins/flight-recorder` on macOS/Linux, `%USERPROFILE%\.gemini\config\plugins\flight-recorder` on Windows):
 
 **macOS / Linux (Terminal):**
 ```bash
@@ -167,7 +154,7 @@ git clone https://github.com/fmedery/antigravity-plugin-flight-recorder "$HOME\.
 git clone https://github.com/fmedery/antigravity-plugin-flight-recorder "%USERPROFILE%\.gemini\config\plugins\flight-recorder"
 ```
 
-##### Option 3: Download ZIP (no Git)
+#### Option 3: Download ZIP (no Git)
 
 1. On GitHub, click **Code → Download ZIP** and extract the archive.
 2. Rename the extracted folder to `flight-recorder` and move it into your plugins directory so `plugin.json` sits directly at:
@@ -175,7 +162,7 @@ git clone https://github.com/fmedery/antigravity-plugin-flight-recorder "%USERPR
    - **macOS / Linux:** `~/.gemini/config/plugins/flight-recorder/plugin.json`
    > **Important:** `plugin.json` must be directly inside `flight-recorder/` — not nested one level deeper (e.g. `flight-recorder/antigravity-plugin-flight-recorder-main/plugin.json`).
 
-##### Option 4: Ask Antigravity in Chat
+#### Option 4: Ask Antigravity in Chat
 
 Paste this prompt into any Antigravity conversation:
 
@@ -194,7 +181,7 @@ Paste this prompt into any Antigravity conversation:
 
 ## Privacy & Security
 
-- **Zero background network, zero telemetry:** no analytics, crash reporting, or automatic requests (`default-src 'none'` iframe CSP). The only optional outbound request is fetching GitHub's `plugin.json` when you manually click **Updates**.
+- **Zero background network, zero telemetry:** no analytics, crash reporting, or automatic requests (`default-src 'none'` iframe CSP). The only optional outbound request is checking GitHub's latest release (with a `plugin.json` fallback) when you manually click **Updates**.
 - **Passive-only hooks:** uses only `SessionStart`, `PreInvocation`, `PostToolUse`, `PostInvocation`, and `Stop` — never `PreToolUse` — and fails open (`{}`) on any error, so it can never block your agent.
 - **Redacted & owner-private storage:** API keys, Bearer tokens, JWTs, URL credentials, and ANSI/OSC escape sequences are scrubbed from previews before indexing. Data files use `0700`/`0600` owner-only permissions on macOS/Linux and private `%USERPROFILE%` ACLs on Windows.
 
@@ -221,9 +208,9 @@ See [SECURITY.md](./SECURITY.md) for the full audit table.
 
 You can check whether a newer version is available anytime by clicking **Updates** in the top-right of the Flight Recorder dashboard (manual check only; for Git installs, it also gives you a copyable `git -C ... pull` command for your exact folder).
 
-### Upgrade a Marketplace install
+### Upgrade an Antigravity-managed install
 
-If you installed Flight Recorder from the **Antigravity Marketplace**, Antigravity manages updates automatically from **Customizations → Installed** (or re-run `agy plugin install flight-recorder@antigravity-plugins-partners`).
+If you installed Flight Recorder through Antigravity (**Customizations → Installed** or `agy plugin install`), update it directly from Antigravity or re-run your `agy plugin install` command.
 
 ### Upgrade an existing Git install
 
