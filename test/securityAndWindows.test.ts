@@ -32,7 +32,9 @@ import { parseTranscriptFile } from "../src/server/transcriptParser.js";
 import type { ConversationSummary } from "../src/shared/types.js";
 import {
   KPI_HELP_COPY,
+  PCT_SCALE_BANDS,
   buildErrorTroubleshootingPrompt,
+  classifyPctStatus,
   describeErrorBadge,
   describePluginWarning,
   fmtRelativeAge,
@@ -143,6 +145,49 @@ test("Windows AGY project inference, transcript path extraction, .exe/.cmd plugi
   assert.match(KPI_HELP_COPY.cacheHitRatio.impact, /TTL|compaction/i);
   assert.match(KPI_HELP_COPY.contextHealth.meaning, /200k/i);
   assert.match(KPI_HELP_COPY.contextHealth.impact, /compaction/i);
+
+  // Rounding-consistent thresholds for Context Health (% <200k)
+  assert.deepEqual(classifyPctStatus("contextHealth", 0.85), {
+    pct: 85,
+    tone: "success",
+    glyph: "●",
+    label: "Healthy",
+    colorLabel: "Green"
+  });
+  assert.equal(classifyPctStatus("contextHealth", 0.845).tone, "success"); // rounds to 85%
+  assert.equal(classifyPctStatus("contextHealth", 0.844).tone, "warning"); // rounds to 84%
+  assert.equal(classifyPctStatus("contextHealth", 0.67).tone, "warning");
+  assert.equal(classifyPctStatus("contextHealth", 0.595).tone, "warning"); // rounds to 60%
+  assert.equal(classifyPctStatus("contextHealth", 0.594).tone, "danger"); // rounds to 59%
+
+  // Rounding-consistent thresholds for Cache Hit (%)
+  assert.deepEqual(classifyPctStatus("cacheHit", 0.91), {
+    pct: 91,
+    tone: "success",
+    glyph: "●",
+    label: "Healthy",
+    colorLabel: "Green"
+  });
+  assert.equal(classifyPctStatus("cacheHit", 0.795).tone, "success"); // rounds to 80%
+  assert.equal(classifyPctStatus("cacheHit", 0.794).tone, "warning"); // rounds to 79%
+  assert.equal(classifyPctStatus("cacheHit", 0.595).tone, "warning"); // rounds to 60%
+  assert.equal(classifyPctStatus("cacheHit", 0.594).tone, "danger"); // rounds to 59%
+
+  // Non-finite and out-of-range ratios clamp cleanly to 0..100
+  assert.equal(classifyPctStatus("cacheHit", Number.NaN).pct, 0);
+  assert.equal(classifyPctStatus("cacheHit", Number.NaN).tone, "danger");
+  assert.equal(classifyPctStatus("contextHealth", -0.2).pct, 0);
+  assert.equal(classifyPctStatus("contextHealth", 1.4).pct, 100);
+  assert.equal(classifyPctStatus("contextHealth", 1.4).tone, "success");
+
+  // Legend metadata wired on Total Tokens, Cache Hit, Tokens & Cache, and Context Health
+  assert.equal(PCT_SCALE_BANDS.contextHealth.length, 3);
+  assert.equal(PCT_SCALE_BANDS.cacheHit.length, 3);
+  assert.equal(KPI_HELP_COPY.totalTokens.legend?.bands, PCT_SCALE_BANDS.cacheHit);
+  assert.match(KPI_HELP_COPY.totalTokens.meaning, /cache hit/i);
+  assert.equal(KPI_HELP_COPY.cacheHitRatio.legend?.bands, PCT_SCALE_BANDS.cacheHit);
+  assert.equal(KPI_HELP_COPY.tokensAndCache.legend?.bands, PCT_SCALE_BANDS.cacheHit);
+  assert.equal(KPI_HELP_COPY.contextHealth.legend?.bands, PCT_SCALE_BANDS.contextHealth);
 
   // Windows plugin CLI (.exe / .cmd) + multi-dir builtin discovery + Windows transcript paths
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fr-win-test-"));

@@ -183,6 +183,99 @@ export function formatTimeRangeSummary(
   }
 }
 
+export type StatusBadgeTone = "success" | "warning" | "danger";
+
+export type PctScaleKind = "contextHealth" | "cacheHit";
+
+export interface PctScaleBand {
+  tone: StatusBadgeTone;
+  glyph: string;
+  range: string;
+  label: string;
+  colorLabel: string;
+}
+
+export interface PctStatusInfo {
+  pct: number;
+  tone: StatusBadgeTone;
+  glyph: string;
+  label: string;
+  colorLabel: string;
+}
+
+export interface KpiHelpLegend {
+  title: string;
+  bands: readonly PctScaleBand[];
+}
+
+export const PCT_SCALE_BANDS: Record<PctScaleKind, readonly PctScaleBand[]> = {
+  contextHealth: [
+    {
+      tone: "success",
+      glyph: "●",
+      range: "≥85%",
+      label: "Healthy",
+      colorLabel: "Green"
+    },
+    {
+      tone: "warning",
+      glyph: "▲",
+      range: "60–84%",
+      label: "Watch",
+      colorLabel: "Yellow"
+    },
+    {
+      tone: "danger",
+      glyph: "◆",
+      range: "<60%",
+      label: "High risk",
+      colorLabel: "Red"
+    }
+  ],
+  cacheHit: [
+    {
+      tone: "success",
+      glyph: "●",
+      range: "≥80%",
+      label: "Healthy",
+      colorLabel: "Green"
+    },
+    {
+      tone: "warning",
+      glyph: "▲",
+      range: "60–79%",
+      label: "Watch",
+      colorLabel: "Yellow"
+    },
+    {
+      tone: "danger",
+      glyph: "◆",
+      range: "<60%",
+      label: "Low",
+      colorLabel: "Red"
+    }
+  ]
+};
+
+export function classifyPctStatus(
+  kind: PctScaleKind,
+  ratio: number
+): PctStatusInfo {
+  const pct = Number.isFinite(ratio)
+    ? Math.max(0, Math.min(100, Math.round(ratio * 100)))
+    : 0;
+  const bands = PCT_SCALE_BANDS[kind];
+  const greenMin = kind === "contextHealth" ? 85 : 80;
+  const band = pct >= greenMin ? bands[0] : pct >= 60 ? bands[1] : bands[2];
+  return {
+    pct,
+    tone: band.tone,
+    glyph: band.glyph,
+    label: band.label,
+    colorLabel: band.colorLabel
+  };
+}
+
 export type KpiHelpKey =
   | "projects"
   | "chatsSubagents"
@@ -198,6 +291,7 @@ export interface KpiHelpEntry {
   title: string;
   meaning: string;
   impact: string;
+  legend?: KpiHelpLegend;
 }
 
 export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
@@ -216,25 +310,37 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
       "Subagents and Swarm workers run in isolated context windows so parallel edits and searches do not bloat your coordinator chat's prompt cache or push it toward compaction."
   },
   totalTokens: {
-    title: "Total Tokens Processed",
+    title: "Total Tokens & Cache Hit",
     meaning:
-      "Sum of three separate, non-overlapping buckets across every model step: cached reads + uncached new input + generated output. Neither new input nor output tokens are inside the cache count (generated outputs only become cacheable as input history on later steps).",
+      "Sum of three separate, non-overlapping buckets across every model step: cached reads + uncached new input + generated output. Neither new input nor output tokens are inside the cache count. The % cache hit badge shows the share of input served from prompt cache (cached reads ÷ total input; output excluded).",
     impact:
-      "Large files, SKILL.md docs, or verbose tool outputs added early get re-read on every following step, multiplying total volume. Keep chats focused and peak context below ~200k to avoid slowdowns, recall loss, and compaction resets."
+      "High cache hits cut input cost 75–90% and prefill faster. Large files, SKILL.md docs, or verbose tool outputs added early get re-read on every following step, while idle pauses (>4–5 min), model switches, or compaction resets break the cache.",
+    legend: {
+      title: "Cache hit color scale",
+      bands: PCT_SCALE_BANDS.cacheHit
+    }
   },
   cacheHitRatio: {
     title: "Prompt Cache Hit Ratio",
     meaning:
       "Share of total input context served from the prompt cache: cached reads ÷ (cached reads + new input). Output tokens are excluded because generated tokens are never cached on the step they are produced—only prior input context is.",
     impact:
-      "Cached reads typically cost 75–90% less than fresh input and prefill faster (Saved ~$ shows the estimated discount vs. paying full input rates). Idle pauses over ~4–5 min (TTL expiry), model switches, or context compaction break the cache and trigger full-rate re-reads."
+      "Cached reads typically cost 75–90% less than fresh input and prefill faster (Saved ~$ shows the estimated discount vs. paying full input rates). Idle pauses over ~4–5 min (TTL expiry), model switches, or context compaction break the cache and trigger full-rate re-reads.",
+    legend: {
+      title: "Cache hit color scale",
+      bands: PCT_SCALE_BANDS.cacheHit
+    }
   },
   tokensAndCache: {
     title: "Tokens, Peak Context & Cache",
     meaning:
       "Total tokens processed in this chat (cached reads + uncached new input + generated output), the share of input served from cache (output excluded), and peak single-step context size. Neither new input nor output is counted inside cached reads.",
     impact:
-      "High cache hits cut input cost 75–90% and speed up responses, while crossing ~200k–256k peak context degrades recall and triggers prefix compaction—forcing files and skills to be re-read at full uncached cost."
+      "High cache hits cut input cost 75–90% and speed up responses, while crossing ~200k–256k peak context degrades recall and triggers prefix compaction—forcing files and skills to be re-read at full uncached cost.",
+    legend: {
+      title: "Cache hit color scale",
+      bands: PCT_SCALE_BANDS.cacheHit
+    }
   },
   activeAgentTime: {
     title: "Active Agent Time",
@@ -253,9 +359,13 @@ export const KPI_HELP_COPY: Record<KpiHelpKey, KpiHelpEntry> = {
   contextHealth: {
     title: "Context & Compaction Health",
     meaning:
-      "Average peak single-step context size across sessions with token telemetry, the percentage staying under the 200k cliff, counts of sessions crossing 200k or 256k, and compaction or prefix-reset cache misses.",
+      "Average peak single-step context size across sessions with token telemetry, the % <200k badge showing what share of sessions stayed under the 200k cliff, counts of sessions crossing 200k or 256k, and compaction or prefix-reset cache misses.",
     impact:
-      "Keeping peak context below 200k preserves model recall and avoids forced compaction and full-rate cache re-reads. High peak context points to noisy skills, large file reads, or long threads that should be trimmed or delegated to subagents."
+      "Keeping peak context below 200k preserves model recall and avoids forced compaction and full-rate cache re-reads. High peak context points to noisy skills, large file reads, or long threads that should be trimmed or delegated to subagents.",
+    legend: {
+      title: "Under-200k color scale",
+      bands: PCT_SCALE_BANDS.contextHealth
+    }
   },
   estCost: {
     title: "Estimated API Equivalent Cost",
