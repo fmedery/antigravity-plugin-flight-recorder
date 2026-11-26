@@ -1,4 +1,4 @@
-/* flight-recorder v0.3.0 */
+/* flight-recorder v0.4.0 */
 import { createRequire as __frCreateRequire } from "node:module"; const require = __frCreateRequire(import.meta.url);
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -26792,7 +26792,7 @@ function buildGitPullCommand(pluginRoot, platform = process.platform) {
 }
 
 // src/server/updateCheck.ts
-var FALLBACK_PLUGIN_VERSION = "0.3.0", REPO_URL = "https://github.com/fmedery/antigravity-plugin-flight-recorder", REMOTE_RELEASE_URL = "https://api.github.com/repos/fmedery/antigravity-plugin-flight-recorder/releases/latest", REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json", MAX_RESPONSE_BYTES = 131072, DEFAULT_TIMEOUT_MS = 5e3, DEFAULT_CACHE_TTL_MS = 3e4, checkCache = /* @__PURE__ */ new Map();
+var FALLBACK_PLUGIN_VERSION = "0.4.0", REPO_URL = "https://github.com/fmedery/antigravity-plugin-flight-recorder", REMOTE_RELEASE_URL = "https://api.github.com/repos/fmedery/antigravity-plugin-flight-recorder/releases/latest", REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json", MAX_RESPONSE_BYTES = 131072, DEFAULT_TIMEOUT_MS = 5e3, DEFAULT_CACHE_TTL_MS = 3e4, checkCache = /* @__PURE__ */ new Map();
 function readInstalledVersion(pluginRoot) {
   if (!pluginRoot) return FALLBACK_PLUGIN_VERSION;
   try {
