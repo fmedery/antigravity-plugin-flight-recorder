@@ -10,6 +10,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-26
+
+### Added
+
+- **pricing:** disclose built-in static API rate sources and start custom rules at 0
+
+### Fixed
+
+- **windows:** resolve git worktree commondir cross-platform and upgrade CI actions to v7
+
+### Documentation
+
+- clarify local-first behavior and remove unpublished Marketplace commands
+
 ## [0.4.1] - 2026-11-26
 
 ### Changed
@@ -54,7 +68,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Added secret redaction (`src/shared/redact.ts`), ANSI/OSC control-character stripping, POSIX `0700`/`0600` data permissions, ReDoS-safe pricing glob matching, bounded hook ingestion, `SECURITY.md`, and `MIT` `LICENSE`.
 
-[Unreleased]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/fmedery/antigravity-plugin-flight-recorder/commits/69efe49
