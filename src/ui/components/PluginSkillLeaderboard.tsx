@@ -31,6 +31,19 @@ interface Props {
 type KindFilter = "All" | "Plugin" | "Skill";
 type ImpactBasis = "spend" | "context";
 
+const IMPACT_BASIS_HELP: Record<ImpactBasis, string> = {
+  spend:
+    "Ranked by estimated cost & active time driven by each workflow (including subagents) — shows what drives spend and wait time.",
+  context:
+    "Ranked by total context tokens added and carried forward — shows what fills your context window."
+};
+
+const KIND_FILTER_HELP: Record<KindFilter, string> = {
+  All: "Show both rolled-up plugins and standalone skills.",
+  Plugin: "Parent-level rollup of plugin sub-skills, CLIs, and MCP servers.",
+  Skill: "Standalone skills invoked outside a plugin."
+};
+
 export const PluginSkillLeaderboard: React.FC<Props> = ({
   title = "Most Token-Hungry Plugins & Skills",
   subtitle,
@@ -153,6 +166,8 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
               <button
                 type="button"
                 className={`basis-btn ${filter === "All" ? "active" : ""}`}
+                title={KIND_FILTER_HELP.All}
+                aria-pressed={filter === "All"}
                 onClick={() => setFilter("All")}
               >
                 All ({counts.all})
@@ -160,6 +175,8 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
               <button
                 type="button"
                 className={`basis-btn ${filter === "Plugin" ? "active" : ""}`}
+                title={KIND_FILTER_HELP.Plugin}
+                aria-pressed={filter === "Plugin"}
                 onClick={() => setFilter("Plugin")}
               >
                 Plugins ({counts.plugins})
@@ -167,6 +184,8 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
               <button
                 type="button"
                 className={`basis-btn ${filter === "Skill" ? "active" : ""}`}
+                title={KIND_FILTER_HELP.Skill}
+                aria-pressed={filter === "Skill"}
                 onClick={() => setFilter("Skill")}
               >
                 Skills ({counts.skills})
@@ -177,6 +196,7 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
           <select
             className="input-field input-field-sm"
             aria-label="Sort plugins and skills"
+            title={IMPACT_BASIS_HELP[basis]}
             value={basis}
             onChange={(e) => setBasis(e.target.value as ImpactBasis)}
           >
@@ -208,6 +228,8 @@ export const PluginSkillLeaderboard: React.FC<Props> = ({
           )}
         </div>
       </div>
+
+      <div className="panel-caption">{IMPACT_BASIS_HELP[basis]}</div>
 
       <div className="table-wrap">
         <table className="data-table">

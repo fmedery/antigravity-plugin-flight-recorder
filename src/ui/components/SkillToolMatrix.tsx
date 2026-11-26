@@ -22,6 +22,21 @@ interface Props {
 type CategoryFilter = "All" | "Skill" | "Tool" | "MCP" | "Subagent";
 type SortField = "context" | "totalDurationMs";
 
+const SORT_FIELD_HELP: Record<SortField, string> = {
+  context:
+    "Ranked by direct tokens + compounded cache carry across later steps — shows which calls bloat context the most.",
+  totalDurationMs:
+    "Ranked by merged wall-clock execution time — shows which tool, MCP, or subagent calls took the longest."
+};
+
+const CATEGORY_FILTER_HELP: Record<CategoryFilter, string> = {
+  All: "Show all individual tools, skills, MCP calls, and subagents.",
+  Skill: "Individual SKILL.md reads and skill invocations.",
+  Tool: "Built-in workspace tools (file reads/edits, search, shell commands).",
+  MCP: "External MCP server tool calls.",
+  Subagent: "Delegated subagent runs spawned from this scope."
+};
+
 export const SkillToolMatrix: React.FC<Props> = ({
   metrics,
   scopeLabel = "current scope",
@@ -140,6 +155,8 @@ export const SkillToolMatrix: React.FC<Props> = ({
             <button
               key={cat}
               type="button"
+              title={CATEGORY_FILTER_HELP[cat]}
+              aria-pressed={filter === cat}
               onClick={() => setFilter(cat)}
               className={`tab-pill ${filter === cat ? "active" : ""}`}
             >
@@ -155,6 +172,8 @@ export const SkillToolMatrix: React.FC<Props> = ({
       </div>
 
       <div className="panel">
+        <div className="panel-caption">{SORT_FIELD_HELP[sortBy]}</div>
+
         <div className="table-wrap">
           <table className="data-table">
             <thead>
@@ -173,6 +192,7 @@ export const SkillToolMatrix: React.FC<Props> = ({
                   scope="col"
                   className="text-right"
                   style={{ cursor: "pointer" }}
+                  title="Direct input tokens plus compounded cache carry re-read across subsequent steps"
                   onClick={() => toggleSort("context")}
                 >
                   Context Impact{" "}

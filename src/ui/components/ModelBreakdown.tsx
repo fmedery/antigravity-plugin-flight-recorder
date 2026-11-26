@@ -6,6 +6,15 @@ import { CostCell } from "./CostCell";
 
 export type ModelShareBasis = "tokens" | "steps" | "time";
 
+const MODEL_BASIS_HELP: Record<ModelShareBasis, string> = {
+  tokens:
+    "Share of total tokens processed (input + cache + output) — shows where cost and context budget go.",
+  steps:
+    "Share of model calls — shows which model handles most of the turn-by-turn work.",
+  time:
+    "Share of active thinking & generation time (excluding tools & idle waits) — shows which model makes you wait."
+};
+
 function resolveBasis(
   breakdown: ModelUsageMetric[],
   requestedBasis: ModelShareBasis
@@ -223,6 +232,8 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
             <button
               type="button"
               className={`basis-btn ${activeBasis === "tokens" ? "active" : ""}`}
+              title={MODEL_BASIS_HELP.tokens}
+              aria-pressed={activeBasis === "tokens"}
               onClick={() => setBasis("tokens")}
             >
               Tokens
@@ -230,6 +241,8 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
             <button
               type="button"
               className={`basis-btn ${activeBasis === "steps" ? "active" : ""}`}
+              title={MODEL_BASIS_HELP.steps}
+              aria-pressed={activeBasis === "steps"}
               onClick={() => setBasis("steps")}
             >
               Steps
@@ -237,6 +250,8 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
             <button
               type="button"
               className={`basis-btn ${activeBasis === "time" ? "active" : ""}`}
+              title={MODEL_BASIS_HELP.time}
+              aria-pressed={activeBasis === "time"}
               onClick={() => setBasis("time")}
             >
               Model Time
@@ -256,6 +271,13 @@ export const ModelBreakdownPanel: React.FC<ModelBreakdownPanelProps> = ({
       </div>
 
       <div style={{ padding: "10px 12px" }}>
+        <div className="model-basis-caption">
+          {MODEL_BASIS_HELP[effectiveBasis]}
+          {fellBackToSteps
+            ? " (Showing steps because no token telemetry was recorded.)"
+            : ""}
+        </div>
+
         <div
           className="model-bar"
           style={{ height: 12 }}

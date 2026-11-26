@@ -1292,14 +1292,35 @@ export const ProjectDetailView: React.FC<ProjectDetailProps> = ({
 
             {usageSubtab === "files" && (
               <div className="panel">
+                <div className="panel-caption">
+                  Files touched in this project (<code>r</code> read · <code>e</code> edit · <code>c</code> create) — Context Carry is total tokens added and re-read in later steps.{onOpenFile ? " Click a path to open it." : ""}
+                </div>
                 <div className="table-wrap">
                   <table className="data-table">
                     <thead>
                       <tr>
                         <th scope="col">File</th>
-                        <th scope="col" className="text-right">Touches</th>
-                        <th scope="col" className="text-right">Read Size</th>
-                        <th scope="col" className="text-right">Context Carry</th>
+                        <th
+                          scope="col"
+                          className="text-right"
+                          title="Counts of reads (r), edits (e), and creates (c)"
+                        >
+                          Touches
+                        </th>
+                        <th
+                          scope="col"
+                          className="text-right"
+                          title="Total raw bytes returned when reading this file"
+                        >
+                          Read Size
+                        </th>
+                        <th
+                          scope="col"
+                          className="text-right"
+                          title="Direct tokens from reading this file plus compounded cache re-reads across subsequent steps"
+                        >
+                          Context Carry
+                        </th>
                       </tr>
                     </thead>
                     <tbody>

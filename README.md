@@ -34,7 +34,7 @@ Navigate with the breadcrumb at the top (**All Projects / *project* / *chat***).
 - **Time range** — `Today`, `7d`, `30d`, or `All time`; every view, KPI, and leaderboard is filtered to the selected window, and `Today` / `7d` / `30d` display period-over-period delta pills (`vs yesterday`, `vs prior 7d`, `vs prior 30d`).
 - **Top-right buttons** — **Rescan** re-indexes transcripts and hook events on demand; **Pricing** opens per-model USD rates; **Updates** checks GitHub for a newer version on demand (never runs automatically in the background).
 
-Every KPI card has a **`?`** tip explaining what the metric means and why it matters.
+Every KPI card has a **`?`** tip explaining what the metric means and why it matters, and panel controls (**Tokens / Steps / Model Time**, **Spend & Time / Context Tokens**, **Context Impact / Wall Time**, **Files**, and the step token chart) display an inline one-liner explaining the active view plus hover tooltips on every button.
 
 ### 1. All Projects (home)
 
@@ -53,11 +53,11 @@ KPIs: **Projects**, **Total Tokens**, **Active Time**, **Context Health** (avg p
 Available globally on the **Plugins & Models** tab as well as per-project and per-chat — this is where most optimization starts:
 
 - **Parent-first:** rows are top-level plugins or standalone skills (e.g. `Superpowers`, `Cloudflare`, `Gmail`), so you see what drives most of your spend and time *before* drilling into sub-skills, MCP tools, or CLIs. Click a row to expand its children.
-- **Filter & sort:** `All / Plugins / Skills`, sorted by **Spend & Time** or **Context Tokens** (instruction-markdown carry vs. tool-execution output).
+- **Filter & sort:** `All / Plugins / Skills` (with hover tooltips distinguishing parent-level plugins from standalone skills), sorted by **Spend & Time** or **Context Tokens** with a live one-liner explaining the active ranking.
 - **Waste badges:**
   - **Unused load** — a tool-backed `SKILL.md` sat in context, but the chat never called its CLI or MCP tools.
   - **N× read** — the same `SKILL.md` was read multiple times.
-  - Red **err** badges — click to open a guidance drawer with error samples, what it means, and how to fix it.
+  - Red **err** badges — click to open an inline error drawer with recorded samples, what it means, remediation steps, and **Troubleshoot With Agent**.
 
 ![Plugins and Skills leaderboard with annotated model mix, waste badges, and expanded breakdown drawer](./docs/screenshots/plugins-leaderboard.png)
 
@@ -68,7 +68,7 @@ KPIs: **Chats** (incl. subagents), **Total Tokens**, **Active Time**, **Context 
 | Tab | What you get |
 |---|---|
 | **Overview** | Model mix, recent chats, and the project's top plugins & skills. |
-| **Usage** | Sub-tabs for **Plugins & Skills**, **Models**, **Tools**, and **Files** touched. |
+| **Usage** | Sub-tabs for **Plugins & Skills**, **Models** (toggle **Tokens**, **Steps**, or **Model Time** share), **Tools** (sort by **Context Impact** or **Wall Time**), and **Files** (`r` read · `e` edit · `c` create touches and `Context Carry`, click to open). |
 | **Chats** | Every chat and subagent run in the project. |
 
 ![Project view with annotated KPIs, model mix, and grouped chats with expanded subagents](./docs/screenshots/project-view.png)
@@ -80,7 +80,7 @@ KPIs: **Active Time**, **Turns & Wait**, **Tokens & Cache**, **Est. Cost**. Use 
 | Tab | What you get |
 |---|---|
 | **Timeline** | Turn-by-turn waterfall separating **active agent time** (model + parallel-merged tools + subagents) from **user wait / idle**, with cache-miss and subagent markers. |
-| **Tokens & Models** | Per-step context bars with **`200k` cliff** and **`256k` compaction** thresholds, cache-miss flags, and per-model breakdown with **orchestrator model-switch** detection. |
+| **Tokens & Models** | Per-step context bars with **`200k` cliff** and **`256k` compaction** thresholds, cache-miss flags, and per-model breakdown (**Tokens**, **Steps**, or **Model Time** share) with **orchestrator model-switch** detection. |
 | **Plugins & Tools** | The chat's plugin & skill leaderboard and per-tool metrics. |
 
 #### Timeline
@@ -91,7 +91,7 @@ Inspect each user turn, parallel tool batch, cache miss, subagent run, and step-
 
 #### Tokens & Models
 
-Track prompt-cache carry step by step against `200k` / `256k` context thresholds and spot orchestrator model switches.
+Track prompt-cache carry step by step against `200k` / `256k` context thresholds, switch between **Tokens**, **Steps**, and **Model Time** model shares, and spot orchestrator model switches.
 
 ![Chat Tokens and Models panel with annotated 200k cliff, 256k compaction thresholds, and model switch log](./docs/screenshots/chat-tokens-models.png)
 

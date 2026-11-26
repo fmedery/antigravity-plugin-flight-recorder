@@ -451,6 +451,15 @@ select {
   font-size: 13px;
 }
 
+.panel-caption {
+  padding: 6px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--txt-tertiary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--bdr-secondary);
+}
+
 @property --tab-fade-start {
   syntax: "<length>";
   inherits: false;
@@ -912,6 +921,13 @@ table.data-table tbody tr.subagent-row:hover {
   border-color: var(--ring);
   border-color: color-mix(in srgb, var(--ring) 75%, transparent);
   color: var(--txt-primary);
+}
+
+.model-basis-caption {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--txt-tertiary);
+  margin-bottom: 8px;
 }
 
 .switch-row {
