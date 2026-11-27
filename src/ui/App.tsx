@@ -1,12 +1,5 @@
-import {
-  App,
-  applyDocumentTheme,
-  applyHostStyleVariables,
-  type McpUiHostContext
-} from "@modelcontextprotocol/ext-apps";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { z } from "zod";
-import { pathBaseName, toFileUri } from "../shared/paths";
+import { pathBaseName } from "../shared/paths";
 import { buildClientTimeRangeArgs } from "../shared/timeRange.js";
 import type {
   ConversationDetail,
@@ -23,6 +16,12 @@ import {
 } from "./components/ProjectOverview";
 import { SettingsModal } from "./components/SettingsModal";
 import { fmtRelativeAge } from "./format";
+import {
+  createHostBridge,
+  type DashboardAction,
+  type HostBridge,
+  type ViewMode
+} from "./hostBridge";
 
 declare const __FLIGHT_RECORDER_VERSION__: string | undefined;
 
@@ -34,22 +33,9 @@ const APP_VERSION =
 const AUTO_REFRESH_INTERVAL_MS = 30_000;
 const RELATIVE_TIME_TICK_MS = 10_000;
 
-type ViewMode = "projects" | "project" | "chat";
-
-const ToggleAuxPaneResultSchema = z
-  .object({ isError: z.boolean().optional() })
-  .passthrough();
-
-interface InitialToolPayload {
-  initialView?: ViewMode;
-  selectedProjectPath?: string | null;
-  selectedConversationId?: string | null;
-  dashboard?: DashboardData;
-}
-
 export const AppRoot: React.FC = () => {
-  const appRef = useRef<App | null>(null);
-  const receivedToolResultRef = useRef(false);
+  const bridgeRef = useRef<HostBridge | null>(null);
+  const receivedDashboardRef = useRef(false);
 
   const [connected, setConnected] = useState(false);
   const [canMessage, setCanMessage] = useState(false);
@@ -98,22 +84,16 @@ export const AppRoot: React.FC = () => {
   updatingRangeRef.current = updatingRange;
   lastScanAtMsRef.current = lastScanAtMs;
 
-  const callAppTool = useCallback(
-    async <T,>(name: string, args: Record<string, unknown> = {}): Promise<T> => {
-      const app = appRef.current;
-      if (!app) {
-        throw new Error("MCP App not connected");
+  const callAction = useCallback(
+    async <T,>(
+      action: DashboardAction,
+      args: Record<string, unknown> = {}
+    ): Promise<T> => {
+      const bridge = bridgeRef.current;
+      if (!bridge) {
+        throw new Error("Flight Recorder host bridge not connected");
       }
-      const res = await app.callServerTool({ name, arguments: args });
-      if (res.isError) {
-        const msg =
-          res.content
-            ?.map((c) => (c.type === "text" ? c.text : ""))
-            .filter(Boolean)
-            .join(" ") || `Tool ${name} failed`;
-        throw new Error(msg);
-      }
-      return (res.structuredContent ?? {}) as T;
+      return bridge.callAction<T>(action, args);
     },
     []
   );
@@ -122,8 +102,8 @@ export const AppRoot: React.FC = () => {
     try {
       setLoading(true);
       setErrorMsg(null);
-      const data = await callAppTool<DashboardData>(
-        "app_get_dashboard_data",
+      const data = await callAction<DashboardData>(
+        "get_dashboard_data",
         buildClientTimeRangeArgs(timeRangeRef.current)
       );
       const ts = data?.generatedAtMs || Date.now();
@@ -135,7 +115,7 @@ export const AppRoot: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [callAppTool]);
+  }, [callAction]);
 
   const openProject = useCallback(
     async (projectPath: string) => {
@@ -146,19 +126,16 @@ export const AppRoot: React.FC = () => {
         setInitialChatStep(null);
         setChatDetail(null);
         setView("project");
-        const detail = await callAppTool<ProjectDetail>(
-          "app_get_project_detail",
-          {
-            projectPath,
-            ...buildClientTimeRangeArgs(timeRangeRef.current)
-          }
-        );
+        const detail = await callAction<ProjectDetail>("get_project_detail", {
+          projectPath,
+          ...buildClientTimeRangeArgs(timeRangeRef.current)
+        });
         setProjectDetail(detail);
       } catch (err) {
         setErrorMsg(err instanceof Error ? err.message : String(err));
       }
     },
-    [callAppTool]
+    [callAction]
   );
 
   const openChat = useCallback(
@@ -168,10 +145,9 @@ export const AppRoot: React.FC = () => {
         setSelectedConversationId(conversationId);
         setInitialChatStep(highlightStep ?? null);
         setView("chat");
-        const detail = await callAppTool<ConversationDetail>(
-          "app_get_chat_detail",
-          { conversationId }
-        );
+        const detail = await callAction<ConversationDetail>("get_chat_detail", {
+          conversationId
+        });
         setChatDetail(detail);
         if (detail?.summary?.projectPath) {
           setSelectedProjectPath(detail.summary.projectPath);
@@ -180,68 +156,50 @@ export const AppRoot: React.FC = () => {
         setErrorMsg(err instanceof Error ? err.message : String(err));
       }
     },
-    [callAppTool]
+    [callAction]
   );
 
   useEffect(() => {
-    const app = new App({ name: "Flight Recorder", version: APP_VERSION }, {});
-    appRef.current = app;
-
-    const applyTheme = (ctx?: McpUiHostContext) => {
-      if (!ctx) return;
-      if (ctx.theme) applyDocumentTheme(ctx.theme);
-      if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
-    };
-
-    // Register handlers BEFORE connect() so no notification is missed.
-    app.ontoolinput = () => {
-      setLoading(true);
-    };
-
-    app.ontoolresult = (result) => {
-      receivedToolResultRef.current = true;
-      const sc = (result?.structuredContent ?? {}) as InitialToolPayload;
-      if (sc.dashboard) {
-        if (sc.dashboard.timeRange?.preset) {
-          timeRangeRef.current = sc.dashboard.timeRange.preset;
-          setTimeRange(sc.dashboard.timeRange.preset);
-        }
-        const ts = sc.dashboard.generatedAtMs || Date.now();
-        setDashboard(sc.dashboard);
-        setLastScanAtMs(ts);
-        setNowTickMs(Date.now());
-        setLoading(false);
-      }
-      if (sc.selectedConversationId) {
-        void openChat(sc.selectedConversationId);
-      } else if (sc.selectedProjectPath) {
-        void openProject(sc.selectedProjectPath);
-      } else if (sc.initialView) {
-        setView(sc.initialView);
-      }
-    };
-
-    app.onhostcontextchanged = (ctx) => {
-      applyTheme(ctx);
-    };
+    const bridge = createHostBridge();
+    bridgeRef.current = bridge;
 
     let cancelled = false;
     (async () => {
       try {
-        await app.connect();
+        const caps = await bridge.connect({
+          onInitialPayload: (sc) => {
+            if (sc.timeRange) {
+              timeRangeRef.current = sc.timeRange;
+              setTimeRange(sc.timeRange);
+            }
+            if (sc.dashboard) {
+              receivedDashboardRef.current = true;
+              if (sc.dashboard.timeRange?.preset) {
+                timeRangeRef.current = sc.dashboard.timeRange.preset;
+                setTimeRange(sc.dashboard.timeRange.preset);
+              }
+              const ts = sc.dashboard.generatedAtMs || Date.now();
+              setDashboard(sc.dashboard);
+              setLastScanAtMs(ts);
+              setNowTickMs(Date.now());
+              setLoading(false);
+            }
+            if (sc.selectedConversationId) {
+              void openChat(sc.selectedConversationId);
+            } else if (sc.selectedProjectPath) {
+              void openProject(sc.selectedProjectPath);
+            } else if (sc.initialView) {
+              setView(sc.initialView);
+            }
+          }
+        });
         if (cancelled) return;
         setConnected(true);
-        applyTheme(app.getHostContext());
-        const caps = app.getHostCapabilities();
-        setCanMessage(Boolean(caps?.message));
+        setCanMessage(caps.canMessage);
 
-        // If launched directly from sidebar/aux_pane or without immediate toolresult,
-        // fetch full dashboard data via app-only tool.
-        setTimeout(() => {
-          if (!cancelled && !receivedToolResultRef.current) {
-            void loadDashboard();
-          }
-        }, 120);
+        if (!receivedDashboardRef.current) {
+          void loadDashboard();
+        }
       } catch (err) {
         if (!cancelled) {
           setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -252,6 +210,7 @@ export const AppRoot: React.FC = () => {
 
     return () => {
       cancelled = true;
+      bridge.dispose();
     };
   }, [loadDashboard, openChat, openProject]);
 
@@ -275,12 +234,12 @@ export const AppRoot: React.FC = () => {
     scanInFlightRef.current = true;
     setAutoRefreshing(true);
     try {
-      const res = await callAppTool<{
+      const res = await callAction<{
         stats: { transcriptsIndexed: number; hookEventsIngested: number };
         changed?: boolean;
         scannedAtMs?: number;
         dashboard?: DashboardData;
-      }>("app_rescan_all", { ...rangeArgs, onlyIfChanged: true });
+      }>("rescan_all", { ...rangeArgs, onlyIfChanged: true });
 
       const scanTs = res.scannedAtMs ?? res.dashboard?.generatedAtMs ?? Date.now();
       setLastScanAtMs(scanTs);
@@ -289,19 +248,18 @@ export const AppRoot: React.FC = () => {
       if (res.changed && res.dashboard) {
         setDashboard(res.dashboard);
         if (viewRef.current === "project" && selectedProjectPathRef.current) {
-          const pDetail = await callAppTool<ProjectDetail>(
-            "app_get_project_detail",
-            { projectPath: selectedProjectPathRef.current, ...rangeArgs }
-          );
+          const pDetail = await callAction<ProjectDetail>("get_project_detail", {
+            projectPath: selectedProjectPathRef.current,
+            ...rangeArgs
+          });
           setProjectDetail(pDetail);
         } else if (
           viewRef.current === "chat" &&
           selectedConversationIdRef.current
         ) {
-          const cDetail = await callAppTool<ConversationDetail>(
-            "app_get_chat_detail",
-            { conversationId: selectedConversationIdRef.current }
-          );
+          const cDetail = await callAction<ConversationDetail>("get_chat_detail", {
+            conversationId: selectedConversationIdRef.current
+          });
           setChatDetail(cDetail);
         }
       }
@@ -311,7 +269,7 @@ export const AppRoot: React.FC = () => {
       scanInFlightRef.current = false;
       setAutoRefreshing(false);
     }
-  }, [callAppTool, connected]);
+  }, [callAction, connected]);
 
   const hasDashboard = dashboard !== null;
   useEffect(() => {
@@ -359,26 +317,25 @@ export const AppRoot: React.FC = () => {
     try {
       setRescanning(true);
       setErrorMsg(null);
-      const res = await callAppTool<{
+      const res = await callAction<{
         stats: { transcriptsIndexed: number; hookEventsIngested: number };
         scannedAtMs?: number;
         dashboard: DashboardData;
-      }>("app_rescan_all", rangeArgs);
+      }>("rescan_all", rangeArgs);
       if (res.dashboard) setDashboard(res.dashboard);
       const scanTs = res.scannedAtMs ?? res.dashboard?.generatedAtMs ?? Date.now();
       setLastScanAtMs(scanTs);
       setNowTickMs(Date.now());
       if (view === "project" && selectedProjectPath) {
-        const pDetail = await callAppTool<ProjectDetail>(
-          "app_get_project_detail",
-          { projectPath: selectedProjectPath, ...rangeArgs }
-        );
+        const pDetail = await callAction<ProjectDetail>("get_project_detail", {
+          projectPath: selectedProjectPath,
+          ...rangeArgs
+        });
         setProjectDetail(pDetail);
       } else if (view === "chat" && selectedConversationId) {
-        const cDetail = await callAppTool<ConversationDetail>(
-          "app_get_chat_detail",
-          { conversationId: selectedConversationId }
-        );
+        const cDetail = await callAction<ConversationDetail>("get_chat_detail", {
+          conversationId: selectedConversationId
+        });
         setChatDetail(cDetail);
       }
       setStatusNotice(
@@ -397,22 +354,21 @@ export const AppRoot: React.FC = () => {
     const rangeArgs = buildClientTimeRangeArgs(timeRangeRef.current);
     try {
       setSavingPricing(true);
-      const res = await callAppTool<{ dashboard: DashboardData }>(
-        "app_update_pricing",
-        { rules, ...rangeArgs }
-      );
+      const res = await callAction<{ dashboard: DashboardData }>("update_pricing", {
+        rules,
+        ...rangeArgs
+      });
       if (res.dashboard) setDashboard(res.dashboard);
       if (view === "project" && selectedProjectPath) {
-        const pDetail = await callAppTool<ProjectDetail>(
-          "app_get_project_detail",
-          { projectPath: selectedProjectPath, ...rangeArgs }
-        );
+        const pDetail = await callAction<ProjectDetail>("get_project_detail", {
+          projectPath: selectedProjectPath,
+          ...rangeArgs
+        });
         setProjectDetail(pDetail);
       } else if (view === "chat" && selectedConversationId) {
-        const cDetail = await callAppTool<ConversationDetail>(
-          "app_get_chat_detail",
-          { conversationId: selectedConversationId }
-        );
+        const cDetail = await callAction<ConversationDetail>("get_chat_detail", {
+          conversationId: selectedConversationId
+        });
         setChatDetail(cDetail);
       }
     } catch (err) {
@@ -428,10 +384,10 @@ export const AppRoot: React.FC = () => {
   ) => {
     try {
       const rangeArgs = buildClientTimeRangeArgs(timeRangeRef.current);
-      const res = await callAppTool<{
+      const res = await callAction<{
         dashboard: DashboardData;
         chatDetail: ConversationDetail;
-      }>("app_assign_project", { conversationId, projectPath, ...rangeArgs });
+      }>("assign_project", { conversationId, projectPath, ...rangeArgs });
       if (res.dashboard) setDashboard(res.dashboard);
       if (res.chatDetail) {
         setChatDetail(res.chatDetail);
@@ -452,11 +408,11 @@ export const AppRoot: React.FC = () => {
     try {
       if (view === "project" && selectedProjectPath) {
         const [pDetail, dash] = await Promise.all([
-          callAppTool<ProjectDetail>("app_get_project_detail", {
+          callAction<ProjectDetail>("get_project_detail", {
             projectPath: selectedProjectPath,
             ...rangeArgs
           }),
-          callAppTool<DashboardData>("app_get_dashboard_data", {
+          callAction<DashboardData>("get_dashboard_data", {
             ...rangeArgs,
             skipScan: true
           })
@@ -466,7 +422,7 @@ export const AppRoot: React.FC = () => {
           setDashboard(dash);
         }
       } else {
-        const dash = await callAppTool<DashboardData>("app_get_dashboard_data", {
+        const dash = await callAction<DashboardData>("get_dashboard_data", {
           ...rangeArgs,
           skipScan: true
         });
@@ -486,20 +442,13 @@ export const AppRoot: React.FC = () => {
   };
 
   const handleOpenFileInAuxPane = async (filePath: string) => {
-    const app = appRef.current;
-    if (!app) return;
-    try {
-      const req = {
-        method: "com.google.antigravity/toggle-aux-pane",
-        params: { tabType: "fileView", uri: toFileUri(filePath) }
-      } as unknown as Parameters<App["request"]>[0];
-      const res = await app.request(req, ToggleAuxPaneResultSchema);
-      if (res?.isError) {
-        setStatusNotice("File viewer side pane is unavailable in this view.");
-        setTimeout(() => setStatusNotice(null), 3000);
-      }
-    } catch {
-      setStatusNotice("File viewer side pane is unavailable in this host.");
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    const res = await bridge.openFileInAuxPane(filePath);
+    if (!res.ok) {
+      setStatusNotice(
+        res.reason ?? "File viewer side pane is unavailable in this view."
+      );
       setTimeout(() => setStatusNotice(null), 3000);
     }
   };
@@ -509,16 +458,15 @@ export const AppRoot: React.FC = () => {
     sentNotice = "Sent troubleshooting request to agent.",
     copiedNotice = "Copied troubleshooting prompt to clipboard."
   ) => {
-    const app = appRef.current;
-    if (app && canMessage) {
+    const bridge = bridgeRef.current;
+    if (bridge && canMessage) {
       try {
-        await app.sendMessage({
-          role: "user",
-          content: [{ type: "text", text: prompt }]
-        });
-        setStatusNotice(sentNotice);
-        setTimeout(() => setStatusNotice(null), 3500);
-        return;
+        const sent = await bridge.sendMessage(prompt);
+        if (sent) {
+          setStatusNotice(sentNotice);
+          setTimeout(() => setStatusNotice(null), 3500);
+          return;
+        }
       } catch (err) {
         setErrorMsg(err instanceof Error ? err.message : String(err));
         return;
@@ -557,14 +505,10 @@ export const AppRoot: React.FC = () => {
   };
 
   const handleOpenRepoLink = async (url: string) => {
-    const app = appRef.current;
-    if (app) {
-      try {
-        const res = await app.openLink({ url });
-        if (!res?.isError) return;
-      } catch {
-        // Fall back to clipboard copy below
-      }
+    const bridge = bridgeRef.current;
+    if (bridge) {
+      const opened = await bridge.openExternalLink(url);
+      if (opened) return;
     }
     await handleCopyText(url, "Copied GitHub link to clipboard.");
   };
@@ -572,7 +516,7 @@ export const AppRoot: React.FC = () => {
   const handleCheckUpdate = async () => {
     try {
       setCheckingUpdate(true);
-      const res = await callAppTool<UpdateCheckResult>("app_check_update", {});
+      const res = await callAction<UpdateCheckResult>("check_update", {});
       if (res.status === "update_available") {
         setUpdateResult(res);
       } else if (res.status === "up_to_date") {
@@ -589,9 +533,9 @@ export const AppRoot: React.FC = () => {
     } catch (err) {
       setUpdateResult(null);
       const errMsg = err instanceof Error ? err.message : String(err);
-      if (/app_check_update.*not found|not found.*app_check_update/i.test(errMsg)) {
+      if (/404|not found/i.test(errMsg)) {
         setStatusNotice(
-          "Flight Recorder's MCP server needs a reload — toggle Flight Recorder off/on in Customizations (or restart Antigravity) and try again."
+          "Flight Recorder needs a reload — toggle Flight Recorder off/on in Customizations (or restart Antigravity) and try again."
         );
       } else {
         setStatusNotice(`Update check failed: ${errMsg}`);
@@ -765,13 +709,8 @@ export const AppRoot: React.FC = () => {
           <div className="update-banner-body">
             {updateResult.installMethod === "marketplace" ? (
               <div>
-                Managed by the Antigravity Marketplace — update from{" "}
-                <strong>Customizations → Installed</strong> in Antigravity (or
-                run{" "}
-                <code>
-                  agy plugin install flight-recorder@antigravity-plugins-partners
-                </code>
-                ).
+                Managed by Antigravity — update from{" "}
+                <strong>Customizations → Installed</strong> in Antigravity.
               </div>
             ) : updateResult.installMethod === "git" &&
               updateResult.updateCommand ? (
@@ -794,18 +733,16 @@ export const AppRoot: React.FC = () => {
                   </button>
                 </div>
                 <div>
-                  After pulling, toggle <code>flight-recorder_recorder</code>{" "}
-                  off/on in Settings → MCP Servers.
+                  After pulling, quit and reopen Antigravity to load the new
+                  version.
                 </div>
               </>
             ) : (
               <div>
-                If installed via Antigravity Marketplace or CLI, update from{" "}
-                <strong>Customizations → Installed</strong> (or re-run{" "}
-                <code>agy plugin install</code>). For manual ZIP installs,
-                download the latest release from GitHub and replace your{" "}
-                <code>flight-recorder</code> plugins folder, then restart
-                Antigravity.
+                Download the latest ZIP from GitHub and replace your{" "}
+                <code>flight-recorder</code> plugins folder (or update from{" "}
+                <strong>Customizations → Installed</strong>), then quit and
+                reopen Antigravity.
               </div>
             )}
           </div>

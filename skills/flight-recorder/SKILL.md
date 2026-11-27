@@ -17,6 +17,8 @@ Call `open_flight_recorder` when the user wants a visual overview, timeline wate
 - Pass `projectPath` to open directly on a specific workspace project.
 - Pass `conversationId` to open directly on a specific chat's waterfall, model mix, and token breakdown.
 
+In the **Antigravity App** (both Consumer and Gemini Enterprise accounts), include the clickable `sidecar://` pill returned by `open_flight_recorder` in your reply (for example `[Flight Recorder](sidecar://flight-recorder/dashboard/)`) so Antigravity opens or toggles the interactive Sidecar dashboard in the side panel directly. Do **not** emit `sidecar://` links in Antigravity CLI (`agy`) or headless runs.
+
 ## Answering Specific Questions in Chat
 
 1. **List tracked projects & global plugin/skill leaderboard**: Call `list_projects` to discover tracked workspaces, chat/Swarm counts, per-model usage percentages, total tokens, cache hit ratios, active time, estimated USD, and the global **Most Token-Hungry Plugins & Skills** ranking.
@@ -31,5 +33,4 @@ Call `open_flight_recorder` when the user wants a visual overview, timeline wate
 
 - **Cite exact evidence**: Mention the step index, tool/skill name, byte size, and exact token/duration numbers returned by the tools.
 - **Keep active time vs. idle time separate**: Clearly distinguish active agent execution (`model` + `tool wall` + `subagent`/`worker`) from user wait/idle gaps between turns and Swarm board parking (`swarm_wait`).
-- **Never call `app_*` tools directly**: Tools prefixed with `app_` (such as `app_get_dashboard_data` or `app_rescan_all`) are internal UI endpoints for the interactive dashboard (`visibility: ["app"]`). On non-UI surfaces like Antigravity CLI (`agy`) where all server tools may be listed, always use the 6 model tools (`open_flight_recorder`, `list_projects`, `get_project_summary`, `get_chat_analysis`, `get_skill_optimization`, `explain_bottlenecks`).
 - **Be transparent about pricing**: If `unpricedModels` is non-empty or `estimatedCostUsd` is `null`, state which model(s) are `Unpriced` and tell the user they can set per-1M rates in Flight Recorder's **Pricing** modal—never invent a dollar figure for an unpriced model.

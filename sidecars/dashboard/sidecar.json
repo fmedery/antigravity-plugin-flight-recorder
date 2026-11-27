@@ -1,0 +1,23 @@
+{
+  "command": "node",
+  "args": ["run.mjs", "--data-dir=${PLUGIN_DATA}"],
+  "restart_policy": "always",
+  "display_name": "Flight Recorder",
+  "description": "Interactive Flight Recorder dashboard for inspecting Antigravity projects, chats, skills, tokens, cache hits, estimated costs, and step timing.",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "Flight Recorder",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "Flight Recorder"
+      },
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_SIDEBAR",
+        "title": "Flight Recorder"
+      }
+    ]
+  }
+}

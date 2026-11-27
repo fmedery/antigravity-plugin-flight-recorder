@@ -24,6 +24,7 @@ import {
   mergePluginSkillMetrics,
   projectDisplayName
 } from "../src/server/analytics.js";
+import { createTrackerAppService } from "../src/server/appService.js";
 import { TrackerDatabase, type HookEventRow } from "../src/server/db.js";
 import { findProjectRootForPath, inferProjectFromPaths } from "../src/server/scanner.js";
 import { createTrackerMcpServer } from "../src/server/tools.js";
@@ -2968,50 +2969,26 @@ test("getModelAvailability auto-detects Unavailable (self-healing) and 30d Inact
   }
 });
 
-test("app_rescan_all skips dashboard rebuild when onlyIfChanged is true and nothing changed", async () => {
+test("rescanAll skips dashboard rebuild when onlyIfChanged is true and nothing changed", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescan-opt-"));
   const db = new TrackerDatabase(tmpDir);
   try {
-    const srv = createTrackerMcpServer({
+    const appService = createTrackerAppService({
       db,
       dataDir: tmpDir,
-      uiHtmlPath: path.join(tmpDir, "missing.html"),
       brainRoots: [],
       eventsPath: path.join(tmpDir, "missing-events.jsonl")
     });
-    const cli = new Client({ name: "rescan-test", version: "1.0.0" });
-    const [cTrans, sTrans] = InMemoryTransport.createLinkedPair();
-    await Promise.all([srv.connect(sTrans), cli.connect(cTrans)]);
-    try {
-      const noChangeRes = await cli.callTool({
-        name: "app_rescan_all",
-        arguments: { onlyIfChanged: true }
-      });
-      const sc1 = noChangeRes.structuredContent as {
-        changed?: boolean;
-        scannedAtMs?: number;
-        dashboard?: unknown;
-      };
-      assert.equal(sc1.changed, false);
-      assert.ok(typeof sc1.scannedAtMs === "number" && sc1.scannedAtMs > 0);
-      assert.equal(sc1.dashboard, undefined);
 
-      const fullRes = await cli.callTool({
-        name: "app_rescan_all",
-        arguments: {}
-      });
-      const sc2 = fullRes.structuredContent as {
-        changed?: boolean;
-        scannedAtMs?: number;
-        dashboard?: unknown;
-      };
-      assert.equal(sc2.changed, false);
-      assert.ok(typeof sc2.scannedAtMs === "number" && sc2.scannedAtMs > 0);
-      assert.ok(sc2.dashboard !== undefined);
-    } finally {
-      await cli.close();
-      await srv.close();
-    }
+    const res1 = await appService.rescanAll({ onlyIfChanged: true });
+    assert.equal(res1.changed, false);
+    assert.ok(typeof res1.scannedAtMs === "number" && res1.scannedAtMs > 0);
+    assert.equal(res1.dashboard, undefined);
+
+    const res2 = await appService.rescanAll({});
+    assert.equal(res2.changed, false);
+    assert.ok(typeof res2.scannedAtMs === "number" && res2.scannedAtMs > 0);
+    assert.ok(res2.dashboard !== undefined);
   } finally {
     db.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });

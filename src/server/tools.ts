@@ -1,17 +1,9 @@
-import {
-  registerAppResource,
-  registerAppTool,
-  RESOURCE_MIME_TYPE
-} from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import fs from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 import { pathBaseName, sameLocalPath, unwrapFileUri } from "../shared/paths.js";
 import type {
   ContextHealthSummary,
   DiagnosticFinding,
-  ModelPricingRule,
   ModelUsageMetric,
   PeriodComparison,
   PluginSkillMetric
@@ -21,23 +13,16 @@ import {
   buildDashboardData,
   buildProjectDetail
 } from "./analytics.js";
+import {
+  buildSidecarDeepLink,
+  createTrackerAppService,
+  timeRangeSchema,
+  type TrackerServerContext
+} from "./appService.js";
 import type { TrackerDatabase } from "./db.js";
-import { runScan, type BrainRootConfig } from "./scanner.js";
-import { checkForUpdate, readInstalledVersion } from "./updateCheck.js";
+import { readInstalledVersion } from "./updateCheck.js";
 
-export const APP_URI = "ui://flight-recorder/dashboard.html";
-
-const timeRangeSchema = z.enum(["today", "7d", "30d", "all"]).optional();
-const sinceMsSchema = z.number().finite().positive().nullable().optional();
-
-export interface TrackerServerContext {
-  db: TrackerDatabase;
-  dataDir: string;
-  uiHtmlPath: string;
-  pluginRoot?: string;
-  brainRoots?: BrainRootConfig[];
-  eventsPath?: string;
-}
+export type { TrackerServerContext };
 
 function fmtK(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
@@ -207,69 +192,22 @@ function resolveProjectMatch(
   return (nonUnassigned ?? dash.projects[0]).projectPath;
 }
 
-function readUiHtml(uiHtmlPath: string): string {
-  const overridePath = process.env.FLIGHT_RECORDER_APP_HTML;
-  const target =
-    overridePath && overridePath.trim() ? overridePath.trim() : uiHtmlPath;
-  if (fs.existsSync(target)) {
-    const html = fs.readFileSync(target, "utf8");
-    if (html.trim().length > 0) return html;
-  }
-  return `<!doctype html><html><body style="font-family:system-ui;padding:16px"><h3>Flight Recorder</h3><p>UI bundle not found at ${target}. Run <code>npm run build</code>.</p></body></html>`;
-}
-
 export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
   const server = new McpServer({
     name: "flight-recorder",
     version: readInstalledVersion(ctx.pluginRoot)
   });
 
-  const scanNow = async () =>
-    runScan({
-      db: ctx.db,
-      dataDir: ctx.dataDir,
-      brainRoots: ctx.brainRoots,
-      eventsPath: ctx.eventsPath
-    });
+  const appService = createTrackerAppService(ctx);
+  const scanNow = () => appService.scanNow();
 
-  // Register MCP App HTML resource
-  registerAppResource(
-    server,
-    "Flight Recorder Dashboard",
-    APP_URI,
-    {
-      description:
-        "Interactive dashboard for inspecting Antigravity project and chat tools, skills, token/cache attribution, estimated costs, and step timing.",
-      _meta: {
-        ui: {
-          prefersBorder: false
-        }
-      }
-    },
-    async () => ({
-      contents: [
-        {
-          uri: APP_URI,
-          mimeType: RESOURCE_MIME_TYPE,
-          text: readUiHtml(ctx.uiHtmlPath),
-          _meta: {
-            ui: {
-              prefersBorder: false
-            }
-          }
-        }
-      ]
-    })
-  );
-
-  // 1. Primary interactive UI tool (aux_pane + global sidebar entrypoints)
-  registerAppTool(
-    server,
+  // 1. Primary dashboard launcher tool (returns live summary + sidecar:// deep link)
+  server.registerTool(
     "open_flight_recorder",
     {
       title: "Flight Recorder",
       description:
-        "Open the interactive Flight Recorder dashboard to inspect projects, chats, skills, tools, token/cache attribution, estimated USD costs, and timing waterfalls. All arguments are optional.",
+        "Scan latest telemetry and return a summary plus a sidecar:// link to open the interactive Flight Recorder dashboard (projects, chats, skills, tools, token/cache attribution, estimated USD costs, and timing waterfalls). All arguments are optional.",
       inputSchema: {
         projectPath: z
           .string()
@@ -286,17 +224,6 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         timeRange: timeRangeSchema.describe(
           "Optional time window preset ('today', '7d', '30d', or 'all'). Defaults to 'all'."
         )
-      },
-      _meta: {
-        ui: {
-          resourceUri: APP_URI
-        },
-        "com.google.antigravity/ui": {
-          entrypoints: [
-            { type: "aux_pane", title: "Flight Recorder" },
-            { type: "global", title: "Flight Recorder" }
-          ]
-        }
       }
     },
     async ({ projectPath, conversationId, view, timeRange }) => {
@@ -315,8 +242,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         topTools: p.topTools.slice(0, 5)
       }));
 
-      // Keep persisted CallToolResult comfortably under Antigravity's 1 MiB trajectory cap;
-      // the interactive UI can fetch full datasets via app_get_dashboard_data.
+      // Keep persisted CallToolResult compact and well under Antigravity's 1 MiB trajectory cap.
       const slimPluginSkills = dashboard.pluginSkillMetrics
         .slice(0, 30)
         .map((m) => ({
@@ -330,10 +256,18 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           }))
         }));
 
+      const sidecarLink = buildSidecarDeepLink({
+        view: initialView,
+        projectPath: resolvedProject,
+        conversationId: conversationId ?? null,
+        timeRange
+      });
+
       const structured = {
         initialView,
         selectedProjectPath: resolvedProject,
         selectedConversationId: conversationId ?? null,
+        sidecarLink,
         dashboard: {
           ...dashboard,
           projects: slimProjects,
@@ -353,7 +287,7 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
         swarmCount > 0
           ? `, ${swarmCount} swarm${swarmCount === 1 ? "" : "s"}`
           : "";
-      const summaryText = `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents${swarmPart}), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.`;
+      const summaryText = `Flight Recorder loaded: ${dashboard.totals.projectCount} projects, ${dashboard.totals.chatCount} chats (+${dashboard.totals.subagentCount} subagents${swarmPart}), ${fmtK(dashboard.totals.tokens.inputTokens + dashboard.totals.tokens.cacheReadTokens + dashboard.totals.tokens.outputTokens)} total tokens (${Math.round(dashboard.totals.tokens.cacheHitRatio * 100)}% cache hit), ${fmtDur(dashboard.totals.time.activeMs)} active agent time${ctxSummary ? `, context health: ${ctxSummary}` : ""}${cmpSummary ? ` (${cmpSummary})` : ""}${globalMix}.\n\nOpen dashboard in side panel: [Flight Recorder](${sidecarLink})`;
 
       return {
         content: [{ type: "text", text: summaryText }],
@@ -935,261 +869,6 @@ export function createTrackerMcpServer(ctx: TrackerServerContext): McpServer {
           items: matched,
           relatedDiagnostics
         }
-      };
-    }
-  );
-
-  // 6. App-only: app_get_dashboard_data
-  registerAppTool(
-    server,
-    "app_get_dashboard_data",
-    {
-      title: "Get Full Dashboard Data",
-      description: "App-only endpoint returning all projects, recent chats, and pricing rules.",
-      inputSchema: {
-        timeRange: timeRangeSchema,
-        sinceMs: sinceMsSchema,
-        skipScan: z.boolean().optional()
-      },
-      _meta: {
-        ui: {
-          visibility: ["app"]
-        }
-      }
-    },
-    async ({ timeRange, sinceMs, skipScan }) => {
-      if (!skipScan) {
-        await scanNow();
-      }
-      const data = buildDashboardData(ctx.db, {
-        preset: timeRange,
-        sinceMs
-      });
-      return {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: data as unknown as Record<string, unknown>
-      };
-    }
-  );
-
-  // 7. App-only: app_get_project_detail
-  registerAppTool(
-    server,
-    "app_get_project_detail",
-    {
-      title: "Get Project Detail",
-      description: "App-only endpoint returning complete detail for one project.",
-      inputSchema: {
-        projectPath: z.string(),
-        timeRange: timeRangeSchema,
-        sinceMs: sinceMsSchema
-      },
-      _meta: {
-        ui: {
-          visibility: ["app"]
-        }
-      }
-    },
-    async ({ projectPath, timeRange, sinceMs }) => {
-      const detail = buildProjectDetail(ctx.db, projectPath, {
-        preset: timeRange,
-        sinceMs
-      });
-      if (!detail) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: `Project not found: ${projectPath}` }]
-        };
-      }
-      return {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: detail as unknown as Record<string, unknown>
-      };
-    }
-  );
-
-  // 8. App-only: app_get_chat_detail
-  registerAppTool(
-    server,
-    "app_get_chat_detail",
-    {
-      title: "Get Chat Detail",
-      description: "App-only endpoint returning full turns, steps, tool calls, and diagnostics for a chat.",
-      inputSchema: {
-        conversationId: z.string()
-      },
-      _meta: {
-        ui: {
-          visibility: ["app"]
-        }
-      }
-    },
-    async ({ conversationId }) => {
-      const detail = buildConversationDetail(ctx.db, conversationId);
-      if (!detail) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: `Conversation not found: ${conversationId}` }]
-        };
-      }
-      return {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: detail as unknown as Record<string, unknown>
-      };
-    }
-  );
-
-  // 9. App-only: app_rescan_all
-  registerAppTool(
-    server,
-    "app_rescan_all",
-    {
-      title: "Rescan Transcripts & Hooks",
-      description: "App-only endpoint triggering an immediate incremental rescan.",
-      inputSchema: {
-        timeRange: timeRangeSchema,
-        sinceMs: sinceMsSchema,
-        onlyIfChanged: z.boolean().optional()
-      },
-      _meta: {
-        ui: {
-          visibility: ["app"]
-        }
-      }
-    },
-    async ({ timeRange, sinceMs, onlyIfChanged }) => {
-      const stats = await scanNow();
-      const scannedAtMs = Date.now();
-      const changed =
-        stats.transcriptsIndexed > 0 || stats.hookEventsIngested > 0;
-      if (onlyIfChanged && !changed) {
-        return {
-          content: [{ type: "text", text: "ok" }],
-          structuredContent: {
-            stats,
-            changed: false,
-            scannedAtMs
-          }
-        };
-      }
-      const dashboard = buildDashboardData(ctx.db, {
-        preset: timeRange,
-        sinceMs
-      });
-      return {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: {
-          stats,
-          changed,
-          scannedAtMs,
-          dashboard
-        }
-      };
-    }
-  );
-
-  // 10. App-only: app_update_pricing
-  registerAppTool(
-    server,
-    "app_update_pricing",
-    {
-      title: "Update Model Pricing Rules",
-      description: "App-only endpoint saving updated USD pricing rules to SQLite.",
-      inputSchema: {
-        rules: z
-          .array(
-            z.object({
-              id: z.string().min(1).max(160),
-              pattern: z.string().min(1).max(160),
-              label: z.string().min(1).max(160),
-              inputPer1M: z.number().finite().min(0).max(100_000),
-              cacheReadPer1M: z.number().finite().min(0).max(100_000),
-              outputPer1M: z.number().finite().min(0).max(100_000),
-              enabled: z.boolean(),
-              retired: z.boolean().optional()
-            })
-          )
-          .max(100),
-        timeRange: timeRangeSchema,
-        sinceMs: sinceMsSchema
-      },
-      _meta: {
-        ui: {
-          visibility: ["app"]
-        }
-      }
-    },
-    async ({ rules, timeRange, sinceMs }) => {
-      ctx.db.savePricingRules(rules as ModelPricingRule[]);
-      const dashboard = buildDashboardData(ctx.db, {
-        preset: timeRange,
-        sinceMs
-      });
-      return {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: {
-          dashboard
-        }
-      };
-    }
-  );
-
-  // 11. App-only: app_assign_project
-  registerAppTool(
-    server,
-    "app_assign_project",
-    {
-      title: "Assign Conversation to Project",
-      description: "App-only endpoint overriding a conversation's assigned project path.",
-      inputSchema: {
-        conversationId: z.string().min(1).max(128),
-        projectPath: z.string().max(1024),
-        timeRange: timeRangeSchema,
-        sinceMs: sinceMsSchema
-      },
-      _meta: {
-        ui: {
-          visibility: ["app"]
-        }
-      }
-    },
-    async ({ conversationId, projectPath, timeRange, sinceMs }) => {
-      ctx.db.setProjectOverride(conversationId, projectPath.trim() || "Unassigned");
-      const dashboard = buildDashboardData(ctx.db, {
-        preset: timeRange,
-        sinceMs
-      });
-      const chatDetail = buildConversationDetail(ctx.db, conversationId);
-      return {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: {
-          dashboard,
-          chatDetail
-        }
-      };
-    }
-  );
-
-  // 12. App-only: app_check_update
-  registerAppTool(
-    server,
-    "app_check_update",
-    {
-      title: "Check for Updates",
-      description:
-        "App-only endpoint triggered manually by the user to check GitHub for a newer plugin.json version.",
-      inputSchema: {},
-      _meta: {
-        ui: {
-          visibility: ["app"]
-        }
-      }
-    },
-    async () => {
-      const result = await checkForUpdate({ pluginRoot: ctx.pluginRoot });
-      return {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: result as unknown as Record<string, unknown>
       };
     }
   );

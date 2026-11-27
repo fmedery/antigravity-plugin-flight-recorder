@@ -228,16 +228,28 @@ export function verifyVersionConsistency(
 
   if (checkDist && version) {
     const serverBundlePath = path.join(repoRoot, "dist", "server", "index.js");
+    const sidecarBundlePath = path.join(repoRoot, "dist", "server", "sidecar.js");
     const uiBundlePath = path.join(repoRoot, "dist", "ui", "index.html");
+    const expectedBanner = `/* flight-recorder v${version} */`;
 
     if (!fs.existsSync(serverBundlePath)) {
       errors.push(`Missing built server bundle: ${serverBundlePath}`);
     } else {
       const serverCode = fs.readFileSync(serverBundlePath, "utf8");
-      const expectedBanner = `/* flight-recorder v${version} */`;
       if (!serverCode.includes(expectedBanner)) {
         errors.push(
           `dist/server/index.js is missing exact build version header "${expectedBanner}". Run "npm run build".`
+        );
+      }
+    }
+
+    if (!fs.existsSync(sidecarBundlePath)) {
+      errors.push(`Missing built sidecar bundle: ${sidecarBundlePath}`);
+    } else {
+      const sidecarCode = fs.readFileSync(sidecarBundlePath, "utf8");
+      if (!sidecarCode.includes(expectedBanner)) {
+        errors.push(
+          `dist/server/sidecar.js is missing exact build version header "${expectedBanner}". Run "npm run build".`
         );
       }
     }

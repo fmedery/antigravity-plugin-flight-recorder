@@ -384,6 +384,7 @@ function main() {
       "plugin.json",
       "package.json",
       "dist/server/index.js",
+      "dist/server/sidecar.js",
       "dist/ui/index.html"
     ];
     if (fs.existsSync(lockPath)) filesToStage.push("package-lock.json");

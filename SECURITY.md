@@ -6,9 +6,9 @@ This document describes exactly what **Flight Recorder** (`flight-recorder`) rea
 
 ## 1. Zero Background Network & Zero Telemetry
 
-- **Zero background network & zero telemetry:** Neither the MCP server (`dist/server/index.js`), the passive lifecycle hook (`scripts/record-event.mjs`), nor the interactive UI (`dist/ui/index.html`) sends telemetry, analytics, crash reports, or automatic/startup network requests.
+- **Zero background network & zero telemetry:** Neither the MCP server (`dist/server/index.js`), the local dashboard server (`dist/server/sidecar.js` via `sidecars/dashboard/run.mjs`), the passive lifecycle hook (`scripts/record-event.mjs`), nor the interactive UI (`dist/ui/index.html`) sends telemetry, analytics, crash reports, or automatic/startup network requests.
 - **Explicit, user-triggered update check only:** The only outbound request Flight Recorder can make is when you explicitly click **Updates** in the dashboard, which issues a server-side `GET https://api.github.com/repos/fmedery/antigravity-plugin-flight-recorder/releases/latest` (falling back to `GET https://raw.githubusercontent.com/fmedery/antigravity-plugin-flight-recorder/main/plugin.json` if no GitHub Release exists yet or the API is rate-limited), using a generic `User-Agent: flight-recorder` header and no OS, machine, or usage identifiers, strictly to compare your installed `version`.
-- **Strict iframe Content Security Policy:** The MCP App UI runs inside Antigravity's isolated `text/html;profile=mcp-app` sandbox under the default `default-src 'none'` CSP—no external scripts, stylesheets, fonts, or analytics beacons are loaded.
+- **Loopback-only, token-authenticated dashboard:** The bundled UI (`dist/ui/index.html`) loads zero external scripts, stylesheets, fonts, or analytics beacons. The local dashboard server binds strictly to `127.0.0.1`, verifies Antigravity's per-session `X-Sidecar-Token` using constant-time comparison, restricts `Origin` headers to loopback/`plugin://`, and caps JSON API bodies at 1 MiB.
 - **No install-time lifecycle scripts:** `package.json` defines zero `preinstall`, `install`, or `postinstall` hooks, and end users installing the plugin do not need to run `npm install`.
 
 ---
@@ -17,7 +17,8 @@ This document describes exactly what **Flight Recorder** (`flight-recorder`) rea
 
 | Process | When It Runs | Purpose & Safety Guarantees |
 | :--- | :--- | :--- |
-| `node ${PLUGIN_ROOT}/dist/server/index.js --data-dir=${PLUGIN_DATA}` | Started by Antigravity over `stdio` while the `flight-recorder` plugin is enabled | Serves read-only analytics tools and the embedded single-file dashboard UI, indexing local transcripts incrementally into `${PLUGIN_DATA}/tracker.sqlite`. |
+| `node ${PLUGIN_ROOT}/dist/server/index.js --data-dir=${PLUGIN_DATA}` | Started by Antigravity over `stdio` while the `flight-recorder` plugin is enabled | Serves the 6 read-only analytics MCP tools for chat and CLI, indexing local transcripts incrementally into `${PLUGIN_DATA}/tracker.sqlite`. |
+| `node sidecars/dashboard/run.mjs` (`dist/server/sidecar.js`) | Started by Antigravity on localhost (`127.0.0.1`) while the `flight-recorder` plugin is enabled | Serves the self-contained single-file dashboard UI (`dist/ui/index.html`) and token-authenticated local `/api/*` endpoints sharing the same WAL-mode `${PLUGIN_DATA}/tracker.sqlite` index. |
 | `node ./scripts/record-event.mjs` | Triggered passively on `SessionStart`, `PreInvocation`, `PostToolUse`, `PostInvocation`, and `Stop` (`timeout: 5s`) | Appends compact lifecycle timing/workspace metadata to `${PLUGIN_DATA}/events.jsonl` and exits `0` printing `{}`. **Never registers `PreToolUse`**, so tool permission prompts and execution policies are never intercepted or modified. |
 
 ---
@@ -34,6 +35,8 @@ Flight Recorder reads only local Antigravity metadata on your machine:
    - `~/.gemini/config/plugins/*` and `~/.gemini/antigravity/builtin/plugins/*` (`plugin.json`, `mcp_config.json`, `skills/*/SKILL.md`, and `bin/`/`scripts/` filenames) to roll up sub-skills, MCP tools, and CLIs under their parent plugin name.
 3. **Project display name manifests (`read-only`):**
    - Top-level `plugin.json`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, or `.git/config` `[remote "origin"]` (parsed directly as text—`git` is never spawned) to display human-friendly project names.
+4. **Antigravity theme preferences (`read-only`):**
+   - `~/.gemini/config/config.json` and Antigravity's OS-standard `app_storage.json` (read-only) solely to match your active light/dark mode and theme palette on first paint.
 
 ---
 

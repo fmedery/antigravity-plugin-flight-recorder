@@ -581,6 +581,41 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
       serverCode.includes(`/* flight-recorder v${expectedPluginVersion} */`),
       `Expected dist/server/index.js banner to match v${expectedPluginVersion}`
     );
+    const sidecarBundlePath = path.join(repoRoot, "dist", "server", "sidecar.js");
+    assert.ok(fs.existsSync(sidecarBundlePath), "Expected dist/server/sidecar.js");
+    const sidecarCode = fs.readFileSync(sidecarBundlePath, "utf8");
+    assert.ok(
+      sidecarCode.includes(`/* flight-recorder v${expectedPluginVersion} */`),
+      `Expected dist/server/sidecar.js banner to match v${expectedPluginVersion}`
+    );
+    assert.equal(
+      /^\s*import\s+.*["']@modelcontextprotocol\//m.test(sidecarCode),
+      false,
+      "Expected dist/server/sidecar.js to have zero @modelcontextprotocol imports"
+    );
+
+    const sidecarJson = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "sidecars", "dashboard", "sidecar.json"), "utf8")
+    ) as {
+      command?: string;
+      has_web_ui?: boolean;
+      ui_config?: { views?: Array<{ entrypoint?: string; path?: string }> };
+    };
+    assert.equal(sidecarJson.command, "node");
+    assert.equal(sidecarJson.has_web_ui, true);
+    assert.ok(
+      sidecarJson.ui_config?.views?.some(
+        (v) => v.entrypoint === "SIDECAR_UI_ENTRYPOINT_AUX_PANE"
+      ),
+      "Expected sidecar.json to declare SIDECAR_UI_ENTRYPOINT_AUX_PANE"
+    );
+    assert.ok(
+      sidecarJson.ui_config?.views?.some(
+        (v) => v.entrypoint === "SIDECAR_UI_ENTRYPOINT_SIDEBAR"
+      ),
+      "Expected sidecar.json to declare SIDECAR_UI_ENTRYPOINT_SIDEBAR"
+    );
+
     for (const mjsRel of [
       "scripts/install-plugin.mjs",
       "scripts/build-server.mjs",
@@ -589,7 +624,8 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
       "scripts/bump-version.mjs",
       "scripts/extract-changelog.mjs",
       "scripts/release.mjs",
-      "scripts/record-event.mjs"
+      "scripts/record-event.mjs",
+      "sidecars/dashboard/run.mjs"
     ]) {
       const chk = spawnSync(process.execPath, ["--check", path.join(repoRoot, mjsRel)], {
         encoding: "utf8"
@@ -624,8 +660,13 @@ test("zero-install dist/server/index.js runs outside repo with zero node_modules
     assert.match(uiHtml, /err-sample-list/);
     assert.match(uiHtml, /What to do:/);
     assert.match(uiHtml, /Troubleshoot/);
-    assert.match(uiHtml, /app_check_update/);
+    assert.match(uiHtml, /\/api\/check-update/);
     assert.match(uiHtml, /app-version/);
+    assert.equal(
+      uiHtml.includes("@modelcontextprotocol/ext-apps"),
+      false,
+      "Expected pure UI Sidecar bundle to omit @modelcontextprotocol/ext-apps"
+    );
     assert.ok(
       uiHtml.includes(
         `<meta name="flight-recorder-version" content="${String(pluginJson.version)}"`

@@ -28,7 +28,6 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.0.0",
     "@types/node": ">=22.15.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

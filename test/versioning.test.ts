@@ -67,6 +67,11 @@ test("version-utils computes SemVer bumps, prereleases, and enforces fail-fast c
       "utf8"
     );
     fs.writeFileSync(
+      path.join(tmp, "dist", "server", "sidecar.js"),
+      "/* flight-recorder v1.0.0 */\nconsole.log('ok');\n",
+      "utf8"
+    );
+    fs.writeFileSync(
       path.join(tmp, "dist", "ui", "index.html"),
       '<!doctype html><html><head><meta name="flight-recorder-version" content="1.0.0" /></head></html>',
       "utf8"
@@ -98,6 +103,11 @@ test("version-utils computes SemVer bumps, prereleases, and enforces fail-fast c
       "utf8"
     );
     fs.writeFileSync(
+      path.join(tmp, "dist", "server", "sidecar.js"),
+      "/* flight-recorder v0.9.0 */\nconsole.log('stale');\n",
+      "utf8"
+    );
+    fs.writeFileSync(
       path.join(tmp, "dist", "ui", "index.html"),
       '<!doctype html><html><head><meta name="flight-recorder-version" content="0.9.0" /></head></html>',
       "utf8"
@@ -106,6 +116,7 @@ test("version-utils computes SemVer bumps, prereleases, and enforces fail-fast c
     assert.equal(driftReport.ok, false);
     assert.ok(driftReport.errors.some((e: string) => /package-lock\.json root name/.test(e)));
     assert.ok(driftReport.errors.some((e: string) => /packages\[""\]\.version/.test(e)));
+    assert.ok(driftReport.errors.some((e: string) => /dist\/server\/sidecar\.js/.test(e)));
     assert.ok(driftReport.errors.some((e: string) => /dist\/ui\/index\.html/.test(e)));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

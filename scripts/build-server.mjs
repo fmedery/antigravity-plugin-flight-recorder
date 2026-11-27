@@ -31,9 +31,7 @@ const externals = Array.from(
   ])
 );
 
-await esbuild.build({
-  entryPoints: [path.join(repoRoot, "src", "server", "index.ts")],
-  outfile: path.join(distServerDir, "index.js"),
+const sharedBuildOptions = {
   bundle: true,
   platform: "node",
   format: "esm",
@@ -43,13 +41,27 @@ await esbuild.build({
   define: {
     __FLIGHT_RECORDER_VERSION__: JSON.stringify(pluginVersion)
   },
-  external: externals,
   banner: {
     js: `/* flight-recorder v${pluginVersion} */\nimport { createRequire as __frCreateRequire } from "node:module"; const require = __frCreateRequire(import.meta.url);`
   }
+};
+
+await esbuild.build({
+  ...sharedBuildOptions,
+  entryPoints: [path.join(repoRoot, "src", "server", "index.ts")],
+  outfile: path.join(distServerDir, "index.js"),
+  external: externals
+});
+
+await esbuild.build({
+  ...sharedBuildOptions,
+  entryPoints: [path.join(repoRoot, "src", "server", "sidecar.ts")],
+  outfile: path.join(distServerDir, "sidecar.js"),
+  external: [...externals, "sidecar_sdk"]
 });
 
 const outStat = fs.statSync(path.join(distServerDir, "index.js"));
+const sidecarStat = fs.statSync(path.join(distServerDir, "sidecar.js"));
 console.log(
-  `Bundled dist/server/index.js (${(outStat.size / 1024).toFixed(1)} kB, zero runtime npm dependencies)`
+  `Bundled dist/server/index.js (${(outStat.size / 1024).toFixed(1)} kB) and dist/server/sidecar.js (${(sidecarStat.size / 1024).toFixed(1)} kB, zero runtime npm dependencies)`
 );

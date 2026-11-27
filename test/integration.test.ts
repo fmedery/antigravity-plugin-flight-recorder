@@ -9,9 +9,10 @@ import {
   buildConversationDetail,
   buildDashboardData
 } from "../src/server/analytics.js";
+import { createTrackerAppService } from "../src/server/appService.js";
 import { TrackerDatabase } from "../src/server/db.js";
 import { runScan } from "../src/server/scanner.js";
-import { APP_URI, createTrackerMcpServer } from "../src/server/tools.js";
+import { createTrackerMcpServer } from "../src/server/tools.js";
 
 test("full scanner + parent/subagent linkage + MCP server tools/resources + CSP check", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-int-test-"));
@@ -201,11 +202,10 @@ test("full scanner + parent/subagent linkage + MCP server tools/resources + CSP 
     assert.ok(Buffer.byteLength(uiHtml, "utf8") < 10 * 1024 * 1024);
     assert.equal(/<(?:script|link)\b[^>]*(?:src|href)=["']https?:\/\//i.test(uiHtml), false);
 
-    // Connect MCP server + client via InMemoryTransport to verify tools/resources & _meta
+    // Connect MCP server + client via InMemoryTransport to verify the 6 clean model tools (zero app_* leakage)
     const mcpServer = createTrackerMcpServer({
       db,
       dataDir,
-      uiHtmlPath,
       brainRoots: [{ surface: "antigravity", dir: brainDir }],
       eventsPath
     });
@@ -217,37 +217,32 @@ test("full scanner + parent/subagent linkage + MCP server tools/resources + CSP 
     ]);
 
     const toolsList = await client.listTools();
-    const openTool = toolsList.tools.find((t) => t.name === "open_flight_recorder");
-    assert.ok(openTool);
-    const openMeta = openTool._meta as Record<string, unknown>;
-    assert.equal((openMeta?.ui as Record<string, unknown>)?.resourceUri, APP_URI);
-    const agyUi = openMeta?.["com.google.antigravity/ui"] as {
-      entrypoints?: Array<{ type: string; title: string }>;
-    };
-    assert.ok(agyUi?.entrypoints?.some((e) => e.type === "aux_pane"));
-    assert.ok(agyUi?.entrypoints?.some((e) => e.type === "global"));
-
-    const appOnlyTool = toolsList.tools.find((t) => t.name === "app_get_dashboard_data");
-    assert.ok(appOnlyTool);
     assert.deepEqual(
-      ((appOnlyTool._meta as Record<string, unknown>)?.ui as Record<string, unknown>)
-        ?.visibility,
-      ["app"]
+      toolsList.tools.map((t) => t.name).sort(),
+      [
+        "explain_bottlenecks",
+        "get_chat_analysis",
+        "get_project_summary",
+        "get_skill_optimization",
+        "list_projects",
+        "open_flight_recorder"
+      ]
     );
-
-    const resList = await client.listResources();
-    const appRes = resList.resources.find((r) => r.uri === APP_URI);
-    assert.ok(appRes);
-    assert.equal(appRes.mimeType, "text/html;profile=mcp-app");
-
-    const resRead = await client.readResource({ uri: APP_URI });
-    assert.equal(resRead.contents.length, 1);
-    assert.equal(resRead.contents[0].mimeType, "text/html;profile=mcp-app");
+    assert.equal(
+      toolsList.tools.some((t) => t.name.startsWith("app_")),
+      false,
+      "MCP server should not expose internal app_* tools when using pure UI Sidecar"
+    );
 
     const openResult = await client.callTool({
       name: "open_flight_recorder",
       arguments: {}
     });
+    const openText =
+      Array.isArray(openResult.content) && openResult.content[0]?.type === "text"
+        ? (openResult.content[0].text ?? "")
+        : "";
+    assert.match(openText, /\[Flight Recorder\]\(sidecar:\/\/flight-recorder\/dashboard\/\)/);
     const payloadBytes = Buffer.byteLength(
       JSON.stringify(openResult.structuredContent ?? {}),
       "utf8"
@@ -335,56 +330,39 @@ test("full scanner + parent/subagent linkage + MCP server tools/resources + CSP 
       `Expected merged single-chat totalActiveMs (${optChatSc.totalActiveMs}) < raw sum (${parentDetail.summary.time.activeMs + parentDetail.summary.time.subagentMs})`
     );
 
-    // Verify time-range filtering across app-only dashboard and project detail endpoints
-    const convEndedMs = parentDetail.summary.endedAtMs;
-    const matchDashRes = await client.callTool({
-      name: "app_get_dashboard_data",
-      arguments: {
-        timeRange: "today",
-        sinceMs: convEndedMs - 60_000,
-        skipScan: true
-      }
+    // Verify time-range filtering across shared appService dashboard and project detail endpoints
+    const appService = createTrackerAppService({
+      db,
+      dataDir,
+      brainRoots: [{ surface: "antigravity", dir: brainDir }],
+      eventsPath
     });
-    const matchDashSc = (matchDashRes.structuredContent ?? {}) as {
-      timeRange?: { preset?: string; sinceMs?: number | null };
-      totals?: { projectCount?: number; chatCount?: number };
-    };
+    const convEndedMs = parentDetail.summary.endedAtMs;
+    const matchDashSc = await appService.getDashboardData({
+      timeRange: "today",
+      sinceMs: convEndedMs - 60_000,
+      skipScan: true
+    });
     assert.equal(matchDashSc.timeRange?.preset, "today");
     assert.equal(matchDashSc.timeRange?.sinceMs, convEndedMs - 60_000);
     assert.equal(matchDashSc.totals?.projectCount, 1);
     assert.equal(matchDashSc.totals?.chatCount, 1);
 
     const futureSinceMs = convEndedMs + 60_000;
-    const emptyDashRes = await client.callTool({
-      name: "app_get_dashboard_data",
-      arguments: {
-        timeRange: "today",
-        sinceMs: futureSinceMs,
-        skipScan: true
-      }
+    const emptyDashSc = await appService.getDashboardData({
+      timeRange: "today",
+      sinceMs: futureSinceMs,
+      skipScan: true
     });
-    const emptyDashSc = (emptyDashRes.structuredContent ?? {}) as {
-      totals?: { projectCount?: number; chatCount?: number };
-      projects?: unknown[];
-    };
     assert.equal(emptyDashSc.totals?.projectCount, 0);
     assert.equal(emptyDashSc.totals?.chatCount, 0);
     assert.deepEqual(emptyDashSc.projects, []);
 
-    const emptyProjRes = await client.callTool({
-      name: "app_get_project_detail",
-      arguments: {
-        projectPath: "/Users/dev/sample-project",
-        timeRange: "today",
-        sinceMs: futureSinceMs
-      }
+    const emptyProjSc = await appService.getProjectDetail({
+      projectPath: "/Users/dev/sample-project",
+      timeRange: "today",
+      sinceMs: futureSinceMs
     });
-    assert.notEqual(emptyProjRes.isError, true);
-    const emptyProjSc = (emptyProjRes.structuredContent ?? {}) as {
-      summary?: { chatCount?: number };
-      chats?: unknown[];
-      timeRange?: { preset?: string };
-    };
     assert.equal(emptyProjSc.summary?.chatCount, 0);
     assert.deepEqual(emptyProjSc.chats, []);
     assert.equal(emptyProjSc.timeRange?.preset, "today");
