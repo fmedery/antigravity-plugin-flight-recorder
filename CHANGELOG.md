@@ -10,6 +10,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-27
+
+### Added
+
+- Full **Gemini Enterprise** dashboard support across the Antigravity Left Sidebar, chat Side Panel, and chat links.
+- Automatic Antigravity host theme matching on first paint across dark, light, and system modes (Catppuccin, Nord, Dracula, Tokyo Night, Onyx, Solarized, Gruvbox Material, One Dark Pro / One Light, Monokai, Vesper, and custom theme seeds).
+
+### Changed
+
+- Streamlined the single-file dashboard UI bundle (~45% smaller) and simplified the chat tool surface to 6 focused analytics tools sharing one local WAL-mode SQLite index.
+- Reordered `README.md` with an above-the-fold overview screenshot and sandbox-friendly, non-CLI install and update guides (Git clone/pull and ZIP download first).
+- Updated `SECURITY.md` to document the loopback-only, token-authenticated local dashboard server and read-only Antigravity theme preference lookup.
+
+### Documentation
+
+- Updated `README.md` and annotated screenshots for KPI status pills, Swarm tracking, and 30-second auto-refresh.
+
 ## [0.4.2] - 2026-11-26
 
 ### Added
@@ -68,7 +85,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Added secret redaction (`src/shared/redact.ts`), ANSI/OSC control-character stripping, POSIX `0700`/`0600` data permissions, ReDoS-safe pricing glob matching, bounded hook ingestion, `SECURITY.md`, and `MIT` `LICENSE`.
 
-[Unreleased]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/fmedery/antigravity-plugin-flight-recorder/compare/v0.3.0...v0.4.0
