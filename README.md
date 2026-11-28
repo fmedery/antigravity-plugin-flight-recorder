@@ -2,7 +2,7 @@
 
 **See which plugins, skills, MCP servers, tools, and models drive your tokens, prompt-cache carry, estimated USD, and active agent time in Google Antigravity — and pinpoint concrete bottlenecks across projects and chats.**
 
-Flight Recorder is a **local-first Antigravity plugin with an interactive dashboard and chat tools** — all transcript parsing and SQLite indexing stay on your machine, with zero background network calls or telemetry. It works with the **Antigravity App (2.x)** (including **Gemini Enterprise**), **Antigravity IDE**, and **Antigravity CLI (`agy`)** on **Windows, macOS, and Linux**.
+Flight Recorder is a **local-first Antigravity plugin with an interactive dashboard and chat tools** — all transcript parsing and SQLite indexing stay on your machine, with zero background network calls or telemetry. It works with the **Antigravity App (2.x)** (personal, corporate, and pay-as-you-go accounts), **Antigravity IDE**, and **Antigravity CLI (`agy`)** on **Windows, macOS, and Linux**.
 
 [Install](#installation--setup) · [Dashboard](#using-the-dashboard) · [Asking in Chat](#asking-in-chat) · [Pricing](#pricing--rate-sources) · [How It Works](#how-it-works) · [Privacy](#privacy--security) · [Troubleshooting](#troubleshooting) · [Updating](#updating--uninstalling)
 

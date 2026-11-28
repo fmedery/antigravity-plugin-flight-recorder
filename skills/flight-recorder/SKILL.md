@@ -17,7 +17,7 @@ Call `open_flight_recorder` when the user wants a visual overview, timeline wate
 - Pass `projectPath` to open directly on a specific workspace project.
 - Pass `conversationId` to open directly on a specific chat's waterfall, model mix, and token breakdown.
 
-In the **Antigravity App** (both Consumer and Gemini Enterprise accounts), include the clickable `sidecar://` pill returned by `open_flight_recorder` in your reply (for example `[Flight Recorder](sidecar://flight-recorder/dashboard/)`) so Antigravity opens or toggles the interactive Sidecar dashboard in the side panel directly. Do **not** emit `sidecar://` links in Antigravity CLI (`agy`) or headless runs.
+In the **Antigravity App**, include the clickable `sidecar://` pill returned by `open_flight_recorder` in your reply (for example `[Flight Recorder](sidecar://flight-recorder/dashboard/)`) so Antigravity opens or toggles the interactive Sidecar dashboard in the side panel directly. Do **not** emit `sidecar://` links in Antigravity CLI (`agy`) or headless runs.
 
 ## Answering Specific Questions in Chat
 

@@ -14,7 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
-- Full **Gemini Enterprise** dashboard support across the Antigravity Left Sidebar, chat Side Panel, and chat links.
+- Full dashboard support across **all Antigravity account types** (personal, corporate, and pay-as-you-go) in the Left Sidebar, chat Side Panel, and chat links.
 - Automatic Antigravity host theme matching on first paint across dark, light, and system modes (Catppuccin, Nord, Dracula, Tokyo Night, Onyx, Solarized, Gruvbox Material, One Dark Pro / One Light, Monokai, Vesper, and custom theme seeds).
 
 ### Changed
