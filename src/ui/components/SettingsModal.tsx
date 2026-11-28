@@ -155,19 +155,7 @@ export const SettingsModal: React.FC<Props> = ({
         </div>
 
         {actionableUnpriced.length > 0 && (
-          <div
-            style={{
-              marginTop: 10,
-              padding: "8px 10px",
-              borderRadius: 6,
-              background: "var(--bg-warning)",
-              color: "var(--txt-warning)",
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: 6
-            }}
-          >
+          <div className="pricing-unpriced-banner">
             <span style={{ fontWeight: 600 }}>Unpriced models detected:</span>
             {actionableUnpriced.map((m) => {
               const avail = getModelAvailability(
@@ -264,7 +252,7 @@ export const SettingsModal: React.FC<Props> = ({
                       <input
                         type="text"
                         className="input-field"
-                        style={{ width: 145 }}
+                        style={{ width: 135 }}
                         value={rule.pattern}
                         onChange={(e) =>
                           updateRule(idx, { pattern: e.target.value })
@@ -276,7 +264,7 @@ export const SettingsModal: React.FC<Props> = ({
                         <input
                           type="text"
                           className="input-field"
-                          style={{ width: 120 }}
+                          style={{ width: 112 }}
                           value={rule.label}
                           onChange={(e) =>
                             updateRule(idx, { label: e.target.value })

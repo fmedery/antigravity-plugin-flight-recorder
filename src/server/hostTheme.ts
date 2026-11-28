@@ -147,6 +147,20 @@ function lookupBuiltInSeeds(
   return null;
 }
 
+function parseHexLuminance(raw: string): number | null {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw.trim());
+  if (!hex) return null;
+  const h = hex[1];
+  const r = h.length === 3 ? parseInt(h[0] + h[0], 16) : parseInt(h.slice(0, 2), 16);
+  const g = h.length === 3 ? parseInt(h[1] + h[1], 16) : parseInt(h.slice(2, 4), 16);
+  const b = h.length === 3 ? parseInt(h[2] + h[2], 16) : parseInt(h.slice(4, 6), 16);
+  const lin = [r, g, b].map((v) => {
+    const n = v / 255;
+    return n <= 0.03928 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
+
 function buildCssVariablesFromSeeds(
   mode: ResolvedThemeMode,
   seeds: ThemeSeeds,
@@ -169,13 +183,16 @@ function buildCssVariablesFromSeeds(
   const borderSecondaryPct = highContrast ? "14%" : "10%";
 
   const bgSecondary = isDark
-    ? `color-mix(in srgb, ${fg} ${cardPct}, ${bg})`
-    : `color-mix(in srgb, ${fg} 3%, ${bg})`;
-  const bgTertiary = `color-mix(in srgb, ${fg} ${tertiaryPct}, ${bg})`;
-  const txtSecondary = `color-mix(in srgb, ${fg} ${isDark ? "76%" : "72%"}, ${bg})`;
-  const txtTertiary = `color-mix(in srgb, ${fg} ${isDark ? "56%" : "54%"}, ${bg})`;
-  const bdrPrimary = `color-mix(in srgb, ${fg} ${borderPrimaryPct}, ${bg})`;
-  const bdrSecondary = `color-mix(in srgb, ${fg} ${borderSecondaryPct}, ${bg})`;
+    ? `color-mix(in oklab, ${fg} ${cardPct}, ${bg})`
+    : `color-mix(in oklab, ${fg} 3%, ${bg})`;
+  const bgTertiary = `color-mix(in oklab, ${fg} ${tertiaryPct}, ${bg})`;
+  const txtSecondary = `color-mix(in oklab, ${fg} ${isDark ? "76%" : "72%"}, ${bg})`;
+  const txtTertiary = `color-mix(in oklab, ${fg} ${isDark ? "56%" : "54%"}, ${bg})`;
+  const bdrPrimary = `color-mix(in oklab, ${fg} ${borderPrimaryPct}, ${bg})`;
+  const bdrSecondary = `color-mix(in oklab, ${fg} ${borderSecondaryPct}, ${bg})`;
+  const primaryLum = parseHexLuminance(primary);
+  const onPrimary =
+    primaryLum !== null && primaryLum > 0.17913 ? "#111317" : "#ffffff";
 
   return {
     "--color-background-primary": bg,
@@ -186,7 +203,8 @@ function buildCssVariablesFromSeeds(
     "--color-text-tertiary": txtTertiary,
     "--color-border-primary": bdrPrimary,
     "--color-border-secondary": bdrSecondary,
-    "--color-ring-primary": primary
+    "--color-ring-primary": primary,
+    "--color-on-primary": onPrimary
   };
 }
 

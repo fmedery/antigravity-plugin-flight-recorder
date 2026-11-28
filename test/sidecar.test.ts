@@ -181,18 +181,21 @@ test("sidecar origin guard, token check, HTML bootstrap injection, theme detecti
     assert.equal(nordTheme.presetName, "Nord");
     assert.equal(nordTheme.cssVariables["--color-background-primary"], "#2E3440");
     assert.equal(nordTheme.cssVariables["--color-ring-primary"], "#88C0D0");
+    assert.equal(nordTheme.cssVariables["--color-on-primary"], "#111317");
 
-    // System mode still emits both darkVariables (Catppuccin) and lightVariables (One Light)
+    // System mode still emits both darkVariables (Catppuccin) and lightVariables (Catppuccin Latte)
     fs.writeFileSync(cfgPath, JSON.stringify({ userSettings: {} }), "utf8");
     fs.writeFileSync(
       storagePath,
-      JSON.stringify({ "theme-preset-dark": "Catppuccin", "theme-preset-light": "One Light" }),
+      JSON.stringify({ "theme-preset-dark": "Catppuccin", "theme-preset-light": "Catppuccin Latte" }),
       "utf8"
     );
     const sysTheme = resolveHostTheme({ configJsonPath: cfgPath, appStoragePath: storagePath });
     assert.equal(sysTheme.mode, "system");
     assert.equal(sysTheme.darkVariables["--color-background-primary"], "#24273A");
-    assert.equal(sysTheme.lightVariables["--color-background-primary"], "#F5F5F5");
+    assert.equal(sysTheme.darkVariables["--color-on-primary"], "#111317");
+    assert.equal(sysTheme.lightVariables["--color-background-primary"], "#EFF1F5");
+    assert.equal(sysTheme.lightVariables["--color-on-primary"], "#ffffff");
 
     assert.equal(
       resolveInitialHostTheme(path.join(tmp, "missing.json"), path.join(tmp, "missing-storage.json")),

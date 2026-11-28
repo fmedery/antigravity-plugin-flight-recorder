@@ -652,6 +652,7 @@ export const AppRoot: React.FC = () => {
             padding: "6px 10px",
             borderRadius: 6,
             background: "var(--bg-info)",
+            border: "1px solid color-mix(in oklab, var(--txt-info) 28%, var(--bdr-secondary))",
             color: "var(--txt-info)",
             fontSize: 12
           }}
@@ -667,6 +668,7 @@ export const AppRoot: React.FC = () => {
             padding: "8px 10px",
             borderRadius: 6,
             background: "var(--bg-danger)",
+            border: "1px solid color-mix(in oklab, var(--txt-danger) 28%, var(--bdr-secondary))",
             color: "var(--txt-danger)",
             fontSize: 12
           }}

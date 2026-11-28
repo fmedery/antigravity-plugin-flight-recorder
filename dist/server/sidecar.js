@@ -8169,8 +8169,17 @@ function lookupBuiltInSeeds(mode, presetName) {
     if (k.toLowerCase() === lower) return v;
   return null;
 }
+function parseHexLuminance(raw) {
+  let hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw.trim());
+  if (!hex) return null;
+  let h = hex[1], r = h.length === 3 ? parseInt(h[0] + h[0], 16) : parseInt(h.slice(0, 2), 16), g = h.length === 3 ? parseInt(h[1] + h[1], 16) : parseInt(h.slice(2, 4), 16), b = h.length === 3 ? parseInt(h[2] + h[2], 16) : parseInt(h.slice(4, 6), 16), lin = [r, g, b].map((v) => {
+    let n = v / 255;
+    return n <= 0.03928 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
 function buildCssVariablesFromSeeds(mode, seeds, highContrast) {
-  let isDark = mode === "dark", bg = seeds.background, fg = seeds.foreground, primary = seeds.primary, cardPct = isDark ? highContrast ? "7%" : "5%" : "0%", tertiaryPct = isDark ? highContrast ? "14%" : "10%" : highContrast ? "8%" : "6%", borderPrimaryPct = highContrast ? "24%" : "16%", borderSecondaryPct = highContrast ? "14%" : "10%", bgSecondary = isDark ? `color-mix(in srgb, ${fg} ${cardPct}, ${bg})` : `color-mix(in srgb, ${fg} 3%, ${bg})`, bgTertiary = `color-mix(in srgb, ${fg} ${tertiaryPct}, ${bg})`, txtSecondary = `color-mix(in srgb, ${fg} ${isDark ? "76%" : "72%"}, ${bg})`, txtTertiary = `color-mix(in srgb, ${fg} ${isDark ? "56%" : "54%"}, ${bg})`, bdrPrimary = `color-mix(in srgb, ${fg} ${borderPrimaryPct}, ${bg})`, bdrSecondary = `color-mix(in srgb, ${fg} ${borderSecondaryPct}, ${bg})`;
+  let isDark = mode === "dark", bg = seeds.background, fg = seeds.foreground, primary = seeds.primary, cardPct = isDark ? highContrast ? "7%" : "5%" : "0%", tertiaryPct = isDark ? highContrast ? "14%" : "10%" : highContrast ? "8%" : "6%", borderPrimaryPct = highContrast ? "24%" : "16%", borderSecondaryPct = highContrast ? "14%" : "10%", bgSecondary = isDark ? `color-mix(in oklab, ${fg} ${cardPct}, ${bg})` : `color-mix(in oklab, ${fg} 3%, ${bg})`, bgTertiary = `color-mix(in oklab, ${fg} ${tertiaryPct}, ${bg})`, txtSecondary = `color-mix(in oklab, ${fg} ${isDark ? "76%" : "72%"}, ${bg})`, txtTertiary = `color-mix(in oklab, ${fg} ${isDark ? "56%" : "54%"}, ${bg})`, bdrPrimary = `color-mix(in oklab, ${fg} ${borderPrimaryPct}, ${bg})`, bdrSecondary = `color-mix(in oklab, ${fg} ${borderSecondaryPct}, ${bg})`, primaryLum = parseHexLuminance(primary), onPrimary = primaryLum !== null && primaryLum > 0.17913 ? "#111317" : "#ffffff";
   return {
     "--color-background-primary": bg,
     "--color-background-secondary": bgSecondary,
@@ -8180,7 +8189,8 @@ function buildCssVariablesFromSeeds(mode, seeds, highContrast) {
     "--color-text-tertiary": txtTertiary,
     "--color-border-primary": bdrPrimary,
     "--color-border-secondary": bdrSecondary,
-    "--color-ring-primary": primary
+    "--color-ring-primary": primary,
+    "--color-on-primary": onPrimary
   };
 }
 function resolvePaletteForMode(mode, userSettings, storage, highContrast) {

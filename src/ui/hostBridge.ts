@@ -148,7 +148,8 @@ function applySidecarThemeVariables(vars: Record<string, string>): void {
     ["--color-text-tertiary", ["--placeholder", "--muted-foreground"]],
     ["--color-border-primary", ["--border", "--agy-border"]],
     ["--color-border-secondary", ["--card-border", "--border"]],
-    ["--color-ring-primary", ["--primary", "--accent"]]
+    ["--color-ring-primary", ["--primary", "--accent"]],
+    ["--color-on-primary", ["--primary-foreground"]]
   ];
 
   for (const [targetVar, sources] of mapPairs) {
@@ -161,15 +162,27 @@ function applySidecarThemeVariables(vars: Record<string, string>): void {
     }
   }
 
+  if (!vars["--primary-foreground"]) {
+    const primaryCandidate = vars["--primary"] || vars["--accent"];
+    if (primaryCandidate) {
+      const primaryLum = parseCssColorLuminance(primaryCandidate);
+      if (primaryLum !== null) {
+        rootStyle.setProperty(
+          "--color-on-primary",
+          primaryLum > 0.17913 ? "#111317" : "#ffffff"
+        );
+      }
+    }
+  }
+
   const bgCandidate =
     vars["--background"] || vars["--card"] || vars["--agy-canvas"];
   if (bgCandidate) {
     const lum = parseCssColorLuminance(bgCandidate);
     if (lum !== null) {
-      document.documentElement.setAttribute(
-        "data-theme",
-        lum < 0.45 ? "dark" : "light"
-      );
+      const mode = lum < 0.45 ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", mode);
+      rootStyle.colorScheme = mode;
     }
   }
 }
